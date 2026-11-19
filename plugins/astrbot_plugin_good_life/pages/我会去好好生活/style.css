@@ -1,0 +1,180 @@
+/* 我会去好好生活 · 外壳与基础组件
+ *
+ * 颜色、圆角、间距、字号全部取自 state-tokens.css（与陪伴小屋 tokens.css 同源）。
+ * 页面固定使用「深林 walnut」色板：近黑偏棕的底、胡桃木强调色、苔绿表示良好，
+ * 与陪伴小屋的深色暖调一致。本文件不写死任何色值；要换色板只改 <html data-theme>。
+ *
+ * 外壳结构（与陪伴小屋相同的读法）：
+ *   ┌────────┬──────────────────────────────┐
+ *   │ 左栏    │ 顶部信息条（页名 · 角色 · 时间） │
+ *   │ 品牌    ├──────────────────────────────┤
+ *   │ 范围    │ 内容                          │
+ *   │ 导航    │                              │
+ *   └────────┴──────────────────────────────┘
+ * 900px 以下左栏收成抽屉，由顶部按钮打开。 */
+
+/* === 本插件的外壳尺寸令牌 === */
+:root{
+  --gl-rail:236px;
+  --gl-side:360px;
+  --gl-pad:var(--sp-5);
+  --gl-card-pad:var(--sp-5);
+  --gl-ui-font:"MiSans","HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --gl-heading-font:var(--skin-heading-font, var(--gl-ui-font));
+  color-scheme:dark;
+  font-family:var(--gl-ui-font);
+  font-size:var(--fs-body);
+  line-height:1.6;
+  color:var(--t-text);
+  background:var(--t-canvas);
+}
+*{box-sizing:border-box}
+body{margin:0;min-width:320px;background:var(--t-canvas);color:var(--t-text)}
+[hidden]{display:none!important}
+a{color:var(--t-accent-ink)}
+h1,h2,h3{color:var(--t-text-strong)}
+.gl-icon{width:16px;height:16px;flex:none}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* === 表单控件 === */
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+select,input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea{
+  min-height:36px;padding:var(--sp-2) var(--sp-3);border:1px solid var(--field-border);border-radius:var(--field-radius);
+  background:var(--t-surface-sunken);color:var(--t-text);
+}
+select{padding-right:var(--sp-6)}
+textarea{line-height:1.7;resize:vertical}
+input[type=checkbox],input[type=radio],input[type=range]{accent-color:var(--t-accent)}
+:is(button,a,select,input,textarea,summary,[tabindex]):focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+fieldset{border:0;padding:0;margin:0}
+legend{font-weight:600;margin-bottom:var(--sp-3);color:var(--t-text-strong)}
+
+/* 编辑器（calendar-editor.js / state-editor.js）沿用陪伴小屋的类名。 */
+.memory-button{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-1);min-height:36px;
+  padding:var(--sp-2) var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-pill);
+  background:var(--t-surface-raised);color:var(--t-text);font-size:var(--fs-tiny);line-height:1.4;white-space:nowrap;
+  transition:background-color var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast);
+}
+.memory-button:hover:not(:disabled){border-color:var(--t-accent);color:var(--t-accent-ink)}
+.memory-button[type=submit]{background:var(--t-accent-solid);border-color:var(--t-accent-solid);color:var(--t-on-solid)}
+.memory-button[type=submit]:hover:not(:disabled){background:var(--t-accent-solid-hover);color:var(--t-on-solid)}
+.memory-notice{margin:var(--sp-3) 0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny)}
+.memory-notice.error{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
+.panel{background:var(--t-surface);border:1px solid var(--t-line);border-radius:var(--r-md)}
+
+/* === 外壳 === */
+.gl-shell{display:grid;grid-template-columns:var(--gl-rail) minmax(0,1fr);min-height:100dvh}
+.gl-rail{
+  position:sticky;top:0;display:flex;flex-direction:column;gap:var(--sp-4);height:100dvh;overflow-y:auto;overscroll-behavior:contain;
+  padding:var(--sp-4) var(--sp-3);background:var(--t-surface);border-right:1px solid var(--t-line);
+}
+.gl-brand{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-1) var(--sp-2) 0}
+.gl-brand-mark{display:grid;place-items:center;flex:none;width:34px;height:34px;border-radius:var(--r-sm);background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.gl-brand-mark .gl-icon{width:20px;height:20px}
+.gl-brand-copy{display:grid;min-width:0}
+.gl-brand-copy strong{font-family:var(--gl-heading-font);font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gl-brand-copy small{font-size:var(--fs-micro);color:var(--t-text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gl-icon-button{
+  display:inline-grid;place-items:center;flex:none;width:34px;height:34px;padding:0;border:1px solid var(--t-line);
+  border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);
+}
+.gl-icon-button:hover:not(:disabled){background:var(--t-surface-soft);color:var(--t-text-strong)}
+.gl-rail-close,.gl-rail-open{display:none}
+
+.gl-scope{display:grid;gap:var(--sp-2);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft)}
+.gl-scope label{display:grid;gap:var(--sp-1);font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-scope select{width:100%;min-height:34px;font-size:var(--fs-tiny)}
+.gl-scope-foot{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding-top:var(--sp-1)}
+.gl-scope-foot .gl-icon-button{width:30px;height:30px}
+.gl-scope-foot .gl-icon{width:15px;height:15px}
+.gl-connection{display:inline-flex;align-items:center;gap:var(--sp-2);min-width:0;font-size:var(--fs-micro);color:var(--t-text-soft)}
+.gl-connection span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gl-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--t-ok);box-shadow:0 0 0 3px var(--t-ok-quiet)}
+.gl-connection[data-offline] .gl-dot{background:var(--t-warn);box-shadow:0 0 0 3px var(--t-warn-quiet)}
+
+.gl-nav{display:flex;flex-direction:column;gap:2px}
+.gl-nav-title{margin:var(--sp-3) 0 var(--sp-1);padding:0 var(--sp-2);font-size:var(--fs-micro);font-weight:600;color:var(--t-text-faint);letter-spacing:.04em}
+.gl-nav-title:first-child{margin-top:0}
+.gl-nav-link{
+  display:flex;align-items:center;gap:var(--sp-2);width:100%;min-height:36px;padding:var(--sp-2);
+  border:0;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);font-size:var(--fs-body);
+  line-height:1.5;text-align:left;text-decoration:none;transition:background-color var(--dur-fast),color var(--dur-fast);
+}
+.gl-nav-link .gl-icon{width:16px;height:16px;opacity:.85}
+.gl-nav-link:hover{background:var(--t-surface-soft);color:var(--t-text)}
+.gl-nav-link[aria-current="page"]{background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600;box-shadow:inset 3px 0 0 var(--t-accent)}
+.gl-rail-foot{margin-top:auto;padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
+.gl-rail-note{margin:var(--sp-2) 0 0;padding:0 var(--sp-2);font-size:var(--fs-micro);line-height:1.65;color:var(--t-text-faint)}
+.gl-scrim{position:fixed;inset:0;z-index:30;background:var(--scrim)}
+
+.gl-body{display:flex;flex-direction:column;min-width:0;padding:var(--sp-4) var(--gl-pad) var(--sp-6)}
+.gl-topbar{
+  display:flex;align-items:center;gap:var(--sp-3);min-height:64px;margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);
+}
+.gl-topbar-title{min-width:0;flex:1}
+.gl-eyebrow{margin:0;font-size:var(--fs-micro);color:var(--t-text-faint);letter-spacing:.08em}
+.gl-topbar h1{margin:0;font-family:var(--gl-heading-font);font-size:var(--fs-head);font-weight:600;line-height:1.3;letter-spacing:.03em}
+.gl-topbar-info{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;justify-content:flex-end;min-width:0}
+.gl-topbar-scope{max-width:260px;padding:var(--sp-1) var(--sp-3);border-radius:var(--r-pill);background:var(--t-surface-soft);border:1px solid var(--t-line);font-size:var(--fs-micro);color:var(--t-text-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gl-topbar-clock{display:inline-flex;align-items:baseline;gap:var(--sp-2);white-space:nowrap;color:var(--t-text-soft)}
+.gl-topbar-clock .gl-icon{align-self:center;color:var(--t-accent-ink)}
+.gl-topbar-clock time{font-size:var(--fs-title);font-weight:600;color:var(--t-text-strong);font-variant-numeric:tabular-nums}
+.gl-topbar-clock small{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-notice{margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny)}
+.gl-notice[data-error="true"]{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.gl-main{min-width:0}
+
+/* === 卡片与通用块 === */
+.gl-card{
+  min-width:0;margin:0 0 var(--sp-4);padding:var(--gl-card-pad);border:1px solid var(--t-line);
+  border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow);
+}
+.gl-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-3);margin:0 0 var(--sp-3)}
+.gl-card-head h2{margin:0;font-family:var(--gl-heading-font);font-size:var(--fs-lead);font-weight:600;letter-spacing:.06em}
+.gl-card-note{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-text-button{padding:var(--sp-1) 0;border:0;background:none;color:var(--t-accent-ink);font-size:var(--fs-tiny)}
+.gl-text-button:hover{color:var(--t-accent-hover);text-decoration:underline;text-underline-offset:3px}
+
+/* 页内二级切换（阅读 / 状态设置）：与陪伴小屋 home-tabs 同形。 */
+.subnav{display:flex;gap:var(--sp-1);flex-wrap:wrap;margin:0 0 var(--sp-3)}
+.subnav button{padding:var(--sp-2) var(--sp-3);border:1px solid transparent;border-radius:var(--r-pill);background:transparent;color:var(--t-text-soft);font-size:var(--fs-tiny);white-space:nowrap}
+.subnav button:hover{background:var(--t-surface-soft);color:var(--t-text)}
+.subnav button[aria-current="page"]{background:var(--t-accent-quiet);border-color:var(--t-line-firm);color:var(--t-accent-ink);font-weight:600}
+
+/* === 日程编辑器 === */
+#calendar-editor h2,#calendar-editor h3{font-family:var(--gl-heading-font)}
+.state-calendar-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--sp-3)}
+.state-calendar-fields label,#state-calendar-form>label{display:grid;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--t-text-soft)}
+.state-calendar-fields textarea{width:100%}
+.state-plan-list{padding:0;margin:0;list-style:none}
+.state-plan-list li{border-top:1px solid var(--t-line);padding:var(--sp-3) 0}
+.state-calendar-actions,.state-edit-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin:var(--sp-3) 0}
+.state-edit-help,.state-calendar-meta,.state-calendar-count{color:var(--t-text-faint);font-size:var(--fs-tiny)}
+
+/* === 嵌入的生活工作区（阅读 / 浏览 / 作息）=== */
+#life-frame{display:block;width:100%;min-height:600px;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface)}
+#state-settings{margin-bottom:var(--sp-4)}
+
+/* === 窄屏 === */
+@media(max-width:900px){
+  .gl-shell{grid-template-columns:minmax(0,1fr)}
+  .gl-rail{
+    position:fixed;z-index:40;top:0;left:0;bottom:0;width:min(86vw,var(--gl-rail) + 24px);height:auto;
+    transform:translateX(-102%);transition:transform var(--dur) ease;box-shadow:var(--t-shadow-lift);
+  }
+  .gl-shell[data-rail="open"] .gl-rail{transform:none}
+  .gl-rail-close,.gl-rail-open{display:inline-grid}
+  .gl-rail-close{margin-left:auto}
+  .gl-body{padding:var(--sp-3) var(--sp-3) var(--sp-5)}
+  .gl-topbar{position:sticky;top:0;z-index:20;margin-bottom:var(--sp-3);padding:var(--sp-2) var(--sp-3);min-height:56px}
+  .gl-topbar h1{font-size:var(--fs-title)}
+}
+@media(max-width:560px){
+  .gl-topbar-scope,.gl-topbar-clock small{display:none}
+  .gl-card{padding:var(--sp-4)}
+}
+@media(prefers-reduced-motion:reduce){.gl-rail,.gl-nav-link,.memory-button{transition:none}}

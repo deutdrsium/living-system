@@ -1,0 +1,14 @@
+name: Set up CI Python
+description: Install the shared Python dependencies
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - shell: bash
+      run: |
+        venv="$RUNNER_TEMP/ci-python"
+        python -I -m venv "$venv"
+        "$venv/bin/python" -I -m pip install -r tools/ci/requirements.txt
+        echo "$venv/bin" >> "$GITHUB_PATH"

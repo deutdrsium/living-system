@@ -1,0 +1,7 @@
+# Shared Python CI environment for both plugins and the contracts suite.
+pytest
+pytest-xdist
+regex
+tzdata
+astrbot==4.29.4
+-r ../../plugins/astrbot_plugin_private_companion/requirements.txt

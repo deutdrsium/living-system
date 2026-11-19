@@ -1,0 +1,98 @@
+{
+  "sample": "news_feed_example.xml",
+  "recorded_at": "2026-01-04T08:10:00+00:00",
+  "stored_bytes": 3037,
+  "stored_sha256": "f10ce98ece657a67988149396f963527abe57014a5b940a462e80611fbbaec00",
+  "source_label": "橘鸦AI早报",
+  "parse_issues": [],
+  "items": [
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/1",
+      "title": "示例资讯 1",
+      "url": "https://news.example/items/1",
+      "summary": "示例展馆公布了第 1 项开放安排。",
+      "published_at": "2026-01-04T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/2",
+      "title": "示例资讯 2",
+      "url": "https://news.example/items/2",
+      "summary": "示例展馆公布了第 2 项开放安排。",
+      "published_at": "2026-01-03T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/3",
+      "title": "示例资讯 3",
+      "url": "https://news.example/items/3",
+      "summary": "示例展馆公布了第 3 项开放安排。",
+      "published_at": "2026-01-02T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/4",
+      "title": "示例资讯 4",
+      "url": "https://news.example/items/4",
+      "summary": "示例展馆公布了第 4 项开放安排。",
+      "published_at": "2026-01-01T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/5",
+      "title": "示例资讯 5",
+      "url": "https://news.example/items/5",
+      "summary": "示例展馆公布了第 5 项开放安排。",
+      "published_at": "2025-12-31T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/6",
+      "title": "示例资讯 6",
+      "url": "https://news.example/items/6",
+      "summary": "示例展馆公布了第 6 项开放安排。",
+      "published_at": "2025-12-30T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/7",
+      "title": "示例资讯 7",
+      "url": "https://news.example/items/7",
+      "summary": "示例展馆公布了第 7 项开放安排。",
+      "published_at": "2025-12-29T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/8",
+      "title": "示例资讯 8",
+      "url": "https://news.example/items/8",
+      "summary": "示例展馆公布了第 8 项开放安排。",
+      "published_at": "2025-12-28T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/9",
+      "title": "示例资讯 9",
+      "url": "https://news.example/items/9",
+      "summary": "示例展馆公布了第 9 项开放安排。",
+      "published_at": "2025-12-27T08:00:00+00:00"
+    },
+    {
+      "source": "橘鸦AI早报",
+      "identifier": "https://news.example/items/10",
+      "title": "示例资讯 10",
+      "url": "https://news.example/items/10",
+      "summary": "示例展馆公布了第 10 项开放安排。",
+      "published_at": "2025-12-26T08:00:00+00:00"
+    }
+  ],
+  "article": {
+    "source": "橘鸦AI早报",
+    "identifier": "https://news.example/items/1",
+    "title": "示例资讯 1",
+    "url": "https://news.example/items/1",
+    "summary": "示例展馆公布了第 1 项开放安排。",
+    "published_at": "2026-01-04T08:00:00+00:00"
+  }
+}

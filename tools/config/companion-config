@@ -1,0 +1,11 @@
+#!/bin/bash -p
+# Install as /usr/local/bin/companion-config, owned by root.
+set -euo pipefail
+umask 077
+if (( $# != 0 )); then
+    printf 'companion-config: invalid_invocation\n' >&2
+    exit 64
+fi
+exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    SSH_ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND-}" \
+    /usr/bin/python3 -I -S -X utf8 /usr/local/lib/companion-config/config_host.py

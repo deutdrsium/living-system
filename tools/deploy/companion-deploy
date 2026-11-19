@@ -1,0 +1,27 @@
+#!/bin/bash -p
+# Installed by root at this exact path. Never source caller configuration.
+set -euo pipefail
+umask 077
+case "$OSTYPE" in
+    msys*|cygwin*) printf 'Run wrapper rehearsals under Linux or WSL.\n' >&2; exit 64 ;;
+esac
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+unset PYTHONPATH PYTHONHOME BASH_ENV ENV CDPATH
+self="$(/usr/bin/env -i /usr/bin/readlink -f -- "${BASH_SOURCE[0]}")"
+if [[ "$self" == /usr/local/bin/companion-deploy ]]; then
+    exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+        SSH_ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND-}" \
+        /usr/bin/python3 -I -S -X utf8 /usr/local/lib/companion-deploy/deploy_host.py
+else
+    # Rehearsal only: an installed forced-command wrapper never reads these.
+    : "${LSR_DEPLOY_TEST_ROOT:?run the installed wrapper or isolated rehearsal}"
+    : "${LSR_DEPLOY_TEST_PYTHON:?rehearsal interpreter required}"
+    root="$LSR_DEPLOY_TEST_ROOT"
+    [[ -d "$root" && -f "$root/.lsr-rehearsal" ]] || exit 64
+    helper="$(dirname -- "$self")/deploy_host.py"
+    python="$LSR_DEPLOY_TEST_PYTHON"
+    test_args=(--test-root "$root")
+fi
+# The helper validates and audits the original command under its own log lock.
+exec "$python" -X utf8 -I "$helper" "${test_args[@]}"

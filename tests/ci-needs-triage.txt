@@ -1,0 +1,1 @@
+# Exact pytest node ID<TAB>reason observed in CI; tests still run as non-strict xfail.

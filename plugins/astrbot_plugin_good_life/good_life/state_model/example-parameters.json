@@ -1,0 +1,40 @@
+{
+  "version": "example-uncalibrated-v1",
+  "units": "seconds",
+  "sleep": {
+    "lower": 0.0,
+    "upper": 1.0,
+    "tau_awake_s": 64800,
+    "tau_sleep_s": 14400,
+    "amplitude": 0.15,
+    "period_s": 86400,
+    "phase_at": "2026-11-16T08:00:00+00:00",
+    "sleepiness_c_weight": 1.0,
+    "debt_window_s": 604800,
+    "target_sleep_s": 201600
+  },
+  "hunger": {
+    "awake_per_s": 0.00002,
+    "sleep_per_s": 0.000005,
+    "load_per_s": 0.00001,
+    "meal_reduction": 0.6,
+    "drink_reduction": 0.05
+  },
+  "energy": {
+    "sleep_tau_s": 14400,
+    "rest_tau_s": 28800,
+    "recovery_ceiling": 1.0,
+    "awake_per_s": 0.000005,
+    "load_per_s": 0.000015
+  },
+  "mapping": {
+    "energy_scale": 100,
+    "pressure_scale": 100,
+    "hunger_text": {"有点饿": 0.65, "不饿": 0.15},
+    "sleep_text": {"有些困": 0.65, "睡得不错": 0.2}
+  },
+  "offline": {
+    "max_advance_s": 172800,
+    "unknown_policy": "estimated_awake"
+  }
+}

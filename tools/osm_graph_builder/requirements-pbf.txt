@@ -1,0 +1,2 @@
+# Optional, tool-only. XML, cache, editor and plugin import use the stdlib only.
+osmium>=4.3.2,<5

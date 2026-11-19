@@ -1,0 +1,240 @@
+/* 日程 / 作息与设置（U2）
+ *
+ * 与总览同一套外壳语言：.gl-card 卡片、胶囊按钮、编号时间线、细线分隔。
+ * state-page.css / state-config.css 来自陪伴小屋的状态工作台，色值按浅色主题调过
+ * （标签用 accent-ink、底色用 text-invert）；放进 walnut 外壳后对比度和层次都不对。
+ * 这里只在本页容器（#calendar / #state-settings）内覆盖它们，不改那两份共享样式的语义。
+ * 颜色、圆角、间距全部取自 state-tokens.css。 */
+
+/* === 通用小件 === */
+.gl-chip-button{
+  display:inline-flex;align-items:center;min-height:34px;padding:0 var(--sp-3);border:1px solid var(--t-line-firm);
+  border-radius:var(--r-pill);background:transparent;color:var(--t-text-soft);font-size:var(--fs-tiny);
+}
+.gl-chip-button:hover{border-color:var(--t-accent);color:var(--t-accent-ink)}
+.gl-chips{display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2);margin-top:var(--sp-2)}
+.gl-chip{
+  display:inline-flex;align-items:center;gap:4px;min-height:24px;padding:1px var(--sp-2);border:1px solid var(--t-line);
+  border-radius:var(--r-pill);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.5;white-space:nowrap;
+}
+.gl-chip .gl-icon{width:13px;height:13px}
+.gl-chip.is-ok{border-color:color-mix(in srgb,var(--t-ok) 40%,transparent);background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.gl-chip.is-muted{color:var(--t-text-faint)}
+.gl-empty-state{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4);border:1px dashed var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.gl-empty-state>.gl-icon{width:22px;height:22px;color:var(--t-accent-ink)}
+.gl-empty-state strong{display:block;color:var(--t-text-strong);font-size:var(--fs-tiny)}
+.gl-empty-state p{margin:2px 0 0;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.6}
+
+/* 本页里的编辑器按钮统一成外壳的胶囊按钮（state-*.css 各自写过一套方角按钮）。 */
+:is(#calendar,#state-settings) .memory-button{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;padding:var(--sp-1) var(--sp-4);
+  border:1px solid var(--t-line-firm);border-radius:var(--r-pill);background:var(--t-surface-raised);color:var(--t-text);
+  font-size:var(--fs-tiny);font-weight:500;line-height:1.4;white-space:nowrap;box-shadow:none;transform:none;
+}
+:is(#calendar,#state-settings) .memory-button .gl-icon{width:15px;height:15px}
+:is(#calendar,#state-settings) .memory-button:hover:not(:disabled){border-color:var(--t-accent);background:var(--t-surface-raised);color:var(--t-accent-ink)}
+:is(#calendar,#state-settings) .memory-button:is([type=submit],.is-primary){border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid);font-weight:600}
+:is(#calendar,#state-settings) .memory-button:is([type=submit],.is-primary):hover:not(:disabled){background:var(--t-accent-solid-hover);color:var(--t-on-solid)}
+:is(#calendar,#state-settings) .memory-button.is-danger{color:var(--t-risk-ink)}
+:is(#calendar,#state-settings) .memory-button.is-danger:hover:not(:disabled){border-color:var(--t-risk);color:var(--t-risk-ink);background:var(--t-risk-quiet)}
+:is(#calendar,#state-settings) .memory-button:disabled{opacity:.45}
+
+/* 表单：标签用柔和正文色、输入框用下沉底，和外壳的选择框一致。 */
+:is(#calendar,#state-settings) :is(.state-edit-panel,.state-calendar-section) :is(label,legend){color:var(--t-text-soft)}
+:is(#calendar,#state-settings) :is(.state-edit-panel,.state-calendar-section) legend{color:var(--t-text-strong);font-size:var(--fs-lead)}
+:is(#calendar,#state-settings) :is(.state-edit-panel,.state-calendar-section) :is(input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea){
+  min-height:38px;border:1px solid var(--field-border);border-radius:var(--field-radius);background:var(--t-surface-sunken);color:var(--t-text);
+}
+:is(#calendar,#state-settings) :is(.state-edit-panel,.state-calendar-section) :is(input,select,textarea):focus{border-color:var(--t-accent)}
+:is(#calendar,#state-settings) :is(.state-edit-help,.state-edit-note){color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7}
+:is(#calendar,#state-settings) .state-edit-title{color:var(--t-text-strong)}
+:is(#calendar,#state-settings) .memory-notice{border-radius:var(--r-sm)}
+:is(#calendar,#state-settings) .state-pending{border:1px solid color-mix(in srgb,var(--t-warn) 35%,transparent);border-left:3px solid var(--t-warn);border-radius:var(--r-sm);background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+:is(#calendar,#state-settings) .state-pending p{color:var(--t-text-soft)}
+
+/* === 日程页 ===
+   宽屏：左月历、右所选日期时间线；下方整行是日程记录与规划。1180px 以下合成一列。 */
+.gl-calendar{display:grid;grid-template-columns:minmax(0,1fr) var(--gl-side);grid-template-areas:"month day" "plans plans" "planning planning";gap:0 var(--sp-4);align-items:start}
+.gl-cal-card{grid-area:month}
+#calendar-day{grid-area:day}
+.gl-cal-plans{grid-area:plans}
+.gl-cal-planning{grid-area:planning}
+
+.gl-cal-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);margin:0 0 var(--sp-3)}
+.gl-cal-title{margin:0;font-family:var(--gl-heading-font);font-size:var(--fs-title);font-weight:600;letter-spacing:.06em;font-variant-numeric:tabular-nums}
+.gl-cal-nav{display:flex;align-items:center;gap:var(--sp-2)}
+.gl-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.gl-cal-weekday{padding:var(--sp-1) 0;text-align:center;font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-cal-day{
+  position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;min-width:0;min-height:72px;
+  padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text);
+  text-align:left;transition:border-color var(--dur-fast),background-color var(--dur-fast);
+}
+.gl-cal-day:hover{border-color:var(--t-line-firm);background:var(--t-surface-raised)}
+.gl-cal-day[data-outside]{background:transparent;color:var(--t-text-faint)}
+.gl-cal-num{font-size:var(--fs-tiny);font-weight:600;font-variant-numeric:tabular-nums;line-height:1.4}
+.gl-cal-day[data-today] .gl-cal-num{display:inline-grid;place-items:center;min-width:24px;height:24px;margin:-2px 0 0 -4px;padding:0 6px;border-radius:var(--r-pill);background:var(--t-accent-solid);color:var(--t-on-solid)}
+.gl-cal-day[aria-pressed="true"]{border-color:var(--t-accent);background:var(--t-accent-quiet);box-shadow:inset 0 0 0 1px var(--t-accent)}
+.gl-cal-marks{display:flex;align-items:center;gap:3px;min-height:10px}
+.gl-cal-marks i,.gl-cal-legend i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--t-accent)}
+.gl-cal-marks b{font-size:var(--fs-micro);font-weight:500;line-height:1;color:var(--t-text-soft)}
+:is(.gl-cal-marks,.gl-cal-legend) i[data-kind="user_report"]{background:var(--t-ok)}
+:is(.gl-cal-marks,.gl-cal-legend) i[data-kind="commitment"]{background:var(--t-warn)}
+.gl-cal-legend{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-4);margin:var(--sp-3) 0 0;font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-cal-legend span{display:inline-flex;align-items:center;gap:6px}
+.gl-cal-legend .gl-cal-sum{margin-left:auto;color:var(--t-accent-ink);font-weight:600}
+/* 所选日期卡片里「生活记录」小标题与活动图标。 */
+.gl-cal-subhead{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);margin:var(--sp-4) 0 var(--sp-2);padding-top:var(--sp-3);border-top:1px solid var(--t-line);
+  font-family:var(--gl-heading-font);font-size:var(--fs-body);font-weight:600;letter-spacing:.06em;color:var(--t-text-strong)}
+.gl-cal-subhead small{font-family:var(--gl-ui-font);font-size:var(--fs-micro);font-weight:500;letter-spacing:0;color:var(--t-text-faint)}
+.gl-agenda-glyph .gl-icon{width:15px;height:15px}
+.gl-cal-rel{margin-left:var(--sp-2);font-family:var(--gl-ui-font);font-size:var(--fs-micro);font-weight:500;color:var(--t-accent-ink);letter-spacing:0}
+
+/* 日程记录：时间块 + 标题与要点 + 胶囊操作。 */
+.gl-plans-section{margin:0;padding:0;border:0;background:none}
+.gl-plans-section>.gl-card-head{flex-wrap:wrap}
+.gl-plans-section>.gl-card-head h2{white-space:nowrap}
+.gl-plans-section .state-calendar-create{padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
+#calendar .gl-plans{margin:0;padding:0;list-style:none}
+#calendar .gl-plans>li.gl-plan{
+  display:grid;grid-template-columns:64px minmax(0,1fr);grid-template-areas:"when body" ". actions";gap:var(--sp-2) var(--sp-4);
+  align-items:start;padding:var(--sp-4) 0;border:0;border-bottom:1px solid var(--t-line);
+}
+#calendar .gl-plan[data-state="cancelled"]{opacity:.6}
+.gl-plan-when{grid-area:when;display:grid;justify-items:center;align-content:start;gap:2px;padding:var(--sp-2) 0;border-radius:var(--r-sm);background:var(--t-surface-sunken);border:1px solid var(--t-line)}
+.gl-plan-when strong{font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);font-variant-numeric:tabular-nums;line-height:1.3}
+.gl-plan-when small{font-size:var(--fs-micro);color:var(--t-text-faint);text-align:center;line-height:1.35;font-variant-numeric:tabular-nums}
+.gl-plan-when[data-missing] strong{color:var(--t-text-faint)}
+.gl-plan-body{grid-area:body;min-width:0}
+#calendar .gl-plan-kind{margin:0;font-size:var(--fs-micro);color:var(--t-text-faint);line-height:1.5}
+#calendar .gl-plan-title{display:block;margin-top:1px;font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);line-height:1.45;overflow-wrap:anywhere}
+#calendar .gl-plan-detail{margin:var(--sp-1) 0 0;font-size:var(--fs-tiny);line-height:1.7;color:var(--t-text-soft);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+#calendar .gl-plan .state-calendar-actions{grid-area:actions;justify-content:flex-start;margin:0;gap:var(--sp-2)}
+#calendar .state-calendar-pagination{border-top:0;padding-top:var(--sp-3)}
+#calendar .state-calendar-empty{margin-top:var(--sp-3)}
+/* 新建 / 修改表单：两列字段，窄屏一列。 */
+#calendar #state-calendar-form{margin:var(--sp-2) 0 0;padding:var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-md);background:var(--t-surface-soft)}
+#calendar #state-calendar-form fieldset{margin:0;padding:0;border:0;min-width:0}
+#calendar .state-calendar-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3) var(--sp-4);margin:var(--sp-2) 0 0}
+#calendar .state-calendar-fields label:has(textarea){grid-column:1/-1}
+#calendar .state-calendar-fields label{font-size:var(--fs-tiny)}
+#calendar #state-calendar-form>.state-edit-actions{margin:var(--sp-4) 0 0}
+/* 「编辑文案」表单与规划设置：沿用 state-editor 的面板，收进同一种卡片。 */
+.gl-cal-planning.state-config-page{padding:var(--gl-card-pad);margin:0 0 var(--sp-4)}
+.gl-cal-planning .state-edit-panel{margin:0 0 var(--sp-4);padding:0;border:0;background:none;box-shadow:none}
+.gl-cal-planning .state-edit-panel:last-child{margin-bottom:0}
+.gl-cal-planning .state-edit-panel+.state-edit-panel{padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
+.gl-cal-planning .state-planning-panel-heading h3{font-family:var(--gl-heading-font);font-size:var(--fs-lead);font-weight:600;letter-spacing:.06em;color:var(--t-text-strong)}
+.gl-cal-planning .state-planning-panel>.memory-button{margin-top:var(--sp-3)}
+
+/* === 作息与设置：角色状态卡 === */
+#state-settings .state-edit-panel{margin:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft);box-shadow:none}
+#state-settings .state-maintenance-heading{align-items:center;padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
+#state-settings .state-maintenance-heading h3{font-family:var(--gl-heading-font);font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);letter-spacing:.04em}
+#state-settings .state-scope-legend span{border:1px solid var(--t-line);border-radius:var(--r-pill);background:transparent;color:var(--t-text-faint)}
+/* 五项配置行：编号 · 说明 · 操作。说明列用 flex-basis 保底，放不下时操作按钮
+   换到下一行，而不是把说明挤成一条窄列（原 grid 的 auto 列会被长按钮撑宽）。 */
+#state-settings .state-setting-list{margin:0}
+#state-settings .state-setting-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-3);padding:var(--sp-3) 0;border-top:0;border-bottom:1px solid var(--t-line);transform:none}
+#state-settings .state-setting-row:last-child{border-bottom:0}
+#state-settings .state-setting-row:hover{background:transparent;transform:none}
+#state-settings .state-setting-index{flex:none;width:30px;height:30px;border:1px solid var(--t-line-firm);border-radius:50%;background:transparent;color:var(--t-accent-ink);font-family:var(--gl-heading-font);font-size:var(--fs-micro)}
+#state-settings .state-setting-copy{flex:1 1 16em;min-width:0}
+#state-settings .state-setting-copy h4{margin:2px 0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600}
+#state-settings .state-setting-copy p{color:var(--t-text-soft)}
+#state-settings .state-setting-meta>span+span{border-left-color:var(--t-line-firm);color:var(--t-accent-ink)}
+#state-settings .state-setting-action{
+  flex:none;min-width:0;min-height:34px;margin-left:auto;padding:var(--sp-1) var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-pill);
+  background:var(--t-surface-raised);color:var(--t-text);font-size:var(--fs-tiny);font-weight:500;transform:none;
+}
+#state-settings .state-setting-action:hover:not(:disabled){border-color:var(--t-accent);background:var(--t-surface-raised);color:var(--t-accent-ink);transform:none}
+#state-settings .state-feature-editor{border:1px solid var(--t-line);background:var(--t-surface-soft)}
+#state-settings .state-feature-scope{margin:0 0 var(--sp-3);color:var(--t-text);font-size:var(--fs-body)}
+#state-settings .state-config-calibration{flex-wrap:wrap;margin-top:var(--sp-4);border-radius:var(--r-md);background:var(--t-surface)}
+#state-settings .state-config-calibration>div{flex:1 1 16em;min-width:0}
+#state-settings .state-config-group{border-radius:var(--r-md);background:var(--t-surface)}
+#state-settings .state-config-index{border-radius:50%;background:transparent;border:1px solid var(--t-line-firm);color:var(--t-accent-ink)}
+#state-settings .state-config-group h4{font-size:var(--fs-lead)}
+#state-settings .state-config-actions{background:linear-gradient(to top,var(--t-surface-soft) 70%,transparent)}
+#state-settings .state-config-actions .memory-button{min-height:38px;border-radius:var(--r-pill)}
+
+/* === 钱包页（只读）===
+   宽屏：上方整行汇总三格；下方左收支记录、右预留中的额度。1180px 以下合成一列，预留排在记录之前。 */
+.gl-wallet{display:grid;grid-template-columns:minmax(0,1fr) var(--gl-side);grid-template-areas:"summary summary" "ledger reserves";gap:0 var(--sp-4);align-items:start}
+.gl-wallet-summary{grid-area:summary}
+.gl-wallet-ledger{grid-area:ledger}
+.gl-wallet-reserves{grid-area:reserves}
+.gl-wallet-only{grid-column:1/-1}
+.gl-wallet-retry{margin-top:var(--sp-2)}
+/* 汇总：与状态网格同一种小格，可用一格用强调色。 */
+.gl-wallet-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2);margin:0}
+.gl-wallet-stat{min-width:0;padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.gl-wallet-stat dt{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-wallet-stat dd{margin:2px 0 0}
+.gl-wallet-stat strong{display:block;font-size:var(--fs-head);font-weight:600;line-height:1.3;color:var(--t-text-strong);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.gl-wallet-stat small{display:block;margin-top:2px;font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-wallet-stat[data-kind="available"]{border-color:var(--t-line-firm);border-left:3px solid var(--t-accent);background:var(--t-accent-quiet)}
+.gl-wallet-stat[data-kind="available"] strong{color:var(--t-accent-ink)}
+/* 预留：标题 + 状态胶囊、已用 / 额度、细进度条、复核时间。 */
+.gl-wallet-reserve-list{margin:0;padding:0;list-style:none}
+.gl-wallet-reserve{display:grid;gap:var(--sp-1);padding:var(--sp-3) 0;border-bottom:1px solid var(--t-line)}
+.gl-wallet-reserve:first-child{padding-top:0}
+.gl-wallet-reserve:last-child{border-bottom:0;padding-bottom:0}
+.gl-wallet-reserve-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);min-width:0}
+.gl-wallet-reserve-head strong{min-width:0;font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
+.gl-wallet-reserve-amount{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--sp-1) var(--sp-3);margin:0;font-size:var(--fs-tiny);color:var(--t-text-soft);font-variant-numeric:tabular-nums}
+.gl-wallet-reserve-amount b{font-weight:600;color:var(--t-text)}
+.gl-wallet-meter{display:block;height:6px;border-radius:var(--r-pill);background:var(--t-surface-sunken);overflow:hidden}
+.gl-wallet-meter i{display:block;height:100%;border-radius:inherit;background:var(--t-accent)}
+.gl-wallet-reserve small{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-wallet-reserve small .gl-icon{width:13px;height:13px}
+.gl-wallet-reserve[data-tone="done"]{opacity:.7}
+/* 收支记录：方向圆标 · 活动与时间 · 带符号金额。流入用苔绿，流出用正文色，不认识的类型不着色。 */
+.gl-ledger{margin:0;padding:0;list-style:none}
+.gl-ledger-item{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:var(--sp-3);align-items:center;padding:var(--sp-3) 0;border-bottom:1px solid var(--t-line)}
+.gl-ledger-item:last-child{border-bottom:0}
+.gl-ledger-glyph{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:var(--t-surface-sunken);color:var(--t-text-soft)}
+.gl-ledger-glyph .gl-icon{width:17px;height:17px}
+.gl-ledger-item[data-flow="in"] .gl-ledger-glyph{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.gl-ledger-item[data-flow="neutral"] .gl-ledger-glyph{background:transparent;border:1px dashed var(--t-line-firm);color:var(--t-text-faint)}
+.gl-ledger-body{min-width:0}
+.gl-ledger-body strong{display:block;font-size:var(--fs-body);font-weight:600;line-height:1.45;color:var(--t-text);overflow-wrap:anywhere}
+.gl-ledger-body small{display:block;margin-top:2px;font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-ledger-amount{font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.gl-ledger-item[data-flow="in"] .gl-ledger-amount{color:var(--t-ok-ink)}
+.gl-ledger-item[data-flow="neutral"] .gl-ledger-amount{color:var(--t-text-soft);font-weight:500}
+.gl-ledger-more{display:flex;justify-content:center;margin:var(--sp-3) 0 0}
+.gl-ledger-more [aria-disabled="true"]{opacity:.5;cursor:progress}
+
+/* === 嵌入的工作区（阅读 / 浏览 / 作息）===
+   框内页面已改成与外壳同底色，这里去掉外框，让内容直接落在外壳上。 */
+#life-frame{border:0;border-radius:0;background:transparent}
+
+@media(max-width:1180px){
+  .gl-calendar{grid-template-columns:minmax(0,1fr);grid-template-areas:"month" "day" "plans" "planning"}
+  .gl-wallet{grid-template-columns:minmax(0,1fr);grid-template-areas:"summary" "reserves" "ledger"}
+}
+@media(max-width:720px){
+  .gl-cal-day{min-height:52px;padding:6px}
+  .gl-cal-marks i{width:6px;height:6px}
+  .gl-cal-marks b{display:none}
+  .gl-cal-legend .gl-cal-sum{margin-left:0}
+  #calendar .gl-plans>li.gl-plan{grid-template-columns:52px minmax(0,1fr);grid-template-areas:"when body" "actions actions";gap:var(--sp-2) var(--sp-3)}
+  #calendar .state-calendar-fields{grid-template-columns:minmax(0,1fr)}
+  :is(#calendar,#state-settings) .memory-button{min-height:40px}
+  #state-settings .state-edit-panel{padding:var(--sp-3)}
+  #state-settings .state-maintenance-heading{align-items:flex-start}
+  #state-settings .state-setting-action{margin-left:42px}
+  .gl-wallet-stats{grid-template-columns:minmax(0,1fr)}
+  .gl-wallet-stat{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3)}
+  .gl-wallet-stat dd{margin:0;text-align:right}
+  .gl-wallet-stat strong{font-size:var(--fs-title)}
+}
+@media(max-width:400px){
+  .gl-cal-grid{gap:2px}
+  .gl-cal-day{min-height:46px;padding:4px;border-radius:var(--r-xs)}
+  .gl-cal-day[data-today] .gl-cal-num{min-width:20px;height:20px;padding:0 4px}
+  .gl-ledger-item{grid-template-columns:30px minmax(0,1fr) auto;gap:var(--sp-2)}
+  .gl-ledger-glyph{width:30px;height:30px}
+}
+@media(prefers-reduced-motion:reduce){.gl-cal-day{transition:none}}

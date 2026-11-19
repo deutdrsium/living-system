@@ -1,0 +1,152 @@
+/* 课表页
+ *
+ * 宽屏：上方整行学期；中间左边一周课表格子，打开编辑时右边是编辑面板；下方整行课程列表。
+ * 1180px 以下合成一列，编辑面板排在学期之后、课表之前；720px 以下课表格子改成按天的列表。
+ * 颜色、圆角、间距全部取自 state-tokens.css，卡片与胶囊按钮沿用外壳。 */
+
+.gl-tt{display:grid;grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "week" "courses";gap:0 var(--sp-4);align-items:start}
+.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr) var(--gl-side);grid-template-areas:"message message" "term term" "week panel" "courses panel"}
+.gl-tt-message{grid-area:message}
+.gl-tt-term{grid-area:term}
+.gl-tt-week{grid-area:week}
+.gl-tt-panel{grid-area:panel;position:sticky;top:var(--sp-4)}
+.gl-tt-courses{grid-area:courses}
+.gl-tt-only{max-width:720px}
+.gl-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* 提示条：保存结果 / 校验提示。 */
+.gl-tt-message{margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny)}
+.gl-tt-message[data-tone="warn"]{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.gl-tt-cta{margin-top:var(--sp-2)}
+
+/* === 学期 === */
+.gl-tt-term .gl-card-head{flex-wrap:wrap;align-items:center}
+.gl-tt-term-tools{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+.gl-tt-term-pick select{min-height:34px;padding:0 var(--sp-3);border:1px solid var(--field-border);border-radius:var(--r-pill);background:var(--t-surface-sunken);color:var(--t-text);font-size:var(--fs-tiny)}
+.gl-tt-term-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--sp-1) var(--sp-3);margin:0;font-size:var(--fs-tiny);color:var(--t-text-soft)}
+.gl-tt-term-meta strong{color:var(--t-accent-ink);font-weight:600}
+.gl-tt-term-meta span+span::before{content:"·";margin-right:var(--sp-3);color:var(--t-text-faint)}
+.gl-tt-flag{display:flex;align-items:flex-start;gap:var(--sp-2);margin:var(--sp-3) 0 0;padding:var(--sp-2) var(--sp-3);border-left:3px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.6}
+.gl-tt-flag .gl-icon{flex:none;width:15px;height:15px;margin-top:3px;color:var(--t-text-faint)}
+
+/* === 一周课表 === */
+.gl-tt-weeknav{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin:0 0 var(--sp-3)}
+.gl-tt-weeklabel{display:grid;min-width:7.5em;text-align:center}
+.gl-tt-weeklabel strong{font-family:var(--gl-heading-font);font-size:var(--fs-title);font-weight:600;letter-spacing:.04em;color:var(--t-text-strong)}
+.gl-tt-weeklabel small{font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-weeknav .gl-icon-button:disabled{opacity:.35}
+
+.gl-tt-grid{--tt-hour:54px;--tt-head:46px;display:grid;grid-template-columns:42px minmax(0,1fr);gap:var(--sp-1)}
+.gl-tt-scale{position:relative;height:calc(var(--tt-hours) * var(--tt-hour));margin-top:var(--tt-head)}
+.gl-tt-scale span{position:absolute;top:var(--tt-top);right:4px;transform:translateY(-50%);font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-days{position:relative;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.gl-tt-lines{position:absolute;inset:var(--tt-head) 0 auto;height:calc(var(--tt-hours) * var(--tt-hour));pointer-events:none}
+.gl-tt-lines i{position:absolute;top:var(--tt-top);left:0;right:0;border-top:1px dashed var(--t-line)}
+.gl-tt-day{min-width:0}
+.gl-tt-dayhead{display:flex;flex-direction:column;align-items:center;justify-content:center;height:var(--tt-head);line-height:1.3}
+.gl-tt-dayhead strong{font-size:var(--fs-tiny);font-weight:600;color:var(--t-text)}
+.gl-tt-dayhead small{font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-day[data-today] .gl-tt-dayhead strong{color:var(--t-accent-ink)}
+.gl-tt-day[data-today] .gl-tt-daybody{box-shadow:inset 0 0 0 1px var(--t-accent)}
+.gl-tt-tag{color:var(--t-warn-ink)!important}
+.gl-tt-daybody{position:relative;height:calc(var(--tt-hours) * var(--tt-hour));border-radius:var(--r-sm);background:color-mix(in srgb,var(--t-surface-soft) 70%,transparent)}
+.gl-tt-none{display:none;margin:0;font-size:var(--fs-micro);color:var(--t-text-faint)}
+
+/* 课块：左边一道强调色，标题、时间、地点三行；放不下时裁掉后两行。 */
+.gl-tt-block{
+  position:absolute;top:var(--tt-top);left:2px;right:2px;height:var(--tt-h);min-height:28px;display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+  padding:4px 6px;overflow:hidden;border:1px solid color-mix(in srgb,var(--t-accent) 35%,transparent);border-left:3px solid var(--t-accent);
+  border-radius:var(--r-xs);background:var(--t-accent-quiet);color:var(--t-text);text-align:left;line-height:1.3;cursor:pointer;
+  transition:border-color var(--dur-fast),background-color var(--dur-fast);
+}
+.gl-tt-block:hover{background:var(--t-surface-raised);border-color:var(--t-accent)}
+.gl-tt-block strong{max-width:100%;font-size:var(--fs-micro);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
+.gl-tt-block small{max-width:100%;font-size:var(--fs-micro);color:var(--t-text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.gl-tt-block em{position:absolute;top:3px;right:4px;padding:0 4px;border-radius:var(--r-pill);font-size:10px;font-style:normal;line-height:1.6}
+.gl-tt-block[data-state="changed"]{border-left-color:var(--t-warn);background:var(--t-warn-quiet)}
+.gl-tt-block[data-state="changed"] em{background:var(--t-warn);color:var(--t-on-solid)}
+.gl-tt-block[data-state="cancelled"]{border-style:dashed;border-left-style:solid;border-left-color:var(--t-line-firm);background:transparent;opacity:.65}
+.gl-tt-block[data-state="cancelled"] strong{text-decoration:line-through;color:var(--t-text-soft)}
+.gl-tt-block[data-state="cancelled"] em{background:var(--t-surface-sunken);color:var(--t-text-soft)}
+
+/* === 课程列表 === */
+.gl-tt-courses .gl-card-head{align-items:center}
+.gl-tt-courses .gl-card-head .gl-tt-cta{margin:0 0 0 auto}
+.gl-tt-course-list,.gl-tt-slots{margin:0;padding:0;list-style:none}
+.gl-tt-course{padding:var(--sp-3) 0;border-bottom:1px solid var(--t-line)}
+.gl-tt-course:first-child{padding-top:0}
+.gl-tt-course:last-child{border-bottom:0;padding-bottom:0}
+.gl-tt-course-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+.gl-tt-course-head>div{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);min-width:0}
+.gl-tt-course-head strong{font-size:var(--fs-lead);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
+.gl-tt-course-head .gl-chips{margin:0}
+.gl-tt-row-tools{display:flex;flex-wrap:wrap;gap:var(--sp-1)}
+.gl-tt-row-tools .gl-chip-button,.gl-tt-confirm .gl-chip-button{min-height:30px}
+.gl-tt-slot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-1) var(--sp-3);margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.gl-tt-slot>div{display:grid;min-width:0}
+.gl-tt-slot strong{font-size:var(--fs-tiny);font-weight:600;color:var(--t-text);font-variant-numeric:tabular-nums}
+.gl-tt-slot small{font-size:var(--fs-micro);color:var(--t-text-faint);overflow-wrap:anywhere}
+.gl-chip-button.is-danger{color:var(--t-risk-ink)}
+.gl-chip-button.is-danger:hover{border-color:var(--t-risk);background:var(--t-risk-quiet);color:var(--t-risk-ink)}
+.gl-tt-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-risk-quiet);color:var(--t-risk-ink);font-size:var(--fs-micro);line-height:1.6}
+.gl-tt-confirm>span{flex:1 1 14em}
+
+/* === 编辑面板与表单 === */
+.gl-tt-panel{border-color:var(--t-line-firm)}
+.gl-tt-form{margin:0}
+.gl-tt-form .gl-card-head{flex-wrap:wrap}
+.gl-tt-subhead{margin:var(--sp-4) 0 0;padding-top:var(--sp-3);border-top:1px solid var(--t-line);font-family:var(--gl-heading-font);font-size:var(--fs-body);font-weight:600;letter-spacing:.04em;color:var(--t-text-strong)}
+.gl-tt-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);margin:var(--sp-3) 0 0}
+.gl-tt-field{display:grid;gap:4px;min-width:0;font-size:var(--fs-tiny);color:var(--t-text-soft)}
+.gl-tt-field.is-wide{grid-column:1/-1}
+.gl-tt-field small{font-size:var(--fs-micro);line-height:1.5;color:var(--t-text-faint)}
+.gl-tt-field :is(input,select,textarea){
+  width:100%;min-width:0;min-height:38px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--field-border);border-radius:var(--field-radius);
+  background:var(--t-surface-sunken);color:var(--t-text);font:inherit;font-size:var(--fs-body);
+}
+.gl-tt-field textarea{min-height:60px;resize:vertical;line-height:1.6}
+.gl-tt-field :is(input,select,textarea):focus{outline:2px solid var(--t-focus);outline-offset:1px;border-color:var(--t-accent)}
+.gl-tt-place input[type=search]{min-height:34px;font-size:var(--fs-tiny)}
+.gl-tt-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2);margin:0}
+.gl-tt-facts div{min-width:0;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.gl-tt-facts dt{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.gl-tt-facts dd{margin:2px 0 0;font-size:var(--fs-tiny);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+/* 改动后果：一行图标 + 说明，放在保存按钮正上方。 */
+.gl-tt-consequence{display:flex;align-items:flex-start;gap:var(--sp-2);margin:var(--sp-4) 0 0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-accent-quiet);color:var(--t-text);font-size:var(--fs-tiny);line-height:1.6}
+.gl-tt-consequence .gl-icon{flex:none;width:15px;height:15px;margin-top:3px;color:var(--t-accent-ink)}
+.gl-tt-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin:var(--sp-3) 0 0}
+.gl-tt-actions .gl-tt-confirm{flex-basis:100%;margin:0}
+.gl-tt-primary{
+  display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 var(--sp-4);border:1px solid var(--t-accent-solid);
+  border-radius:var(--r-pill);background:var(--t-accent-solid);color:var(--t-on-solid);font-size:var(--fs-tiny);font-weight:600;
+}
+.gl-tt-primary:hover:not(:disabled){background:var(--t-accent-solid-hover)}
+.gl-tt-primary:disabled{opacity:.55;cursor:progress}
+
+@media(max-width:1180px){
+  .gl-tt,.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "panel" "week" "courses"}
+  .gl-tt-panel{position:static}
+}
+@media(max-width:720px){
+  /* 按天的列表：左边星期与日期，右边当天的课按时间排；空白的天收成一行。 */
+  .gl-tt-grid{display:block}
+  .gl-tt-scale,.gl-tt-lines{display:none}
+  .gl-tt-days{display:block}
+  .gl-tt-day{display:grid;grid-template-columns:52px minmax(0,1fr);gap:var(--sp-3);padding:var(--sp-2) 0;border-bottom:1px solid var(--t-line)}
+  .gl-tt-day:last-child{border-bottom:0}
+  .gl-tt-dayhead{height:auto;align-items:flex-start;justify-content:flex-start;padding-top:6px}
+  .gl-tt-daybody{height:auto;display:grid;gap:var(--sp-2);background:none}
+  .gl-tt-day[data-today] .gl-tt-daybody{box-shadow:none}
+  .gl-tt-day[data-today]{background:linear-gradient(90deg,var(--t-accent-quiet),transparent 60%)}
+  .gl-tt-none{display:block;padding-top:6px}
+  .gl-tt-block{position:relative;top:auto;left:auto;right:auto;height:auto;min-height:44px;padding:var(--sp-2) var(--sp-3)}
+  .gl-tt-block strong{font-size:var(--fs-tiny)}
+  .gl-tt-block em{top:6px;right:6px}
+  .gl-tt-fields{grid-template-columns:minmax(0,1fr)}
+  .gl-tt-facts{grid-template-columns:minmax(0,1fr)}
+  .gl-tt-facts div{display:flex;justify-content:space-between;gap:var(--sp-3)}
+  .gl-tt-facts dd{margin:0}
+  .gl-tt-row-tools .gl-chip-button,.gl-tt-confirm .gl-chip-button{min-height:38px}
+  .gl-tt-primary{min-height:42px}
+}
+@media(prefers-reduced-motion:reduce){.gl-tt-block{transition:none}}

@@ -1,0 +1,76 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss version="2.0">
+  <channel>
+    <title>Example News</title>
+    <item>
+      <guid>https://news.example/items/1</guid>
+      <title>示例资讯 1</title>
+      <link>https://news.example/items/1</link>
+      <description>示例展馆公布了第 1 项开放安排。</description>
+      <pubDate>Sun, 04 Jan 2026 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/2</guid>
+      <title>示例资讯 2</title>
+      <link>https://news.example/items/2</link>
+      <description>示例展馆公布了第 2 项开放安排。</description>
+      <pubDate>Sat, 03 Jan 2026 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/3</guid>
+      <title>示例资讯 3</title>
+      <link>https://news.example/items/3</link>
+      <description>示例展馆公布了第 3 项开放安排。</description>
+      <pubDate>Fri, 02 Jan 2026 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/4</guid>
+      <title>示例资讯 4</title>
+      <link>https://news.example/items/4</link>
+      <description>示例展馆公布了第 4 项开放安排。</description>
+      <pubDate>Thu, 01 Jan 2026 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/5</guid>
+      <title>示例资讯 5</title>
+      <link>https://news.example/items/5</link>
+      <description>示例展馆公布了第 5 项开放安排。</description>
+      <pubDate>Wed, 31 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/6</guid>
+      <title>示例资讯 6</title>
+      <link>https://news.example/items/6</link>
+      <description>示例展馆公布了第 6 项开放安排。</description>
+      <pubDate>Tue, 30 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/7</guid>
+      <title>示例资讯 7</title>
+      <link>https://news.example/items/7</link>
+      <description>示例展馆公布了第 7 项开放安排。</description>
+      <pubDate>Mon, 29 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/8</guid>
+      <title>示例资讯 8</title>
+      <link>https://news.example/items/8</link>
+      <description>示例展馆公布了第 8 项开放安排。</description>
+      <pubDate>Sun, 28 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/9</guid>
+      <title>示例资讯 9</title>
+      <link>https://news.example/items/9</link>
+      <description>示例展馆公布了第 9 项开放安排。</description>
+      <pubDate>Sat, 27 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <guid>https://news.example/items/10</guid>
+      <title>示例资讯 10</title>
+      <link>https://news.example/items/10</link>
+      <description>示例展馆公布了第 10 项开放安排。</description>
+      <pubDate>Fri, 26 Dec 2025 08:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

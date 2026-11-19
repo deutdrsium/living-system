@@ -1,0 +1,5 @@
+# Install with mode 0440 under /etc/sudoers.d/companion-config after visudo validation.
+Defaults:companion-config env_reset
+# Assignment replaces the inherited list. Some sudo versions reject an empty list.
+Defaults:companion-config env_keep = "SSH_ORIGINAL_COMMAND"
+companion-config ALL=(root) NOPASSWD: NOSETENV: /usr/local/bin/companion-config ""

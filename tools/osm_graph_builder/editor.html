@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data: https://tile.openstreetmap.org; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>本地图编辑器</title>
+<style>
+:root{color-scheme:light;--bg:#f4f6f7;--panel:#fff;--ink:#20282c;--muted:#58656d;--rule:#c5cdd1;--base:#b5bec4;--building:#e1e6e9;--accent:#1c64c8;--focus:#111;--ring:#fff;--land:#f2efe9}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151c20;--panel:#202a30;--ink:#ecf0f2;--muted:#b1bec6;--rule:#56656e;--base:#65757e;--building:#303e46;--accent:#2a6fd6;--focus:#fff;--ring:#fff;--land:#e9e5dc}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}header{padding:20px 24px 12px}h1{margin:0;font-size:24px}p{margin:5px 0;color:var(--muted)}
+button,input,select,textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:7px 9px}button{cursor:pointer}button:hover{border-color:var(--ink)}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}button:disabled,input:disabled{opacity:.45;cursor:default}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 24px}label{display:block}label input,label textarea,label select{display:block;width:100%;margin:3px 0 10px}
+label.inline{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}label.inline input{display:inline-block;width:auto;margin:0}input[type=range]{padding:0;width:110px}
+#file{max-width:300px}.toolbar .note{font-size:13px;margin:0;flex-basis:100%}
+main{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px;margin:0 24px 16px}.map-panel,aside,details{background:var(--panel);border:1px solid var(--rule);border-radius:8px;overflow:hidden}.map-panel{position:relative;min-height:420px}
+svg{width:100%;height:65vh;min-height:420px;display:block;touch-action:none;background:var(--panel);user-select:none}
+.edge{stroke:var(--accent);stroke-width:2.5;fill:none;vector-effect:non-scaling-stroke}.edge-casing{stroke:#fff;stroke-width:5.5;fill:none;vector-effect:non-scaling-stroke;opacity:.9}.disabled{stroke:#5b6670;stroke-dasharray:6 5}
+.node{fill:var(--accent);stroke:var(--ring);stroke-width:2;vector-effect:non-scaling-stroke}
+.gateway{fill:#fff;stroke:#d9480f;stroke-width:3;vector-effect:non-scaling-stroke}
+.node.selected{fill:#ffd43b;stroke:#111;stroke-width:3}.edge.selected{stroke:#111;stroke-width:4}.edge-casing.selected{stroke:#ffd43b;stroke-width:9;opacity:1}
+.hit:focus{outline:none}.hit:focus-visible{stroke:var(--accent);stroke-width:3;vector-effect:non-scaling-stroke}
+.node-label{fill:#111;font-family:system-ui;font-weight:600;paint-order:stroke;stroke:#fff;stroke-linejoin:round}
+.box{fill:rgba(28,100,200,.12);stroke:#1c64c8;stroke-dasharray:6 4;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.map-label{font-family:system-ui;paint-order:stroke;stroke:#fff;stroke-linejoin:round;text-anchor:middle;dominant-baseline:central;pointer-events:none}
+.legend{padding:9px 14px;border-top:1px solid var(--rule);font-size:13px;color:var(--muted)}
+.overlay{position:absolute;pointer-events:none;font-size:12px;border-radius:4px;padding:3px 7px;background:rgba(255,255,255,.88);color:#20282c}
+#onlineBadge{top:8px;left:8px;background:#fff3bf;border:1px solid #c29a00;font-weight:600}#tileAttribution{right:6px;bottom:52px}#selCount{top:8px;right:8px;border:1px solid #8a959c}
+aside{padding:16px;max-height:80vh;overflow:auto}h2{font-size:18px;margin:0 0 12px}h3{font-size:15px;margin:14px 0 6px}#identity{font-size:12px;overflow-wrap:anywhere;color:var(--muted)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}#status{min-height:26px;margin:12px 24px;color:var(--ink);white-space:pre-wrap}
+#batch{border:1px solid var(--rule);border-radius:6px;padding:10px 12px;margin:10px 0}#batchCount{color:var(--ink);font-weight:600}
+fieldset{border:1px solid var(--rule);border-radius:6px;margin:8px 0;padding:6px 10px}legend{padding:0 4px}#gatewayModes[hidden],#gatewayFields[hidden]{display:none}#gatewayModes{display:flex;flex-wrap:wrap;gap:6px 14px;margin:4px 0}#gatewayState{font-size:13px;color:var(--ink)}#gatewayList{margin:0;padding-left:18px;font-size:13px}#gatewayList button{padding:1px 6px;margin-right:4px}#mergePreview{font-size:13px;color:var(--ink)}
+details{margin:12px 24px;padding:12px 16px}summary{cursor:pointer;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.scroll{overflow:auto;max-height:360px}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--rule);text-align:left;padding:7px;overflow-wrap:anywhere}td button{padding:3px 6px;white-space:nowrap}td input{margin:0}tr.on td{background:rgba(255,212,59,.28)}
+#filter{width:min(100%,380px);margin:12px 8px 12px 0}.help{font-size:13px}footer{margin:18px 24px;color:var(--muted);font-size:13px}
+@media(max-width:850px){header{padding:16px}.toolbar,#status,details,footer{margin-left:16px;margin-right:16px}main{margin:0 16px;grid-template-columns:1fr}aside{max-height:none}svg{height:52vh;min-height:340px}#file{max-width:100%}}
+@media(forced-colors:active){.edge,.node,.gateway{stroke:CanvasText}.node{fill:Highlight}.selected{stroke:Highlight}.node.selected{fill:Mark}}
+</style>
+</head>
+<body>
+<header><h1>本地图编辑器</h1><p>从本地图包载入矢量底图，微调后导出新版本。数据仅在当前页面内处理。</p></header>
+<div class="toolbar" aria-label="图编辑工具">
+<input id="file" type="file" accept=".json,application/json" aria-label="打开图配置包">
+<select id="mode" aria-label="操作模式"><option value="select">选择 / 拖动节点</option><option value="box">框选（拖出矩形）</option><option value="pan">平移地图</option><option value="add">点击新增节点</option><option value="edge">连接两个节点</option><option value="merge">合并所选节点到另一节点</option></select>
+<label class="inline"><input id="boxEdges" type="checkbox" checked>框选包含道路</label>
+<button id="zoomIn" aria-label="放大地图">放大</button><button id="zoomOut" aria-label="缩小地图">缩小</button><button id="reset">适应范围</button>
+<button id="undo" disabled>撤销上次修改</button><button id="export" disabled>导出新版本</button>
+</div>
+<div class="toolbar" aria-label="底图设置">
+<label class="inline"><input id="basemap" type="checkbox" checked autocomplete="off">显示彩色底图</label>
+<label class="inline">底图不透明度<input id="opacity" type="range" min="10" max="100" step="5" value="85" autocomplete="off"></label>
+<label class="inline"><input id="online" type="checkbox" autocomplete="off" aria-describedby="onlineHelp">在线 OSM 底图</label>
+<p class="note" id="onlineHelp">默认关闭，每次打开页面都会恢复关闭。开启前会说明会发送哪些信息。</p>
+</div>
+<p id="status" role="status" aria-live="polite">打开生成器输出的 JSON 图包。也可直接从文件打开此页面。</p>
+<main><section class="map-panel" aria-label="本地矢量地图"><svg id="map" viewBox="0 0 1000 650" role="application" aria-label="道路、地点及建筑的本地地图。Tab 键可逐个聚焦地点和道路，回车选择，空格加入或移出多选，Esc 清除选择"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1c64c8"/></marker></defs><g id="tileLayer"></g><g id="baseLayer"></g><g id="graphLayer"></g><g id="uiLayer"></g></svg>
+<div class="overlay" id="onlineBadge" hidden>在线底图已开启 · 当前视野正发送到 tile.openstreetmap.org</div>
+<div class="overlay" id="tileAttribution" hidden>© OpenStreetMap contributors</div>
+<div class="overlay" id="selCount" hidden aria-hidden="true"></div>
+<div class="legend">彩色底图：绿色 = 草地/公园/树林 · 浅蓝 = 水面/河流 · 棕灰 = 建筑 · 白/橙/黄 = 道路 · 小菱形 = 设施（仅显示，不参与路线）<br>可编辑：蓝色圆点 = 地点 · 橙框白底 = 出入口（城市出行的起终点） · 蓝线 = 可用路 · 灰虚线 = 关闭的路 · 黄底黑框 = 已选 · 箭头 = 单向<br>© OpenStreetMap contributors · ODbL-1.0 · WGS84 · 步行时间均为估算</div></section>
+<aside><h2 id="selectionTitle">地点与道路</h2><p id="identity">在地图或下方表格中选择一项。</p>
+<section id="batch" hidden aria-labelledby="batchCount"><p id="batchCount" role="status" aria-live="polite"></p>
+<div class="actions"><button type="button" id="batchDelete">删除已选</button><button type="button" id="batchMergeOpen">合并为一个地点…</button><button type="button" id="clearSel">清除选择</button></div>
+<form id="mergeForm" hidden><h3>合并已选地点</h3>
+<fieldset><legend>合并后的地点</legend>
+<label class="inline"><input type="radio" name="mergeMode" value="existing" checked>保留已选中的一个地点</label>
+<label>保留哪一个<select id="mergeTarget"></select></label>
+<label class="inline"><input type="radio" name="mergeMode" value="new">在选区中心新建地点</label>
+<label>新地点名称<input id="mergeName" placeholder="如 示例宿舍"></label>
+<label>新地点类型<input id="mergeType" list="typeList" placeholder="如 dormitory"></label><datalist id="typeList"></datalist>
+</fieldset>
+<p id="mergePreview" aria-live="polite"></p>
+<div class="actions"><button type="submit">确认合并</button><button type="button" id="mergeCancel">取消</button></div></form></section>
+<form id="properties" hidden>
+<label>名称<input id="name"></label><div id="nodeFields"><label>地点类型<input id="type"></label><label>区域<input id="region"></label><label>纬度<input id="lat" type="number" step="any" min="-90" max="90" required></label><label>经度<input id="lon" type="number" step="any" min="-180" max="180" required></label><label>活动能力（逗号分隔）<input id="capabilities"></label><label>楼层 / 房间（OSM level / ref）<input id="level" placeholder="如 2 / 201"></label></div>
+<div id="edgeFields"><label>预计秒数<input id="seconds" type="number" min="1" step="1"></label><label>方向<select id="direction"><option value="both">双向</option><option value="forward">起点 → 终点</option></select></label><label>通行状态<select id="enabled"><option value="true">启用</option><option value="false">关闭</option></select></label><label>负荷说明<input id="load"></label></div>
+<label>原门禁文字 / access<input id="access" placeholder="空白表示未知"></label><label>原开放文字 / 可用条件<input id="opening" placeholder="空白表示未知"></label>
+<fieldset><legend>结构化门禁与时间（保存时算一次修改）</legend>
+<p id="accessReview" role="status"></p>
+<label>通行资格<select id="accessRequirement"><option value="">沿用原文字</option><option value="public">public · 公众</option><option value="campus_member">campus_member · 校内成员</option><option value="student">student · 学生</option><option value="staff">staff · 教职工</option><option value="resident">resident_of · 本区域住户</option><option value="closed">closed · 关闭</option><option value="unknown">unknown · 未知</option><option value="unparsed">unparsed · 尚未解析</option></select></label>
+<label>住户区域 ID（选择住户时填写）<input id="residentArea" placeholder="如 dorm-east"></label>
+<label>私有区域 ID（可选，用于资格映射）<input id="accessArea" placeholder="留空使用地点区域或整张图的设置"></label>
+<label>开放时间状态<select id="openingStatus"><option value="">沿用原文字</option><option value="known">已确认时间窗口</option><option value="unknown">未知</option><option value="unparsed">尚未解析</option></select></label>
+<label>时区（IANA）<input id="openingTimezone" placeholder="如 Asia/Shanghai"></label>
+<label>每行一个窗口：星期 开始 结束<textarea id="openingWindows" rows="4" placeholder="0,1,2,3,4 08:00 18:00&#10;5,6 09:00 17:00"></textarea></label>
+<p class="help">星期一为 0，星期日为 6；全天写 0,1,2,3,4,5,6 00:00 24:00。跨夜可写 22:00 06:00；空窗口表示全天关闭。无法确认的文字保留“尚未解析”，不会自动猜规则。</p>
+</fieldset>
+<div class="actions"><button type="submit">保存修改</button><button type="button" id="remove">删除所选项</button><button type="button" id="split">拆分所选边</button></div></form>
+<fieldset id="gatewayFields" hidden><legend>出入口（城市出行从这里出发或回来）</legend><p id="gatewayState" aria-live="polite"></p><div id="gatewayModes" role="group" aria-label="此出入口连接的交通方式"><label class="inline"><input type="checkbox" data-mode="walk">步行</label><label class="inline"><input type="checkbox" data-mode="bus">公交</label><label class="inline"><input type="checkbox" data-mode="metro">地铁</label></div><div class="actions"><button type="button" id="gatewayAdd">设为出入口</button><button type="button" id="gatewayRemove">取消出入口</button></div></fieldset>
+<section aria-labelledby="gatewayHeading"><h3 id="gatewayHeading">出入口</h3><ul id="gatewayList"><li>尚未载入图包。</li></ul></section>
+<p class="help">框选：选“框选”后在地图上拖出矩形；按住 Shift 拖动是追加。Ctrl（Mac 用 Cmd）+ 点击可单独加入或移出一项，Esc 清除选择。拖动节点后请复核相邻边的预计秒数。被合并或删除地点的 ID 留在历史中，重新生成时不会回来。</p></aside></main>
+<details><summary>数据表（可键盘选择与多选）</summary><input id="filter" placeholder="筛选名称、ID 或类型" aria-label="筛选图数据"><button type="button" id="checkFiltered">勾选全部筛选结果</button><div class="scroll"><table><thead><tr><th>多选</th><th>类别</th><th>名称 / ID</th><th>坐标 / 起终点</th><th>预计时间 / 出入口</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div></details>
+<details><summary>生成报告与编辑历史</summary><pre id="report">尚未载入图包。</pre></details>
+<footer>© OpenStreetMap contributors · 派生图保留 ODbL 来源。地图表示地理结构，坐标与时间不代表实测精度或已经到访。</footer>
+<script id="graph-core">
+'use strict';
+const GraphEditor = (() => {
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const keys = {nodes:'place_id',edges:'edge_id',gateways:'gateway_id'};
+  // road/building/facility back graph items; the rest are display-only basemap layers.
+  const VECTOR_KINDS = ['road','building','facility','landcover','water','waterway','place'];
+  function canonical(value) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) throw Error('数值必须有限且在安全整数范围内');
+      const buffer = new ArrayBuffer(8); new DataView(buffer).setFloat64(0, value || 0, false);
+      return '#' + Array.from(new Uint8Array(buffer), b=>b.toString(16).padStart(2,'0')).join('');
+    }
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (typeof value === 'object') {
+      const compare = (a,b) => { const x=Array.from(a),y=Array.from(b); for(let i=0;i<Math.min(x.length,y.length);i++){const d=x[i].codePointAt(0)-y[i].codePointAt(0);if(d)return d;}return x.length-y.length; };
+      return '{' + Object.keys(value).sort(compare).map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',') + '}';
+    }
+    throw Error('图包必须仅包含 JSON 值');
+  }
+  async function digest(packageData) {
+    const content=Object.fromEntries(Object.entries(packageData).filter(([k])=>k!=='digest'));
+    if (!globalThis.crypto?.subtle) throw Error('当前浏览器不支持本地摘要，请用 --serve-editor 在 localhost 打开');
+    const result=await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(content)));
+    return Array.from(new Uint8Array(result), b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  const finite = (x,min,max) => typeof x==='number' && Number.isFinite(x) && x>=min && x<=max;
+  const REQUIREMENTS=['public','campus_member','student','staff','closed','unknown','unparsed'];
+  const ACCESS_TEXT={'yes':'public','permissive':'public','public':'public','designated':'public','no':'closed','仅校内有资格人员可用':'campus_member','仅学生可用':'student','仅教职工可用':'staff','禁止通行':'closed'};
+  function accessState(r){
+    if(['access_conditionals','access_directional','osm_access_conflicts'].some(key=>Object.hasOwn(r,key)))return 'unparsed';
+    const text=(r.access||'').trim();
+    return r.access_requirement??(text?(Object.hasOwn(ACCESS_TEXT,text)?ACCESS_TEXT[text]:text==='private'?'private':'unparsed'):'unknown');
+  }
+  function openingState(r,isNode){const text=(isNode?r.opening_rules:r.availability)?.trim();return r.opening_schedule?.status??(!text?'unknown':['24/7','always'].includes(text)?'known':'unparsed');}
+  // Generated from Python tzdata's `zones` resource (IANA 2026f), including links.
+  // Keep exact ZoneInfo keys: Intl folds case and can replace an alias with a different key.
+  const TIMEZONE_KEYS = new Map(`
+    Africa/Abidjan Africa/Accra Africa/Addis_Ababa Africa/Algiers Africa/Asmara Africa/Asmera Africa/Bamako
+    Africa/Bangui Africa/Banjul Africa/Bissau Africa/Blantyre Africa/Brazzaville Africa/Bujumbura
+    Africa/Cairo Africa/Casablanca Africa/Ceuta Africa/Conakry Africa/Dakar Africa/Dar_es_Salaam
+    Africa/Djibouti Africa/Douala Africa/El_Aaiun Africa/Freetown Africa/Gaborone Africa/Harare
+    Africa/Johannesburg Africa/Juba Africa/Kampala Africa/Khartoum Africa/Kigali Africa/Kinshasa
+    Africa/Lagos Africa/Libreville Africa/Lome Africa/Luanda Africa/Lubumbashi Africa/Lusaka Africa/Malabo
+    Africa/Maputo Africa/Maseru Africa/Mbabane Africa/Mogadishu Africa/Monrovia Africa/Nairobi
+    Africa/Ndjamena Africa/Niamey Africa/Nouakchott Africa/Ouagadougou Africa/Porto-Novo Africa/Sao_Tome
+    Africa/Timbuktu Africa/Tripoli Africa/Tunis Africa/Windhoek America/Adak America/Anchorage
+    America/Anguilla America/Antigua America/Araguaina America/Argentina/Buenos_Aires
+    America/Argentina/Catamarca America/Argentina/ComodRivadavia America/Argentina/Cordoba
+    America/Argentina/Jujuy America/Argentina/La_Rioja America/Argentina/Mendoza
+    America/Argentina/Rio_Gallegos America/Argentina/Salta America/Argentina/San_Juan
+    America/Argentina/San_Luis America/Argentina/Tucuman America/Argentina/Ushuaia America/Aruba
+    America/Asuncion America/Atikokan America/Atka America/Bahia America/Bahia_Banderas America/Barbados
+    America/Belem America/Belize America/Blanc-Sablon America/Boa_Vista America/Bogota America/Boise
+    America/Buenos_Aires America/Cambridge_Bay America/Campo_Grande America/Cancun America/Caracas
+    America/Catamarca America/Cayenne America/Cayman America/Chicago America/Chihuahua America/Ciudad_Juarez
+    America/Coral_Harbour America/Cordoba America/Costa_Rica America/Coyhaique America/Creston
+    America/Cuiaba America/Curacao America/Danmarkshavn America/Dawson America/Dawson_Creek America/Denver
+    America/Detroit America/Dominica America/Edmonton America/Eirunepe America/El_Salvador America/Ensenada
+    America/Fort_Nelson America/Fort_Wayne America/Fortaleza America/Glace_Bay America/Godthab
+    America/Goose_Bay America/Grand_Turk America/Grenada America/Guadeloupe America/Guatemala
+    America/Guayaquil America/Guyana America/Halifax America/Havana America/Hermosillo
+    America/Indiana/Indianapolis America/Indiana/Knox America/Indiana/Marengo America/Indiana/Petersburg
+    America/Indiana/Tell_City America/Indiana/Vevay America/Indiana/Vincennes America/Indiana/Winamac
+    America/Indianapolis America/Inuvik America/Iqaluit America/Jamaica America/Jujuy America/Juneau
+    America/Kentucky/Louisville America/Kentucky/Monticello America/Knox_IN America/Kralendijk
+    America/La_Paz America/Lima America/Los_Angeles America/Louisville America/Lower_Princes America/Maceio
+    America/Managua America/Manaus America/Marigot America/Martinique America/Matamoros America/Mazatlan
+    America/Mendoza America/Menominee America/Merida America/Metlakatla America/Mexico_City America/Miquelon
+    America/Moncton America/Monterrey America/Montevideo America/Montreal America/Montserrat America/Nassau
+    America/New_York America/Nipigon America/Nome America/Noronha America/North_Dakota/Beulah
+    America/North_Dakota/Center America/North_Dakota/New_Salem America/Nuuk America/Ojinaga America/Panama
+    America/Pangnirtung America/Paramaribo America/Phoenix America/Port-au-Prince America/Port_of_Spain
+    America/Porto_Acre America/Porto_Velho America/Puerto_Rico America/Punta_Arenas America/Rainy_River
+    America/Rankin_Inlet America/Recife America/Regina America/Resolute America/Rio_Branco America/Rosario
+    America/Santa_Isabel America/Santarem America/Santiago America/Santo_Domingo America/Sao_Paulo
+    America/Scoresbysund America/Shiprock America/Sitka America/St_Barthelemy America/St_Johns
+    America/St_Kitts America/St_Lucia America/St_Thomas America/St_Vincent America/Swift_Current
+    America/Tegucigalpa America/Thule America/Thunder_Bay America/Tijuana America/Toronto America/Tortola
+    America/Vancouver America/Virgin America/Whitehorse America/Winnipeg America/Yakutat America/Yellowknife
+    Antarctica/Casey Antarctica/Davis Antarctica/DumontDUrville Antarctica/Macquarie Antarctica/Mawson
+    Antarctica/McMurdo Antarctica/Palmer Antarctica/Rothera Antarctica/South_Pole Antarctica/Syowa
+    Antarctica/Troll Antarctica/Vostok Arctic/Longyearbyen Asia/Aden Asia/Almaty Asia/Amman Asia/Anadyr
+    Asia/Aqtau Asia/Aqtobe Asia/Ashgabat Asia/Ashkhabad Asia/Atyrau Asia/Baghdad Asia/Bahrain Asia/Baku
+    Asia/Bangkok Asia/Barnaul Asia/Beirut Asia/Bishkek Asia/Brunei Asia/Calcutta Asia/Chita Asia/Choibalsan
+    Asia/Chongqing Asia/Chungking Asia/Colombo Asia/Dacca Asia/Damascus Asia/Dhaka Asia/Dili Asia/Dubai
+    Asia/Dushanbe Asia/Famagusta Asia/Gaza Asia/Harbin Asia/Hebron Asia/Ho_Chi_Minh Asia/Hong_Kong Asia/Hovd
+    Asia/Irkutsk Asia/Istanbul Asia/Jakarta Asia/Jayapura Asia/Jerusalem Asia/Kabul Asia/Kamchatka
+    Asia/Karachi Asia/Kashgar Asia/Kathmandu Asia/Katmandu Asia/Khandyga Asia/Kolkata Asia/Krasnoyarsk
+    Asia/Kuala_Lumpur Asia/Kuching Asia/Kuwait Asia/Macao Asia/Macau Asia/Magadan Asia/Makassar Asia/Manila
+    Asia/Muscat Asia/Nicosia Asia/Novokuznetsk Asia/Novosibirsk Asia/Omsk Asia/Oral Asia/Phnom_Penh
+    Asia/Pontianak Asia/Pyongyang Asia/Qatar Asia/Qostanay Asia/Qyzylorda Asia/Rangoon Asia/Riyadh
+    Asia/Saigon Asia/Sakhalin Asia/Samarkand Asia/Seoul Asia/Shanghai Asia/Singapore Asia/Srednekolymsk
+    Asia/Taipei Asia/Tashkent Asia/Tbilisi Asia/Tehran Asia/Tel_Aviv Asia/Thimbu Asia/Thimphu Asia/Tokyo
+    Asia/Tomsk Asia/Ujung_Pandang Asia/Ulaanbaatar Asia/Ulan_Bator Asia/Urumqi Asia/Ust-Nera Asia/Vientiane
+    Asia/Vladivostok Asia/Yakutsk Asia/Yangon Asia/Yekaterinburg Asia/Yerevan Atlantic/Azores
+    Atlantic/Bermuda Atlantic/Canary Atlantic/Cape_Verde Atlantic/Faeroe Atlantic/Faroe Atlantic/Jan_Mayen
+    Atlantic/Madeira Atlantic/Reykjavik Atlantic/South_Georgia Atlantic/St_Helena Atlantic/Stanley
+    Australia/ACT Australia/Adelaide Australia/Brisbane Australia/Broken_Hill Australia/Canberra
+    Australia/Currie Australia/Darwin Australia/Eucla Australia/Hobart Australia/LHI Australia/Lindeman
+    Australia/Lord_Howe Australia/Melbourne Australia/NSW Australia/North Australia/Perth
+    Australia/Queensland Australia/South Australia/Sydney Australia/Tasmania Australia/Victoria
+    Australia/West Australia/Yancowinna Brazil/Acre Brazil/DeNoronha Brazil/East Brazil/West CET CST6CDT
+    Canada/Atlantic Canada/Central Canada/Eastern Canada/Mountain Canada/Newfoundland Canada/Pacific
+    Canada/Saskatchewan Canada/Yukon Chile/Continental Chile/EasterIsland Cuba EET EST EST5EDT Egypt Eire
+    Etc/GMT Etc/GMT+0 Etc/GMT+1 Etc/GMT+10 Etc/GMT+11 Etc/GMT+12 Etc/GMT+2 Etc/GMT+3 Etc/GMT+4 Etc/GMT+5
+    Etc/GMT+6 Etc/GMT+7 Etc/GMT+8 Etc/GMT+9 Etc/GMT-0 Etc/GMT-1 Etc/GMT-10 Etc/GMT-11 Etc/GMT-12 Etc/GMT-13
+    Etc/GMT-14 Etc/GMT-2 Etc/GMT-3 Etc/GMT-4 Etc/GMT-5 Etc/GMT-6 Etc/GMT-7 Etc/GMT-8 Etc/GMT-9 Etc/GMT0
+    Etc/Greenwich Etc/UCT Etc/UTC Etc/Universal Etc/Zulu Europe/Amsterdam Europe/Andorra Europe/Astrakhan
+    Europe/Athens Europe/Belfast Europe/Belgrade Europe/Berlin Europe/Bratislava Europe/Brussels
+    Europe/Bucharest Europe/Budapest Europe/Busingen Europe/Chisinau Europe/Copenhagen Europe/Dublin
+    Europe/Gibraltar Europe/Guernsey Europe/Helsinki Europe/Isle_of_Man Europe/Istanbul Europe/Jersey
+    Europe/Kaliningrad Europe/Kiev Europe/Kirov Europe/Kyiv Europe/Lisbon Europe/Ljubljana Europe/London
+    Europe/Luxembourg Europe/Madrid Europe/Malta Europe/Mariehamn Europe/Minsk Europe/Monaco Europe/Moscow
+    Europe/Nicosia Europe/Oslo Europe/Paris Europe/Podgorica Europe/Prague Europe/Riga Europe/Rome
+    Europe/Samara Europe/San_Marino Europe/Sarajevo Europe/Saratov Europe/Simferopol Europe/Skopje
+    Europe/Sofia Europe/Stockholm Europe/Tallinn Europe/Tirane Europe/Tiraspol Europe/Ulyanovsk
+    Europe/Uzhgorod Europe/Vaduz Europe/Vatican Europe/Vienna Europe/Vilnius Europe/Volgograd Europe/Warsaw
+    Europe/Zagreb Europe/Zaporozhye Europe/Zurich Factory GB GB-Eire GMT GMT+0 GMT-0 GMT0 Greenwich HST
+    Hongkong Iceland Indian/Antananarivo Indian/Chagos Indian/Christmas Indian/Cocos Indian/Comoro
+    Indian/Kerguelen Indian/Mahe Indian/Maldives Indian/Mauritius Indian/Mayotte Indian/Reunion Iran Israel
+    Jamaica Japan Kwajalein Libya MET MST MST7MDT Mexico/BajaNorte Mexico/BajaSur Mexico/General NZ NZ-CHAT
+    Navajo PRC PST8PDT Pacific/Apia Pacific/Auckland Pacific/Bougainville Pacific/Chatham Pacific/Chuuk
+    Pacific/Easter Pacific/Efate Pacific/Enderbury Pacific/Fakaofo Pacific/Fiji Pacific/Funafuti
+    Pacific/Galapagos Pacific/Gambier Pacific/Guadalcanal Pacific/Guam Pacific/Honolulu Pacific/Johnston
+    Pacific/Kanton Pacific/Kiritimati Pacific/Kosrae Pacific/Kwajalein Pacific/Majuro Pacific/Marquesas
+    Pacific/Midway Pacific/Nauru Pacific/Niue Pacific/Norfolk Pacific/Noumea Pacific/Pago_Pago Pacific/Palau
+    Pacific/Pitcairn Pacific/Pohnpei Pacific/Ponape Pacific/Port_Moresby Pacific/Rarotonga Pacific/Saipan
+    Pacific/Samoa Pacific/Tahiti Pacific/Tarawa Pacific/Tongatapu Pacific/Truk Pacific/Wake Pacific/Wallis
+    Pacific/Yap Poland Portugal ROC ROK Singapore Turkey UCT US/Alaska US/Aleutian US/Arizona US/Central
+    US/East-Indiana US/Eastern US/Hawaii US/Indiana-Starke US/Michigan US/Mountain US/Pacific US/Samoa UTC
+    Universal W-SU WET Zulu
+  `.trim().split(/\s+/).map(key=>[key.toLowerCase(),key]));
+  function canonicalTimezone(value){
+    const key = typeof value==='string' && /^[A-Za-z0-9_+\/-]+$/.test(value)
+      ? TIMEZONE_KEYS.get(value.toLowerCase()) : undefined;
+    if(!key)throw Error('请输入有效 IANA 时区（例如 Asia/Shanghai 或 UTC）');
+    return key;
+  }
+  function checkAccess(r){
+    if(Object.hasOwn(r,'access_requirement')&&(typeof r.access_requirement!=='string'||(!REQUIREMENTS.includes(r.access_requirement)&&!/^resident_of:[^\s]+$/.test(r.access_requirement))))throw Error('结构化通行资格无效');
+    if(Object.hasOwn(r,'access_area')&&(typeof r.access_area!=='string'||!r.access_area.trim()))throw Error('私有区域 ID 无效');
+    if(Object.hasOwn(r,'access_conditionals')){
+      const tags=r.access_conditionals;
+      if(!tags||typeof tags!=='object'||Array.isArray(tags)||!Object.keys(tags).length||Object.entries(tags).some(([key,value])=>!/^[^:\s]+(?::[^:\s]+)*:conditional$/.test(key)||typeof value!=='string'))throw Error('条件门禁标签无效');
+    }
+    if(!Object.hasOwn(r,'opening_schedule'))return;
+    const s=r.opening_schedule;if(!s||!['known','unknown','unparsed'].includes(s.status))throw Error('开放时间状态无效');
+    if(s.status!=='known'){if(Object.keys(s).length!==1)throw Error('未知或未解析时间不能附带猜测的窗口');return;}
+    if(Object.keys(s).sort().join()!=='status,timezone,windows'||typeof s.timezone!=='string'||!s.timezone)throw Error('开放时间字段无效');
+    if(canonicalTimezone(s.timezone)!==s.timezone)throw Error('IANA 时区区分大小写（例如 Asia/Shanghai）');
+    if(!Array.isArray(s.windows)||s.windows.length>64)throw Error('开放窗口过多或无效');
+    for(const w of s.windows){
+      if(!w||Object.keys(w).sort().join()!=='end,start,weekdays'||!Array.isArray(w.weekdays)||!w.weekdays.length||new Set(w.weekdays).size!==w.weekdays.length||w.weekdays.some(d=>!Number.isInteger(d)||d<0||d>6))throw Error('星期必须为不重复的 0 到 6');
+      for(const key of ['start','end'])if(typeof w[key]!=='string'||(!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(w[key])&&!(key==='end'&&w[key]==='24:00')))throw Error('时间须为 HH:MM，24:00 只能用于结束');
+    }
+  }
+  function setAccess(r,requirement,area,schedule,version){
+    if(requirement)r.access_requirement=requirement;else delete r.access_requirement;
+    if(area)r.access_area=area;else delete r.access_area;
+    if(schedule){r.opening_schedule=clone(schedule);if(schedule.status==='known')r.opening_schedule.timezone=canonicalTimezone(schedule.timezone);}else delete r.opening_schedule;
+    checkAccess(r);r.source='manual';r.version=version;
+  }
+  function parseWindows(text){return text.split('\n').map(s=>s.trim()).filter(Boolean).map(line=>{const parts=line.split(/\s+/);if(parts.length!==3||!/^\d(?:,\d)*$/.test(parts[0]))throw Error('每行格式：0,1,2,3,4 08:00 18:00');return {weekdays:parts[0].split(',').map(Number),start:parts[1],end:parts[2]};});}
+  function check(p) {
+    if(p.schema!=='home-area.graph/v1'||p.source!=='osm'||p.coordinate_system!=='WGS84'||p.attribution!=='© OpenStreetMap contributors'||p.license!=='ODbL-1.0')throw Error('不支持的图包格式、坐标系或来源');
+    if(!p.graph_id || !Number.isInteger(p.version)||p.version<1)throw Error('图身份或版本无效');
+    if(!Array.isArray(p.bounds)||p.bounds.length!==4||!finite(p.bounds[0],-90,90)||!finite(p.bounds[2],-90,90)||!finite(p.bounds[1],-180,180)||!finite(p.bounds[3],-180,180)||p.bounds[0]>=p.bounds[2]||p.bounds[1]>=p.bounds[3])throw Error('范围无效');
+    const indices={};
+    for(const [collection,key] of Object.entries(keys)){
+      if(!Array.isArray(p[collection]))throw Error('缺少图集合');
+      const map=new Map(); for(const r of p[collection]){
+        if(!r||typeof r[key]!=='string'||!r[key]||map.has(r[key]))throw Error('图 ID 缺失或重复');
+        if(!['osm','manual'].includes(r.source)||!Array.isArray(r.osm_ids)||r.osm_ids.some(id=>typeof id!=='string'||!/^(node|way|relation)\/[1-9][0-9]*$/.test(id))||new Set(r.osm_ids).size!==r.osm_ids.length||(r.source==='osm'&&!r.osm_ids.length)||!Number.isInteger(r.version)||r.version<1)throw Error('来源标记无效');
+        map.set(r[key],r);
+      }indices[collection]=map;
+    }
+    if(!p.nodes.length)throw Error('至少保留一个地点');
+    const coordinate = r=>r.coordinate_system==='WGS84'&&finite(r.lat,-90,90)&&finite(r.lon,-180,180);
+    for(const n of p.nodes)if(!coordinate(n)||typeof n.name!=='string'||typeof n.type!=='string'||!n.type.trim()||!Array.isArray(n.capabilities))throw Error('地点坐标、类型或能力无效');
+    for(const e of p.edges)if(!indices.nodes.has(e.from)||!indices.nodes.has(e.to)||e.from===e.to||!Number.isInteger(e.estimated_duration_s)||e.estimated_duration_s<1||!finite(e.length_m,0,1e8)||!['both','forward'].includes(e.direction)||typeof e.enabled!=='boolean'||e.estimated!==true||!e.estimate?.model)throw Error('边引用、方向或时间无效');
+    for(const g of p.gateways)if(!indices.nodes.has(g.place_id)||!coordinate(g)||!Array.isArray(g.modes)||!g.modes.length||g.modes.some(m=>typeof m!=='string'||!m.trim()))throw Error('出入口无效');
+    if(!Array.isArray(p.vector_data)||!Array.isArray(p.edit_history)||!p.build_report)throw Error('缺少矢量数据、报告或历史');
+    for(const f of p.vector_data)if(!VECTOR_KINDS.includes(f.kind)||!Array.isArray(f.coordinates)||!f.coordinates.length||f.coordinates.some(x=>!Array.isArray(x)||x.length!==2||!finite(x[0],-180,180)||!finite(x[1],-90,90)))throw Error('底图坐标无效');
+    for(const r of [...p.nodes,...p.edges])checkAccess(r);
+    canonical(p);return p;
+  }
+  function distance(a,b){const rad=x=>x*Math.PI/180;const h=Math.sin(rad(b.lat-a.lat)/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(rad(b.lon-a.lon)/2)**2;return 6371008.8*2*Math.asin(Math.min(1,Math.sqrt(h)));}
+  function node(lat,lon,id,version){return {place_id:id,name:'新地点',type:'room',region:null,lat,lon,coordinate_system:'WGS84',opening_rules:null,capabilities:[],access:null,source:'manual',osm_ids:[],version,tags:{}};}
+  function edge(a,b,id,version){const length=distance(a,b);return {edge_id:id,from:a.place_id,to:b.place_id,name:'',direction:'both',length_m:Math.round(length*1000)/1000,estimated_duration_s:Math.max(1,Math.ceil(length/1.4)),estimated:true,estimate:{model:'manual-walking/v1',base_speed_m_s:1.4},load:null,access:null,availability:null,enabled:true,source:'manual',osm_ids:[],version};}
+  function report(p){
+    const adj=new Map(p.nodes.map(n=>[n.place_id,new Set()]));for(const e of p.edges)if(e.enabled){adj.get(e.from).add(e.to);adj.get(e.to).add(e.from);}
+    const unseen=new Set(adj.keys()),components=[];
+    for(const first of Array.from(adj.keys()).sort()){if(!unseen.has(first))continue;const pending=[first],group=[];unseen.delete(first);while(pending.length){const id=pending.pop();group.push(id);for(const next of adj.get(id))if(unseen.delete(next))pending.push(next);}components.push(group.sort());}
+    components.sort((a,b)=>b.length-a.length||(a[0]<b[0]?-1:a[0]>b[0]?1:0));
+    const unparsed_access=[...p.nodes,...p.edges].filter(r=>accessState(r)==='unparsed').map(r=>r.place_id||r.edge_id).sort(),unparsed_opening=[...p.nodes.filter(r=>openingState(r,true)==='unparsed'),...p.edges.filter(r=>openingState(r,false)==='unparsed')].map(r=>r.place_id||r.edge_id).sort();
+    return {...p.build_report,unparsed_access,unparsed_opening,counts:{nodes:p.nodes.length,edges:p.edges.length,gateways:p.gateways.length,components:components.length},components,isolated_components:components.slice(1),isolated_nodes:p.nodes.filter(n=>!adj.get(n.place_id).size).map(n=>n.place_id).sort(),unnamed_places:p.nodes.filter(n=>!n.name).map(n=>n.place_id).sort(),missing_access:[...p.nodes.filter(n=>n.access===null).map(n=>n.place_id),...p.edges.filter(e=>e.access===null).map(e=>e.edge_id)].sort(),missing_opening_information:p.nodes.filter(n=>n.opening_rules===null).map(n=>n.place_id).sort(),edges_needing_review:p.edges.filter(e=>e.estimate?.needs_review===true).map(e=>e.edge_id).sort()};
+  }
+  function changes(before,after){const result=[];for(const [collection,key] of Object.entries(keys)){const a=new Map(before[collection].map(r=>[r[key],r])),b=new Map(after[collection].map(r=>[r[key],r]));for(const id of new Set([...a.keys(),...b.keys()])){const left=a.get(id)||null,right=b.get(id)||null;if(canonical(left)!==canonical(right))result.push({collection,id,before:left,after:right});}}return result;}
+  // One edit = one history entry with every before/after, so one undo reverts it.
+  // mutate(next, extra) may set extra.note to record a summary next to the changes.
+  function transaction(p,version,action,mutate){const next=clone(p);next.version=version;const extra={};mutate(next,extra);check(next);const edits=changes(p,next);if(!edits.length)throw Error('没有变化');next.edit_history.push({version,action,at:new Date().toISOString(),changes:edits,...(extra.note?{note:extra.note}:{})});next.build_report=report(next);delete next.digest;return next;}
+  function move(p,id,lat,lon,version){const n=p.nodes.find(n=>n.place_id===id);if(n.lat===lat&&n.lon===lon)return;Object.assign(n,{lat,lon,version,source:'manual'});for(const e of p.edges)if(e.from===id||e.to===id){const a=p.nodes.find(n=>n.place_id===e.from),b=p.nodes.find(n=>n.place_id===e.to);e.length_m=Math.round(distance(a,b)*1000)/1000;e.source='manual';e.version=version;e.estimate={model:'manual-retained/v1',assumptions:['Moving endpoints retained the prior time; review locally']};}for(const g of p.gateways)if(g.place_id===id)Object.assign(g,{lat,lon,version,source:'manual'});}
+  function removeMany(p,nodeIds,edgeIds=[]){const n=new Set(nodeIds),e=new Set(edgeIds);p.nodes=p.nodes.filter(r=>!n.has(r.place_id));p.edges=p.edges.filter(r=>!e.has(r.edge_id)&&!n.has(r.from)&&!n.has(r.to));p.gateways=p.gateways.filter(g=>!n.has(g.place_id));}
+  function remove(p,collection,id){if(collection==='nodes')removeMany(p,[id]);else{const key=keys[collection];p[collection]=p[collection].filter(r=>r[key]!==id);}}
+  // What a batch delete would remove, including edges/gateways attached to deleted places.
+  function impact(p,nodeIds,edgeIds=[]){const n=new Set(nodeIds),e=new Set(edgeIds);return {nodes:p.nodes.filter(r=>n.has(r.place_id)).length,edges:p.edges.filter(r=>e.has(r.edge_id)||n.has(r.from)||n.has(r.to)).length,gateways:p.gateways.filter(g=>n.has(g.place_id)).length};}
+  function retain(e,byId,version){const a=byId.get(e.from),b=byId.get(e.to);e.length_m=Math.round(distance(a,b)*1000)/1000;e.source='manual';e.version=version;e.estimate={model:'manual-retained/v1',assumptions:['Merging endpoints retained the prior time; review locally']};}
+  const byCode=(a,b)=>a<b?-1:a>b?1:0;
+  // Merge places into one target. target is a selected place_id, or {place_id,name,type} for a new
+  // manual place at the centroid. Merged places are removed (tombstones in history) and keep their own
+  // OSM identities: an OSM id is never reassigned to another place_id. Only re-pointed edges (and the
+  // survivor of a collapsed parallel group) become manual; untouched edges keep their provenance.
+  function mergeMany(p,ids,target,version,extra){
+    const group=new Set(ids),byId=new Map(p.nodes.map(n=>[n.place_id,n]));
+    if(group.size<2)throw Error('至少选择两个地点');
+    for(const id of group)if(!byId.has(id))throw Error('所选地点不存在');
+    let targetId,created=false;
+    if(typeof target==='string'){if(!group.has(target))throw Error('目标必须是已选地点之一');targetId=target;}
+    else{
+      if(!target||typeof target.place_id!=='string'||!target.place_id||byId.has(target.place_id))throw Error('新地点 ID 无效');
+      const name=String(target.name??'').trim(),type=String(target.type??'').trim();
+      if(!name)throw Error('请填写新地点名称');if(!type)throw Error('请填写新地点类型');
+      const members=[...group].map(id=>byId.get(id));
+      const fresh=node(members.reduce((s,n)=>s+n.lat,0)/members.length,members.reduce((s,n)=>s+n.lon,0)/members.length,target.place_id,version);
+      Object.assign(fresh,{name,type,merged_from:[...group].sort(byCode)});
+      p.nodes.push(fresh);byId.set(fresh.place_id,fresh);targetId=fresh.place_id;created=true;
+    }
+    const merged=new Set([...group].filter(id=>id!==targetId)),to=byId.get(targetId);
+    const kept=[],rewired=new Set(),internal=[];
+    for(const e of p.edges){
+      const a=merged.has(e.from),b=merged.has(e.to);
+      if(!a&&!b){kept.push(e);continue;}
+      const from=a?targetId:e.from,end=b?targetId:e.to;
+      if(from===end){internal.push(e.edge_id);continue;} // inside the merged set, or a would-be self-loop
+      e.from=from;e.to=end;retain(e,byId,version);rewired.add(e.edge_id);kept.push(e);
+    }
+    const groups=new Map();
+    for(const e of kept){
+      if(e.from!==targetId&&e.to!==targetId)continue;
+      // Ignore identity, display name, distance and time-estimate metadata. Compare all other
+      // fields, including raw and structured access/openings and any walking-access extensions.
+      const {from,to,direction,edge_id,name,length_m,estimated_duration_s,estimated,estimate,source,osm_ids,version,...constraints}=e;
+      const endpoints=direction==='both'?[from,to].sort(byCode):[from,to];
+      const key=canonical([direction,endpoints,constraints]);
+      if(!groups.has(key))groups.set(key,[]);
+      groups.get(key).push(e);
+    }
+    const dropped=new Set(),collapsed=[];
+    for(const list of groups.values()){
+      if(list.length<2||!list.some(e=>rewired.has(e.edge_id)))continue;
+      list.sort((x,y)=>x.estimated_duration_s-y.estimated_duration_s||byCode(x.edge_id,y.edge_id));
+      const [keep,...rest]=list,removedIds=rest.map(e=>e.edge_id).sort(byCode);
+      for(const id of removedIds)dropped.add(id);
+      keep.source='manual';keep.version=version;
+      keep.estimate={model:'manual-merged/v1',needs_review:true,collapsed_edge_ids:removedIds,assumptions:['Parallel edges collapsed after merging places; kept the smallest estimated time; review locally']};
+      collapsed.push({kept:keep.edge_id,removed:removedIds,estimated_duration_s:keep.estimated_duration_s});
+    }
+    p.edges=kept.filter(e=>!dropped.has(e.edge_id));
+    for(const g of p.gateways)if(merged.has(g.place_id))Object.assign(g,{place_id:targetId,lat:to.lat,lon:to.lon,source:'manual',version});
+    p.nodes=p.nodes.filter(n=>!merged.has(n.place_id));
+    const note={target:targetId,created_target:created,merged_places:[...merged].sort(byCode),rewired_edges:[...rewired].filter(id=>!dropped.has(id)).sort(byCode),removed_internal_edges:internal.sort(byCode),collapsed_parallel_edges:collapsed.sort((a,b)=>byCode(a.kept,b.kept))};
+    if(extra)extra.note=note;
+    return note;
+  }
+  function merge(p,from,to,version,extra){if(from===to)throw Error('请选择另一个目标节点');if(!p.nodes.some(n=>n.place_id===to))throw Error('目标地点不存在');return mergeMany(p,[from,to],to,version,extra);}
+  function split(p,id,nodeId,edgeA,edgeB,version){const original=p.edges.find(e=>e.edge_id===id),a=p.nodes.find(n=>n.place_id===original.from),b=p.nodes.find(n=>n.place_id===original.to);const middle=node((a.lat+b.lat)/2,(a.lon+b.lon)/2,nodeId,version);p.nodes.push(middle);remove(p,'edges',id);const left={...clone(original),edge_id:edgeA,to:nodeId,length_m:original.length_m/2,estimated_duration_s:Math.max(1,Math.floor(original.estimated_duration_s/2)),source:'manual',version,estimate:{model:'manual-split/v1'}};const right={...clone(original),edge_id:edgeB,from:nodeId,length_m:original.length_m/2,estimated_duration_s:Math.max(1,original.estimated_duration_s-left.estimated_duration_s),source:'manual',version,estimate:{model:'manual-split/v1'}};p.edges.push(left,right);}
+  // Gateways (出入口): where city walk/bus/metro trips may leave or enter the graph. The editor treats
+  // all gateway records at one place as one 出入口; navigation uses the union of their modes.
+  const GATEWAY_MODES=['walk','bus','metro'],MODE_NAMES={walk:'步行',bus:'公交',metro:'地铁'};
+  const gatewaysAt=(p,placeId)=>p.gateways.filter(g=>g.place_id===placeId);
+  const modeText=modes=>modes.map(m=>Object.hasOwn(MODE_NAMES,m)?MODE_NAMES[m]:m).join('、');
+  // 设为出入口: a manual gateway at the place's own coordinates, walking only until modes are ticked.
+  function addGateway(p,placeId,id,version){
+    const n=p.nodes.find(n=>n.place_id===placeId);if(!n)throw Error('所选地点不存在');
+    if(gatewaysAt(p,placeId).length)throw Error('该地点已是出入口');if(p.gateways.some(g=>g.gateway_id===id))throw Error('出入口 ID 重复');
+    const g={gateway_id:id,place_id:placeId,lat:n.lat,lon:n.lon,coordinate_system:'WGS84',modes:['walk'],source:'manual',osm_ids:[],version};
+    p.gateways.push(g);return g;
+  }
+  // Tick or untick one mode of the place's 出入口, i.e. the union of its records' modes. One record is
+  // edited in place. Several records (e.g. after merging two gates into one place) are consolidated into
+  // one, keeping an OSM gate's gateway_id and osm_ids where there is one; the others become tombstones.
+  function setGatewayMode(p,placeId,mode,on,version){
+    if(!GATEWAY_MODES.includes(mode))throw Error('未知交通方式');
+    const list=gatewaysAt(p,placeId);if(!list.length)throw Error('该地点不是出入口');
+    const union=new Set(list.flatMap(g=>g.modes));
+    if(union.has(mode)===on)return;
+    if(on)union.add(mode);else union.delete(mode);
+    if(!GATEWAY_MODES.some(m=>union.has(m)))throw Error(`「${MODE_NAMES[mode]}」是这个出入口剩下的唯一交通方式，不能去掉；不再需要这个出入口时请点“取消出入口”`);
+    const keep=list.slice().sort((a,b)=>(b.source==='osm')-(a.source==='osm')||b.osm_ids.length-a.osm_ids.length||byCode(a.gateway_id,b.gateway_id))[0],n=p.nodes.find(n=>n.place_id===placeId);
+    Object.assign(keep,{modes:[...GATEWAY_MODES.filter(m=>union.has(m)),...[...union].filter(m=>!GATEWAY_MODES.includes(m))],lat:n.lat,lon:n.lon,source:'manual',version});
+    p.gateways=p.gateways.filter(g=>g.place_id!==placeId||g===keep);
+  }
+  // 取消出入口: removed records are tombstones in history, so regeneration never brings them back.
+  function removeGateways(p,placeId){if(!gatewaysAt(p,placeId).length)throw Error('该地点不是出入口');p.gateways=p.gateways.filter(g=>g.place_id!==placeId);}
+  // Box selection: nodes whose projected point is inside; edges only when both endpoints are inside.
+  function boxSelect(p,project,rect,withEdges){
+    const x0=Math.min(rect.x0,rect.x1),x1=Math.max(rect.x0,rect.x1),y0=Math.min(rect.y0,rect.y1),y1=Math.max(rect.y0,rect.y1),inside=new Set();
+    for(const n of p.nodes){const [x,y]=project(n.lon,n.lat);if(x>=x0&&x<=x1&&y>=y0&&y<=y1)inside.add(n.place_id);}
+    return {nodes:[...inside],edges:withEdges?p.edges.filter(e=>inside.has(e.from)&&inside.has(e.to)).map(e=>e.edge_id):[]};
+  }
+  // Web Mercator in unit square (0..1), matching the OSM tile grid exactly.
+  const MERCATOR_LAT=85.0511287798;
+  function mercator(lon,lat){const phi=Math.max(-MERCATOR_LAT,Math.min(MERCATOR_LAT,lat))*Math.PI/180;return [(lon+180)/360,(1-Math.log(Math.tan(Math.PI/4+phi/2))/Math.PI)/2];}
+  function unmercator(x,y){return {lon:x*360-180,lat:Math.atan(Math.sinh(Math.PI*(1-2*y)))*180/Math.PI};}
+  const TILE_MAX_ZOOM=19,TILE_ORIGIN='https://tile.openstreetmap.org/';
+  // floor: tiles are shown at 1-2x their native size, so a view never needs more than
+  // (width/256+2)*(height/256+2) of them (see maxTiles).
+  function tileZoom(screenPxPerWorld){return Math.max(0,Math.min(TILE_MAX_ZOOM,Math.floor(Math.log2(screenPxPerWorld/256))));}
+  function maxTiles(widthPx,heightPx,margin=0){return (Math.ceil(widthPx*(1+2*margin)/256)+1)*(Math.ceil(heightPx*(1+2*margin)/256)+1);}
+  // Same winding for every ring, so nonzero fill never punches holes where same-colour areas
+  // (a pitch inside a track, a school inside a campus) overlap in one batched path.
+  function orientRing(points){let twice=0;for(let i=0;i<points.length;i++){const [x1,y1]=points[i],[x2,y2]=points[(i+1)%points.length];twice+=x1*y2-x2*y1;}return twice<0?points.slice().reverse():points;}
+  // Untrusted tag values: only strings count, and style tables are looked up by own keys only.
+  const tagText=(tags,key)=>tags&&typeof tags==='object'&&typeof tags[key]==='string'?tags[key]:'';
+  const own=(table,key)=>typeof key==='string'&&Object.hasOwn(table,key)?table[key]:undefined;
+  // Only tiles intersecting the view, plus a small fractional margin; never a wider prefetch.
+  function tilesFor(world,z,margin=0){const n=2**z,c=v=>Math.max(0,Math.min(n-1,v)),mx=(world.x1-world.x0)*margin,my=(world.y1-world.y0)*margin,out=[];for(let x=c(Math.floor((world.x0-mx)*n));x<=c(Math.floor((world.x1+mx)*n));x++)for(let y=c(Math.floor((world.y0-my)*n));y<=c(Math.floor((world.y1+my)*n));y++)out.push({z,x,y,url:`${TILE_ORIGIN}${z}/${x}/${y}.png`});return out;}
+  function textWidth(text,px){let w=0;for(const ch of text)w+=(ch.codePointAt(0)>=0x2e80?1:.6)*px;return w;}
+  // Greedy collision avoidance: lower priority value wins; boxes are screen-space and axis aligned.
+  function placeLabels(candidates,{width,height,limit=250,cell=64,pad=2}){
+    const grid=new Map(),out=[],seen=new Map();
+    const sorted=candidates.slice().sort((a,b)=>a.priority-b.priority||(b.size||0)-(a.size||0));
+    for(const c of sorted){
+      if(out.length>=limit)break;
+      const box=[c.x-c.w/2-pad,c.y-c.h/2-pad,c.x+c.w/2+pad,c.y+c.h/2+pad];
+      if(box[2]<0||box[3]<0||box[0]>width||box[1]>height)continue;
+      const same=seen.get(c.text);if(same&&same.some(([x,y])=>Math.hypot(x-c.x,y-c.y)<(c.repeat||220)))continue;
+      const cells=[];for(let gx=Math.floor(box[0]/cell);gx<=Math.floor(box[2]/cell);gx++)for(let gy=Math.floor(box[1]/cell);gy<=Math.floor(box[3]/cell);gy++)cells.push(gx+','+gy);
+      if(cells.some(k=>(grid.get(k)||[]).some(b=>b[0]<box[2]&&b[2]>box[0]&&b[1]<box[3]&&b[3]>box[1])))continue;
+      for(const k of cells){if(!grid.has(k))grid.set(k,[]);grid.get(k).push(box);}
+      if(!seen.has(c.text))seen.set(c.text,[]);seen.get(c.text).push([c.x,c.y]);out.push(c);
+    }
+    return out;
+  }
+  return {accessState,openingState,checkAccess,setAccess,parseWindows,clone,keys,VECTOR_KINDS,canonical,digest,check,distance,node,edge,report,changes,transaction,move,remove,removeMany,impact,merge,mergeMany,split,GATEWAY_MODES,MODE_NAMES,gatewaysAt,modeText,addGateway,setGatewayMode,removeGateways,boxSelect,mercator,unmercator,tileZoom,maxTiles,orientRing,tagText,own,tilesFor,TILE_MAX_ZOOM,TILE_ORIGIN,textWidth,placeLabels};
+})();
+</script>
+<script>
+'use strict';
+const $=id=>document.getElementById(id),G=GraphEditor,NS='http://www.w3.org/2000/svg';
+let data=null,pendingEdge=null,workingVersion=1,lastUndo=null,view=[0,0,1000,650],projection=null,press=null,busy=false,onlineOn=false,labelCandidates=[],baseSized=[];
+let sel={nodes:new Set(),edges:new Set()},shown={nodes:new Set(),edges:new Set()},primary=null;
+const nodeEls=new Map(),edgeEls=new Map(),tableRows=new Map(),tileEls=new Map();
+let tileTimer=null;
+// Tiles need a real Referer, which file:// pages cannot send; only the loopback server qualifies.
+const tilesAllowed=location.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(location.hostname);
+const status=text=>{$('status').textContent=text;};
+const uid=kind=>'manual:'+kind+'/'+crypto.randomUUID();
+const total=()=>sel.nodes.size+sel.edges.size;
+function single(){if(total()!==1)return null;const collection=sel.nodes.size?'nodes':'edges',id=[...sel[collection]][0];return {collection,id};}
+const record=ref=>ref&&data?.[ref.collection].find(r=>r[G.keys[ref.collection]]===ref.id);
+function svg(tag,attributes={},title){const el=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attributes))el.setAttribute(k,String(v));if(title){const t=document.createElementNS(NS,'title');t.textContent=title;el.append(t);}return el;}
+const r3=v=>Math.round(v*1000)/1000;
+function gatewayModes(){const m=new Map();for(const g of data.gateways){if(!m.has(g.place_id))m.set(g.place_id,new Set());for(const x of g.modes)m.get(g.place_id).add(x);}return new Map([...m].map(([k,v])=>[k,[...G.GATEWAY_MODES.filter(x=>v.has(x)),...[...v].filter(x=>!G.GATEWAY_MODES.includes(x)).sort()]]));}
+
+// ---- Projection: always Web Mercator, so offline vectors, the graph and OSM tiles align exactly.
+function configureProjection(){
+  const [s,w,n,e]=data.bounds,[x0,y0]=G.mercator(w,n),[x1,y1]=G.mercator(e,s),width=x1-x0,height=y1-y0,S=Math.min(920/width,570/height);
+  projection={mx0:x0,my0:y0,S,ox:(1000-width*S)/2,oy:(650-height*S)/2,unitsPerMeter:S/(40075016.686*Math.cos((s+n)/2*Math.PI/180))};
+}
+function xy(lon,lat){const p=projection,[x,y]=G.mercator(lon,lat);return [p.ox+(x-p.mx0)*p.S,p.oy+(y-p.my0)*p.S];}
+function coordinate(x,y){const p=projection;return G.unmercator((x-p.ox)/p.S+p.mx0,(y-p.oy)/p.S+p.my0);}
+function mapPoint(event){const point=$('map').createSVGPoint();point.x=event.clientX;point.y=event.clientY;return point.matrixTransform($('map').getScreenCTM().inverse());}
+const factor=()=>1/($('map').getScreenCTM()?.a||1); // viewBox units per screen pixel
+function visibleRect(){const map=$('map'),r=map.getBoundingClientRect(),m=map.getScreenCTM();if(!m)return {x0:view[0],y0:view[1],x1:view[0]+view[2],y1:view[1]+view[3]};return {x0:(r.left-m.e)/m.a,y0:(r.top-m.f)/m.d,x1:(r.right-m.e)/m.a,y1:(r.bottom-m.f)/m.d};}
+
+// ---- Offline coloured basemap, built once per package from vector_data only.
+const LAND={grass:'#cdebb0',meadow:'#cdebb0',village_green:'#cdebb0',recreation_ground:'#dffce2',park:'#c8facc',garden:'#cdebb0',common:'#c8facc',playground:'#dffce2',dog_park:'#dffce2',pitch:'#aae0cb',sports_centre:'#dffce2',stadium:'#dffce2',track:'#aae0cb',golf_course:'#def6c0',nature_reserve:'#d6efc4',forest:'#add19e',wood:'#add19e',scrub:'#c8d7ab',heath:'#d6d99f',grassland:'#cdebb0',wetland:'#d6e6d0',beach:'#fff1ba',sand:'#f5e9c6',bare_rock:'#eee5dc',scree:'#eee5dc',farmland:'#eef0d5',orchard:'#aedfa3',cemetery:'#aacbaf',allotments:'#c9e1bf',residential:'#e0dfdf',commercial:'#f2dad9',retail:'#ffd6d1',industrial:'#ebdbe8',construction:'#c7c7b4',brownfield:'#c7c7b4',education:'#ffffe5',university:'#ffffe5',college:'#ffffe5',school:'#ffffe5',kindergarten:'#ffffe5',hospital:'#ffffe5',parking:'#eeeeee',religious:'#d0d0d0',military:'#f5d3cf'};
+const ROADS={primary:['#fcd6a4','#a06b00',12,4],secondary:['#f7fabf','#707d05',10,3.5],tertiary:['#ffffff','#8f8f8f',9,3],unclassified:['#ffffff','#a8a8a8',7,2.5],residential:['#ffffff','#a8a8a8',7,2.5],living_street:['#ededed','#a8a8a8',6,2.5],service:['#ffffff','#a8a8a8',4,1.6],pedestrian:['#dddde8','#999999',5,2.5],trunk:['#f9b29c','#c84e2f',13,4],motorway:['#e892a2','#dc2a67',14,4]};
+const PATHS={footway:['#fa8072',1.4,'2 2'],path:['#fa8072',1.3,'3 2'],cycleway:['#0000ff',1.2,'3 2'],bridleway:['#008000',1.2,'3 2'],steps:['#fa8072',3,'1.2 1'],track:['#996600',1.6,'5 2.5']};
+const FACILITY=[[/^(cafe|restaurant|fast_food|food_court|canteen|bar|pub|ice_cream)$/,'#c77400'],[/^(university|school|college|library|kindergarten)$/,'#734a08'],[/^(hospital|clinic|pharmacy|doctors|dentist)$/,'#bf0000'],[/^(bus_station|bicycle_parking|parking|bicycle_rental|taxi|fuel)$/,'#0092da']];
+function facilityColor(tags){if(tags.shop)return '#ac39ac';for(const [re,color] of FACILITY)if(re.test(tags.amenity||''))return color;if(tags.leisure)return '#0e8a16';return '#6b6b6b';}
+// Only string-valued own tags survive, so crafted package tags cannot abort rendering.
+const cleanTags=tags=>Object.fromEntries(Object.entries(tags&&typeof tags==='object'&&!Array.isArray(tags)?tags:{}).filter(([,v])=>typeof v==='string'));
+function areaColor(f){const t=f.tags||{};if(f.kind==='water')return '#aad3df';return G.own(LAND,t.leisure)||G.own(LAND,t.landuse)||G.own(LAND,t.natural)||G.own(LAND,t.amenity)||(f.kind==='landcover'?'#e8e4dc':null);}
+const featureName=tags=>G.tagText(tags,'name:zh')||G.tagText(tags,'name');
+function buildBase(){
+  const layer=$('baseLayer');layer.replaceChildren();labelCandidates=[];baseSized=[];
+  const buckets=new Map();
+  const bucket=(key,order,attrs,sized)=>{if(!buckets.has(key))buckets.set(key,{order,attrs,sized,d:[]});return buckets.get(key).d;};
+  const glyphs=new Map();
+  layer.append(svg('rect',{id:'land',x:-1e6,y:-1e6,width:2e6,height:2e6,fill:'#f2efe9'}));
+  for(const f of data.vector_data){
+    const tags=cleanTags(f.tags),name=featureName(tags),pts=f.coordinates.map(([lon,lat])=>xy(lon,lat));
+    const first=f.coordinates[0],last=f.coordinates.at(-1),closed=pts.length>=4&&first[0]===last[0]&&first[1]===last[1];
+    const path=points=>points.map(([x,y],i)=>(i?'L':'M')+r3(x)+' '+r3(y)).join(''),line=path(pts),ring=path(G.orientRing(pts))+'Z';
+    let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);const bx=[Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)],size=Math.max(bx[2]-bx[0],bx[3]-bx[1]);
+    const centroid=[xs.reduce((a,b)=>a+b,0)/pts.length,ys.reduce((a,b)=>a+b,0)/pts.length];
+    if(pts.length===1){
+      if(f.kind==='place'){if(name)labelCandidates.push({text:name,x:pts[0][0],y:pts[0][1],priority:0,px:14,weight:700,color:'#2b2b2b',kind:'place'});}
+      else{const color=facilityColor(tags);if(!glyphs.has(color))glyphs.set(color,[]);glyphs.get(color).push(pts[0]);if(name)labelCandidates.push({text:name,x:pts[0][0],y:pts[0][1],priority:2,px:11,color:color,kind:'poi'});}
+      continue;
+    }
+    if(f.kind==='road'&&!(closed&&tags.area==='yes')){
+      const hw=tags.highway;
+      if(G.own(PATHS,hw)){const [color,px,dash]=G.own(PATHS,hw);bucket('path:'+hw,60,{stroke:color,fill:'none','stroke-linecap':'butt'},{px,dash,halo:false}).push(line);bucket('pathhalo:'+hw,55,{stroke:'#ffffff',fill:'none',opacity:.6,'stroke-linecap':'round'},{px:px+1.5}).push(line);}
+      else{const [fill,casing,meters,minPx]=G.own(ROADS,hw)||['#ffffff','#b0b0b0',5,1.8],rank=Object.keys(ROADS).indexOf(hw);bucket('case:'+hw,50+(rank<0?0:-rank*.01),{stroke:casing,fill:'none','stroke-linecap':'round','stroke-linejoin':'round'},{meters,minPx,extra:2}).push(line);bucket('road:'+hw,70+(rank<0?0:-rank*.01),{stroke:fill,fill:'none','stroke-linecap':'round','stroke-linejoin':'round'},{meters,minPx}).push(line);}
+      if(name){let best=null;for(let i=1;i<pts.length;i++){const [ax,ay]=pts[i-1],[bx2,by]=pts[i],len=Math.hypot(bx2-ax,by-ay);if(!best||len>best.len)best={len,x:(ax+bx2)/2,y:(ay+by)/2,angle:Math.atan2(by-ay,bx2-ax)*180/Math.PI};}
+        let angle=best.angle;if(angle>90)angle-=180;if(angle<-90)angle+=180;labelCandidates.push({text:name,x:best.x,y:best.y,angle,segment:best.len,priority:3,px:11,color:'#333333',kind:'road'});}
+      continue;
+    }
+    if(f.kind==='waterway'){const meters=G.own({river:10,canal:8,stream:2,drain:1.5,ditch:1.2},tags.waterway)||2;bucket('waterway:'+meters,30,{stroke:'#aad3df',fill:'none','stroke-linecap':'round','stroke-linejoin':'round'},{meters,minPx:tags.waterway==='river'?2:1}).push(line);if(name)labelCandidates.push({text:name,x:centroid[0],y:centroid[1],priority:1.5,px:11,italic:true,color:'#2b6a8a',kind:'area',size});continue;}
+    if(f.kind==='building'){bucket('building',40,{fill:'#d9d0c9',stroke:'#c4b6ab','fill-rule':'nonzero'},{px:.7}).push(ring);if(name)labelCandidates.push({text:name,x:centroid[0],y:centroid[1],priority:2,px:11,color:'#6b5444',kind:'building',size});continue;}
+    if(closed||f.kind==='water'||f.kind==='landcover'){
+      const color=f.kind==='road'?'#dddde8':areaColor(f)||'#efe6d6';
+      const order=f.kind==='water'?20:(G.own(LAND,tags.landuse)&&!tags.leisure&&!['grass','meadow','forest'].includes(tags.landuse))?10:15;
+      bucket('area:'+order+':'+color,order,{fill:color,stroke:f.kind==='water'?'#8cbccc':'none','fill-rule':'nonzero'},f.kind==='water'?{px:.6}:null).push(ring);
+      if(name&&f.kind!=='road')labelCandidates.push({text:name,x:centroid[0],y:centroid[1],priority:1,px:12,italic:true,color:f.kind==='water'?'#2b6a8a':'#3c6b2f',kind:'area',size});
+      continue;
+    }
+    bucket('misc',35,{stroke:'#b5aea4',fill:'none'},{px:1}).push(line);
+  }
+  for(const b of [...buckets.values()].sort((a,b)=>a.order-b.order)){const el=svg('path',{...b.attrs,d:b.d.join('')});layer.append(el);if(b.sized)baseSized.push([el,b.sized]);}
+  const glyphLayer=svg('g',{id:'glyphs'});for(const [color,points] of glyphs){const el=svg('path',{fill:color,stroke:'#fff'});el.dataset.points=JSON.stringify(points);glyphLayer.append(el);}
+  layer.append(glyphLayer,svg('g',{id:'labelLayer'}));
+}
+// Stroke widths follow real-world road widths, with a minimum on-screen size.
+function sizeBase(){
+  const f=factor(),upm=projection.unitsPerMeter;
+  for(const [el,s] of baseSized){const width=s.meters?Math.max(s.minPx*f,s.meters*upm)+(s.extra||0)*f:s.px*f;el.setAttribute('stroke-width',width);if(s.dash)el.setAttribute('stroke-dasharray',s.dash.split(' ').map(v=>Number(v)*width*1.6).join(' '));}
+  const g=3.5*f;
+  for(const el of document.querySelectorAll('#glyphs path')){el.setAttribute('stroke-width',f);el.setAttribute('d',JSON.parse(el.dataset.points).map(([x,y])=>`M${r3(x)} ${r3(y-g)}L${r3(x+g)} ${r3(y)}L${r3(x)} ${r3(y+g)}L${r3(x-g)} ${r3(y)}Z`).join(''));}
+}
+// Zoom-dependent visibility plus greedy collision avoidance in screen space.
+function drawLabels(){
+  const layer=$('labelLayer');if(!layer)return;layer.replaceChildren();
+  const f=factor(),vis=visibleRect(),ppm=projection.unitsPerMeter/f,width=(vis.x1-vis.x0)/f,height=(vis.y1-vis.y0)/f,candidates=[];
+  for(const c of labelCandidates){
+    const w=G.textWidth(c.text,c.px),h=c.px*1.3;
+    if(c.kind==='area'&&c.size/f<Math.max(50,w*.8))continue;
+    if(c.kind==='building'&&(ppm<1.2||c.size/f<Math.max(22,w*.55)))continue;
+    if(c.kind==='poi'&&ppm<1.5)continue;
+    if(c.kind==='road'&&c.segment/f<w+16)continue;
+    const a=(c.angle||0)*Math.PI/180;
+    // Keep labels off the graph: road names sit beside the line, place-backed areas below their dot.
+    let sx=(c.x-vis.x0)/f+(c.kind==='poi'?w/2+7:0),sy=(c.y-vis.y0)/f;
+    if(c.kind==='road'){const off=h*.5+5;sx+=Math.sin(a)*off;sy-=Math.cos(a)*off;}
+    else if(c.kind==='building'||c.kind==='area')sy+=h*.5+6;
+    const bw=Math.abs(w*Math.cos(a))+Math.abs(h*Math.sin(a)),bh=Math.abs(w*Math.sin(a))+Math.abs(h*Math.cos(a));
+    candidates.push({...c,x:sx,y:sy,w:bw,h:bh});
+  }
+  for(const c of G.placeLabels(candidates,{width,height})){
+    const x=vis.x0+c.x*f,y=vis.y0+c.y*f,attrs={x,y,class:'map-label',fill:c.color,'font-size':c.px*f,'stroke-width':3*f};
+    if(c.weight)attrs['font-weight']=c.weight;if(c.italic)attrs['font-style']='italic';if(c.angle)attrs.transform=`rotate(${c.angle} ${x} ${y})`;
+    const text=svg('text',attrs);text.textContent=c.text;layer.append(text);
+  }
+}
+function applyBasemapSettings(){
+  const shownBase=$('basemap').checked,opacity=Number($('opacity').value)/100;
+  $('baseLayer').style.display=shownBase?'':'none';$('baseLayer').setAttribute('opacity',opacity);$('tileLayer').setAttribute('opacity',opacity);
+  const land=$('land');if(land)land.style.display=onlineOn?'none':'';
+}
+
+// ---- Optional online OSM tiles (never persisted; off on every page load).
+function drawTiles(){
+  const layer=$('tileLayer');
+  if(!onlineOn||!data||!tilesAllowed){layer.replaceChildren();tileEls.clear();return;}
+  const m=$('map').getScreenCTM();if(!m)return;
+  const p=projection,vis=visibleRect(),world={x0:(vis.x0-p.ox)/p.S+p.mx0,y0:(vis.y0-p.oy)/p.S+p.my0,x1:(vis.x1-p.ox)/p.S+p.mx0,y1:(vis.y1-p.oy)/p.S+p.my0};
+  const tiles=G.tilesFor(world,G.tileZoom(p.S*m.a),.1);
+  // Cap from the viewport: with floor() zoom a view needs at most this many; never prefetch beyond it.
+  const r=$('map').getBoundingClientRect();
+  if(tiles.length>G.maxTiles(r.width,r.height,.1)){status('当前视野需要的在线瓦片超出上限，已暂停加载在线底图；离线彩色底图不受影响。');return;}
+  const wanted=new Set(tiles.map(t=>t.url));
+  for(const [url,el] of tileEls)if(!wanted.has(url)){el.remove();tileEls.delete(url);}
+  const overlap=.6/m.a;
+  for(const t of tiles){if(tileEls.has(t.url))continue;const n=2**t.z,size=p.S/n;const img=svg('image',{href:t.url,x:p.ox+(t.x/n-p.mx0)*p.S,y:p.oy+(t.y/n-p.my0)*p.S,width:size+overlap,height:size+overlap,preserveAspectRatio:'none'});layer.append(img);tileEls.set(t.url,img);}
+}
+function setOnline(on){
+  onlineOn=on&&tilesAllowed;$('online').checked=onlineOn;$('onlineBadge').hidden=!onlineOn;$('tileAttribution').hidden=!onlineOn;applyBasemapSettings();drawTiles();
+}
+const ONLINE_NOTICE='开启“在线 OSM 底图”前请了解：\n\n· 浏览器会从 OpenStreetMap 官方瓦片服务器（tile.openstreetmap.org）下载当前视野内的地图图片。服务器因此会知道你正在看的大致位置、缩放级别和你的网络地址。\n· 图包文件本身不会上传，地点名称和编辑内容也不会发送。\n· 官方服务器由志愿者维护，只允许少量、人工浏览式的使用。请只在需要对照时短暂开启，不要大范围来回拖动。\n· 这个开关不会被记住，下次打开页面时恢复为关闭。\n\n确定开启吗？';
+if(!tilesAllowed){$('online').disabled=true;$('onlineHelp').textContent='在线底图只在用本机服务器打开编辑器时可用（直接打开文件时浏览器无法发送瓦片服务器要求的来源信息）。请在项目根目录运行 py -3 -m tools.osm_graph_builder --serve-editor ，再在浏览器打开 http://127.0.0.1:8765/ 。';}
+$('online').checked=false; // Defeat browser form-state restoration: always off on load.
+window.addEventListener('pageshow',()=>setOnline(false));
+$('online').onchange=()=>{if(!$('online').checked){setOnline(false);status('已关闭在线底图，不再请求瓦片。');return;}if(!confirm(ONLINE_NOTICE)){setOnline(false);status('未开启在线底图。');return;}setOnline(true);status(data?'在线底图已开启：只加载当前视野的瓦片。':'在线底图已开启，载入图包后显示。');};
+$('basemap').onchange=applyBasemapSettings;$('opacity').oninput=applyBasemapSettings;
+
+// ---- Graph layer and selection
+function drawGraph(){
+  const layer=$('graphLayer'),f=factor();layer.replaceChildren();nodeEls.clear();edgeEls.clear();
+  const pos=new Map(data.nodes.map(n=>[n.place_id,xy(n.lon,n.lat)]));
+  const cases=svg('g'),lines=svg('g'),marks=svg('g'),dots=svg('g'),edgeHits=svg('g'),nodeHits=svg('g'),gates=gatewayModes();
+  for(const e of data.edges){
+    const [x1,y1]=pos.get(e.from),[x2,y2]=pos.get(e.to),attrs={x1,y1,x2,y2},on=sel.edges.has(e.edge_id);
+    const casing=svg('line',{...attrs,class:'edge-casing'+(on?' selected':'')}),line=svg('line',{...attrs,class:'edge'+(e.enabled?'':' disabled')+(on?' selected':''),...(e.direction==='forward'?{'marker-end':'url(#arrow)'}:{})});
+    const hit=svg('line',{...attrs,class:'hit',stroke:'transparent','stroke-width':22,'vector-effect':'non-scaling-stroke',tabindex:0,role:'button','aria-label':`道路 ${e.name||e.edge_id}，${e.estimated_duration_s} 秒`},`${e.name||e.edge_id} · ${e.estimated_duration_s} 秒（估算） · ${e.enabled?'启用':'关闭'}`);
+    hit.dataset.collection='edges';hit.dataset.id=e.edge_id;
+    cases.append(casing);lines.append(line);edgeHits.append(hit);edgeEls.set(e.edge_id,[casing,line]);
+  }
+  for(const n of data.nodes){
+    const [cx,cy]=pos.get(n.place_id),dot=svg('circle',{cx,cy,r:5*f,class:'node'+(sel.nodes.has(n.place_id)?' selected':'')}),modes=gates.get(n.place_id);
+    if(modes)marks.append(svg('rect',{x:cx-9*f,y:cy-9*f,width:18*f,height:18*f,rx:3*f,class:'gateway'}));
+    const gate=modes?`，出入口（${G.modeText(modes)}）`:'';
+    const hit=svg('circle',{cx,cy,r:11*f,class:'hit',fill:'transparent',tabindex:0,role:'button','aria-label':`地点 ${n.name||n.place_id}${gate}`},`${n.name||n.place_id} · ${n.lat.toFixed(6)}, ${n.lon.toFixed(6)}${modes?' · 出入口：'+G.modeText(modes):''}`);
+    hit.dataset.collection='nodes';hit.dataset.id=n.place_id;dots.append(dot);nodeHits.append(hit);nodeEls.set(n.place_id,dot);
+  }
+  layer.append(cases,lines,marks,dots,edgeHits,nodeHits);
+  shown={nodes:new Set(sel.nodes),edges:new Set(sel.edges)};
+  drawPrimaryLabel();
+}
+function drawPrimaryLabel(){
+  for(const el of $('uiLayer').querySelectorAll('.node-label'))el.remove();
+  const one=single();if(one?.collection!=='nodes')return;const n=record(one);if(!n)return;
+  const f=factor(),[x,y]=xy(n.lon,n.lat),text=svg('text',{x:x+10*f,y:y-10*f,class:'node-label','font-size':13*f,'stroke-width':3*f});text.textContent=n.name||n.place_id;$('uiLayer').append(text);
+}
+function refreshSelection(){
+  for(const collection of ['nodes','edges']){
+    const els=collection==='nodes'?nodeEls:edgeEls,set=(el,on)=>(Array.isArray(el)?el:[el]).forEach(x=>x.classList.toggle('selected',on));
+    for(const id of shown[collection])if(!sel[collection].has(id)){const el=els.get(id);if(el)set(el,false);const row=tableRows.get(collection+'|'+id);if(row){row.check.checked=false;row.tr.classList.remove('on');}}
+    for(const id of sel[collection]){const el=els.get(id);if(el)set(el,true);const row=tableRows.get(collection+'|'+id);if(row){row.check.checked=true;row.tr.classList.add('on');}}
+    shown[collection]=new Set(sel[collection]);
+  }
+  const text=countText();$('selCount').hidden=!total();$('selCount').textContent=text;
+  $('batch').hidden=total()<2;$('batchCount').textContent=text;$('batchMergeOpen').disabled=sel.nodes.size<2;
+  if(total()<2||sel.nodes.size<2)closeMerge();else if(!$('mergeForm').hidden)prepareMerge();
+  drawPrimaryLabel();fillForm();
+}
+const countText=()=>total()?`已选 ${sel.nodes.size} 个地点、${sel.edges.size} 条路`:'';
+function setSelection(nodes,edges){sel={nodes:new Set(nodes),edges:new Set(edges)};refreshSelection();}
+function choose(collection,id){setSelection(collection==='nodes'?[id]:[],collection==='edges'?[id]:[]);}
+function toggle(collection,id,on){const set=sel[collection];if(on??!set.has(id))set.add(id);else set.delete(id);refreshSelection();}
+function clearSelection(){setSelection([],[]);}
+function pruneSelection(){const ids=c=>new Set(data[c].map(r=>r[G.keys[c]]));for(const c of ['nodes','edges']){const live=ids(c);sel[c]=new Set([...sel[c]].filter(id=>live.has(id)));}}
+
+// Tiles load ~200ms after zoom/resize/pan settles, so rapid zooming doesn't request intermediate levels.
+function scheduleTiles(){clearTimeout(tileTimer);tileTimer=setTimeout(drawTiles,200);}
+function render(){if(!data)return;$('map').setAttribute('viewBox',view.join(' '));sizeBase();drawLabels();drawGraph();refreshSelection();scheduleTiles();}
+function afterData(){drawGraph();pruneSelection();renderTable();renderGateways();refreshSelection();const names=new Map(data.nodes.map(n=>[n.place_id,n.name]));$('report').textContent=JSON.stringify({graph_id:data.graph_id,version:workingVersion,gateways:data.gateways.map(g=>({gateway_id:g.gateway_id,place_id:g.place_id,name:names.get(g.place_id)||'',modes:g.modes,source:g.source})),report:data.build_report,edit_history:data.edit_history},null,2);}
+function renderGateways(){
+  const list=$('gatewayList'),gates=gatewayModes(),byId=new Map(data.nodes.map(n=>[n.place_id,n]));list.replaceChildren();
+  $('gatewayHeading').textContent=`出入口（${gates.size}）`;
+  if(!gates.size){const li=document.createElement('li');li.textContent='还没有出入口。选中校门、地铁站口或公交站后点“设为出入口”。';list.append(li);return;}
+  for(const [id,modes] of [...gates].sort((a,b)=>(byId.get(a[0]).name||a[0]).localeCompare(byId.get(b[0]).name||b[0],'zh'))){
+    const li=document.createElement('li'),button=document.createElement('button'),n=byId.get(id);
+    button.type='button';button.textContent=n.name||id;button.setAttribute('aria-label',`选中出入口 ${n.name||id}`);button.onclick=()=>choose('nodes',id);
+    li.append(button,document.createTextNode('连接：'+G.modeText(modes)+(G.gatewaysAt(data,id).some(g=>g.source==='manual')?' · 手工':' · OSM')));list.append(li);
+  }
+}
+function commit(action,mutate){if(!data||busy)return false;try{const before=data;data=G.transaction(data,workingVersion,action,(p,extra)=>mutate(p,workingVersion,extra));lastUndo=before;$('undo').disabled=false;afterData();status('已记录修改；导出后保存为新版本。');return true;}catch(error){status(error.message);return false;}}
+
+function nodeClick(id){
+  const mode=$('mode').value;
+  if(mode==='edge'){if(!pendingEdge){pendingEdge=id;choose('nodes',id);status('再选择一个地点以创建连接。');}else{const start=pendingEdge;pendingEdge=null;commit('add_edge',(p,v)=>{if(start===id)throw Error('请选择不同地点');p.edges.push(G.edge(p.nodes.find(n=>n.place_id===start),p.nodes.find(n=>n.place_id===id),uid('edge'),v));});}}
+  else if(mode==='merge'){const one=single();if(one?.collection!=='nodes'){choose('nodes',id);status('再选择合并的目标地点。');}else if(one.id===id){status('请选择另一个目标地点。');}else{const from=one.id;if(commit('merge_nodes',(p,v,extra)=>G.merge(p,from,id,v,extra))){choose('nodes',id);$('mode').value='select';}}}
+  else choose('nodes',id);
+}
+function itemOf(target){const el=target?.closest?.('[data-collection]');return el?{collection:el.dataset.collection,id:el.dataset.id}:null;}
+function clickItem(hit,mods){
+  if(mods.toggle){toggle(hit.collection,hit.id);return;}
+  if(mods.shift&&['select','box'].includes($('mode').value)){toggle(hit.collection,hit.id,true);return;}
+  if(hit.collection==='nodes')nodeClick(hit.id);else choose('edges',hit.id);
+}
+const map=$('map');
+map.addEventListener('pointerdown',event=>{
+  if(!data||event.button!==0)return;
+  const hit=itemOf(event.target),mode=$('mode').value,toggleKey=event.ctrlKey||event.metaKey;
+  const kind=mode==='box'?'box':(hit?.collection==='nodes'&&mode==='select'&&!toggleKey&&!event.shiftKey)?'node':'pan';
+  press={kind,hit,start:mapPoint(event),clientX:event.clientX,clientY:event.clientY,view:[...view],shift:event.shiftKey,toggle:toggleKey,moved:false};
+  if(kind==='node')choose('nodes',hit.id);
+  map.setPointerCapture(event.pointerId);event.preventDefault();
+});
+map.addEventListener('pointermove',event=>{
+  if(!press)return;
+  if(!press.moved&&Math.hypot(event.clientX-press.clientX,event.clientY-press.clientY)>4)press.moved=true;
+  if(!press.moved)return;
+  if(press.kind==='pan'){const m=map.getScreenCTM();view=[press.view[0]-(event.clientX-press.clientX)/m.a,press.view[1]-(event.clientY-press.clientY)/m.d,press.view[2],press.view[3]];map.setAttribute('viewBox',view.join(' '));}
+  else if(press.kind==='box'){const p=mapPoint(event),s=press.start;let rect=$('boxRect');if(!rect){rect=svg('rect',{id:'boxRect',class:'box'});$('uiLayer').append(rect);}Object.entries({x:Math.min(s.x,p.x),y:Math.min(s.y,p.y),width:Math.abs(p.x-s.x),height:Math.abs(p.y-s.y)}).forEach(([k,v])=>rect.setAttribute(k,v));}
+  else status('松开以移动地点；相邻边的原时间将保留，请复核。');
+});
+map.addEventListener('pointerup',event=>{
+  const p=press;press=null;$('boxRect')?.remove();if(!p)return;
+  if(!p.moved){if(p.hit)clickItem(p.hit,p);else if($('mode').value==='add'){const point=mapPoint(event),c=coordinate(point.x,point.y),id=uid('node');if(commit('add_node',(q,v)=>q.nodes.push(G.node(c.lat,c.lon,id,v))))choose('nodes',id);}return;}
+  if(p.kind==='pan'){drawLabels();scheduleTiles();}
+  else if(p.kind==='node'){const point=mapPoint(event),c=coordinate(point.x,point.y);commit('move_node',(q,v)=>G.move(q,p.hit.id,c.lat,c.lon,v));}
+  else{const end=mapPoint(event),found=G.boxSelect(data,xy,{x0:p.start.x,y0:p.start.y,x1:end.x,y1:end.y},$('boxEdges').checked);
+    if(p.shift||p.toggle)setSelection([...sel.nodes,...found.nodes],[...sel.edges,...found.edges]);else setSelection(found.nodes,found.edges);
+    status(found.nodes.length||found.edges.length?`框内找到 ${found.nodes.length} 个地点、${found.edges.length} 条路。${countText()}。`:'框内没有地点。');}
+});
+map.addEventListener('pointercancel',()=>{press=null;$('boxRect')?.remove();render();});
+map.addEventListener('keydown',event=>{const hit=itemOf(event.target);if(!hit)return;if(event.key==='Enter'){event.preventDefault();clickItem(hit,{toggle:event.ctrlKey||event.metaKey,shift:event.shiftKey});}else if(event.key===' '){event.preventDefault();toggle(hit.collection,hit.id);}});
+document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;if(press){press=null;$('boxRect')?.remove();return;}if(!$('mergeForm').hidden){closeMerge();$('batchMergeOpen').focus();return;}pendingEdge=null;if(total()){clearSelection();status('已清除选择。');}});
+
+function fillForm(){
+  const one=single(),r=record(one);$('properties').hidden=!r;$('gatewayFields').hidden=true;
+  if(!r){$('selectionTitle').textContent=total()?'批量操作':'地点与道路';$('identity').textContent=total()?'可以批量删除，或把多个地点合并为一个。单独编辑某一项时，请只选中它。':'在地图或表格中选择地点或边。';return;}
+  const isNode=one.collection==='nodes';$('selectionTitle').textContent=isNode?'编辑地点':'编辑道路';$('identity').textContent=`${one.id} · ${r.source} · ${r.osm_ids.join(', ')||'本地新增'}`;$('nodeFields').hidden=!isNode;$('edgeFields').hidden=isNode;$('split').hidden=isNode;$('name').value=r.name;$('access').value=r.access||'';$('opening').value=(isNode?r.opening_rules:r.availability)||'';for(const id of ['lat','lon'])$(id).required=isNode;$('seconds').required=!isNode;
+  const req=r.access_requirement||'';$('accessRequirement').value=req.startsWith('resident_of:')?'resident':req;
+  $('residentArea').value=req.startsWith('resident_of:')?req.slice('resident_of:'.length):'';$('accessArea').value=r.access_area||'';
+  $('openingStatus').value=r.opening_schedule?.status||'';$('openingTimezone').value=r.opening_schedule?.timezone||'';
+  $('openingWindows').value=(r.opening_schedule?.windows||[]).map(w=>w.weekdays.join(',')+' '+w.start+' '+w.end).join('\n');
+  $('accessReview').textContent=`当前解析：门禁 ${G.accessState(r)}；开放时间 ${G.openingState(r,isNode)}。unparsed = 尚未解析，unknown = 未知；仅明确开启假设后才可规划，并标记需复核。`;
+  if(isNode){fillGateway(r);$('type').value=r.type;$('region').value=r.region||'';$('lat').value=r.lat;$('lon').value=r.lon;$('capabilities').value=r.capabilities.join(', ');$('level').value=[r.tags?.level||'',r.tags?.ref||''].join(' / ');}else{$('seconds').value=r.estimated_duration_s;$('enabled').value=String(r.enabled);$('direction').value=r.direction;$('load').value=r.load||'';}
+}
+function fillGateway(n){
+  const modes=gatewayModes().get(n.place_id),known=(modes||[]).filter(m=>G.GATEWAY_MODES.includes(m));
+  $('gatewayState').textContent=modes?`这是出入口，城市出行可在这里换乘：${G.modeText(modes)}。至少保留一种方式。`:'不是出入口。校门、地铁站口、公交站等城市出行的起终点需要设为出入口。';
+  $('gatewayFields').hidden=false;$('gatewayModes').hidden=!modes;$('gatewayAdd').hidden=!!modes;$('gatewayRemove').hidden=!modes;
+  for(const box of $('gatewayModes').querySelectorAll('input')){box.checked=known.includes(box.dataset.mode);box.disabled=box.checked&&known.length===1;}
+}
+// Gateway edits are their own transactions; unsaved fields of the same selection survive the refresh.
+function keepForm(run){
+  const before=single(),fields=[...$('properties').elements].filter(el=>el.id&&el.tagName!=='BUTTON').map(el=>[el,el.value]);run();
+  const now=single(),same=before&&now&&before.collection===now.collection&&before.id===now.id,dirty=same&&fields.some(([el,v])=>el.value!==v);
+  if(same)for(const [el,v] of fields)el.value=v;
+  if(dirty)status($('status').textContent+'\n上面还有未保存的地点修改，记得点“保存修改”。');
+}
+$('gatewayAdd').onclick=()=>{const ref=single();if(ref?.collection!=='nodes')return;const id=ref.id;keepForm(()=>{if(commit('add_gateway',(p,v)=>G.addGateway(p,id,uid('gateway'),v)))status('已设为出入口（默认只连步行）。请勾选这里能换乘的交通方式：公交、地铁。可撤销。');});};
+$('gatewayRemove').onclick=()=>{const ref=single();if(ref?.collection!=='nodes')return;const id=ref.id;keepForm(()=>{if(commit('remove_gateway',p=>G.removeGateways(p,id)))status('已取消出入口。取消记录留在历史中，重新生成时不会回来。可撤销。');});};
+for(const box of $('gatewayModes').querySelectorAll('input'))box.onchange=()=>{const ref=single();if(ref?.collection!=='nodes')return;const id=ref.id,mode=box.dataset.mode,on=box.checked;keepForm(()=>{if(commit('edit_gateway_modes',(p,v)=>G.setGatewayMode(p,id,mode,on,v)))status(`已${on?'加上':'去掉'}「${G.MODE_NAMES[mode]}」。可撤销。`);else fillGateway(record({collection:'nodes',id}));});};
+$('properties').addEventListener('submit',event=>{event.preventDefault();const ref=single();if(!record(ref))return;commit('edit_'+ref.collection,(p,v)=>{const r=p[ref.collection].find(r=>r[G.keys[ref.collection]]===ref.id);r.name=$('name').value;r.access=$('access').value.trim()||null;r.source='manual';r.version=v;const req=$('accessRequirement').value,opening=$('openingStatus').value;G.setAccess(r,req==='resident'?'resident_of:'+$('residentArea').value.trim():req,$('accessArea').value.trim(),opening?(opening==='known'?{status:'known',timezone:$('openingTimezone').value.trim(),windows:G.parseWindows($('openingWindows').value)}:{status:opening}):null,v);if(ref.collection==='nodes'){const lat=Number($('lat').value),lon=Number($('lon').value);if(r.lat!==lat||r.lon!==lon)G.move(p,ref.id,lat,lon,v);r.type=$('type').value.trim();r.region=$('region').value.trim()||null;r.opening_rules=$('opening').value.trim()||null;r.capabilities=$('capabilities').value.split(',').map(x=>x.trim()).filter(Boolean);const [level,room]=$('level').value.split('/').map(x=>x.trim());r.tags={...r.tags};if(level)r.tags.level=level;else delete r.tags.level;if(room)r.tags.ref=room;else delete r.tags.ref;}else{r.estimated_duration_s=Number($('seconds').value);r.estimate={model:'manual-time/v1',assumptions:['User supplied an estimated walking time']};r.direction=$('direction').value;r.enabled=$('enabled').value==='true';r.load=$('load').value.trim()||null;r.availability=$('opening').value.trim()||null;}});});
+$('remove').onclick=()=>{const ref=single();if(!ref)return;if(!confirm('删除所选项？删除地点会同时删除相邻边和出入口。历史会保留。'))return;commit('remove_'+ref.collection,p=>G.remove(p,ref.collection,ref.id));};
+$('split').onclick=()=>{const ref=single();if(ref?.collection!=='edges')return;const id=ref.id;commit('split_edge',(p,v)=>G.split(p,id,uid('node'),uid('edge'),uid('edge'),v));};
+$('undo').onclick=()=>{if(!lastUndo)return;const snapshot=lastUndo;commit('undo',p=>{for(const key of Object.keys(G.keys))p[key]=G.clone(snapshot[key]);});lastUndo=null;$('undo').disabled=true;};
+$('mode').onchange=()=>{pendingEdge=null;const mode=$('mode').value;status({merge:'先选中要移除的地点，再点击接收连接的目标地点。',box:'在地图上拖出矩形来选择；按住 Shift 拖动是追加。要平移地图请切回“选择”或“平移”。',add:'点击地图空白处新增地点；拖动仍可平移。'}[mode]||'已切换操作模式。');};
+
+// ---- Batch delete / merge: each is one transaction, one history entry, one undo.
+$('clearSel').onclick=()=>{clearSelection();status('已清除选择。');};
+$('batchDelete').onclick=()=>{
+  const nodes=[...sel.nodes],edges=[...sel.edges],hit=G.impact(data,nodes,edges);
+  if(hit.nodes+hit.edges+hit.gateways>3&&!confirm(`将删除 ${hit.nodes} 个地点、${hit.edges} 条路（含与这些地点相连的路）和 ${hit.gateways} 个出入口。\n这是一次修改，可以用“撤销上次修改”整体恢复；删除记录会留在历史中，重新生成时不会回来。\n继续？`))return;
+  if(commit('batch_delete',p=>G.removeMany(p,nodes,edges))){clearSelection();status(`已删除 ${hit.nodes} 个地点、${hit.edges} 条路、${hit.gateways} 个出入口（一次修改，可撤销）。`);}
+};
+function closeMerge(){$('mergeForm').hidden=true;}
+const mergeMode=()=>document.querySelector('input[name=mergeMode]:checked').value;
+function prepareMerge(){
+  const degree=new Map();for(const e of data.edges)for(const id of [e.from,e.to])degree.set(id,(degree.get(id)||0)+1);
+  const chosen=data.nodes.filter(n=>sel.nodes.has(n.place_id)).sort((a,b)=>(!!b.name-!!a.name)||(degree.get(b.place_id)||0)-(degree.get(a.place_id)||0)||a.place_id.localeCompare(b.place_id));
+  const select=$('mergeTarget'),previous=select.value;select.replaceChildren();
+  for(const n of chosen){const o=document.createElement('option');o.value=n.place_id;o.textContent=`${n.name||'（无名）'} · ${n.type} · ${n.place_id}`;select.append(o);}
+  if(chosen.some(n=>n.place_id===previous))select.value=previous;
+  const counts=new Map();for(const n of chosen)counts.set(n.type,(counts.get(n.type)||0)+1);
+  const list=$('typeList');list.replaceChildren();for(const type of new Set(data.nodes.map(n=>n.type))){const o=document.createElement('option');o.value=type;list.append(o);}
+  if(!$('mergeType').value)$('mergeType').value=[...counts].sort((a,b)=>b[1]-a[1])[0]?.[0]||'';
+  previewMerge();
+}
+function mergeTarget(){return mergeMode()==='existing'?$('mergeTarget').value:{place_id:uid('node'),name:$('mergeName').value,type:$('mergeType').value};}
+function previewMerge(){
+  const existing=mergeMode()==='existing';$('mergeTarget').disabled=!existing;$('mergeName').disabled=existing;$('mergeType').disabled=existing;
+  try{
+    const trial={nodes:G.clone(data.nodes),edges:G.clone(data.edges),gateways:G.clone(data.gateways)};
+    const target=existing?$('mergeTarget').value:{place_id:'manual:node/preview',name:$('mergeName').value||'预览',type:$('mergeType').value||'place'};
+    const note=G.mergeMany(trial,[...sel.nodes],target,workingVersion);
+    const label=existing?`「${data.nodes.find(n=>n.place_id===target)?.name||target}」`:`新地点「${$('mergeName').value||'（请填写名称）'}」`;
+    $('mergePreview').textContent=`将把 ${note.merged_places.length} 个地点并入${label}：改接 ${note.rewired_edges.length} 条路，删除内部路 ${note.removed_internal_edges.length} 条，合并通行条件相同的平行路 ${note.collapsed_parallel_edges.length} 组（保留最短时间，并标记需复核）。被并入地点的 ID 记入历史，重新生成时不会回来。`;
+  }catch(error){$('mergePreview').textContent=error.message;}
+}
+$('batchMergeOpen').onclick=()=>{$('mergeForm').hidden=false;$('mergeName').value='';$('mergeType').value='';prepareMerge();$('mergeTarget').focus();};
+$('mergeCancel').onclick=()=>{closeMerge();$('batchMergeOpen').focus();};
+for(const el of document.querySelectorAll('input[name=mergeMode]'))el.onchange=previewMerge;
+for(const id of ['mergeTarget','mergeName','mergeType'])$(id).addEventListener('input',previewMerge);
+$('mergeForm').addEventListener('submit',event=>{
+  event.preventDefault();const ids=[...sel.nodes],target=mergeTarget();let note=null;
+  if(commit('batch_merge',(p,v,extra)=>{note=G.mergeMany(p,ids,target,v,extra);})){closeMerge();choose('nodes',note.target);status(`已把 ${note.merged_places.length} 个地点合并为一个；改接 ${note.rewired_edges.length} 条路，删除内部路 ${note.removed_internal_edges.length} 条，合并平行路 ${note.collapsed_parallel_edges.length} 组。可撤销。`);}
+});
+
+function zoom(scale){const width=Math.max(2,Math.min(8000,view[2]*scale)),k=width/view[2];view=[view[0]+view[2]*(1-k)/2,view[1]+view[3]*(1-k)/2,view[2]*k,view[3]*k];render();}
+$('zoomIn').onclick=()=>zoom(.75);$('zoomOut').onclick=()=>zoom(4/3);$('reset').onclick=()=>{view=[0,0,1000,650];render();};
+function renderTable(){
+  const body=$('rows'),query=$('filter').value.toLowerCase(),gates=gatewayModes();body.replaceChildren();tableRows.clear();
+  for(const collection of ['nodes','edges'])for(const r of data[collection]){
+    const id=r[G.keys[collection]];if(![id,r.name,r.type].join(' ').toLowerCase().includes(query))continue;
+    const tr=document.createElement('tr'),checkCell=document.createElement('td'),check=document.createElement('input');
+    check.type='checkbox';check.checked=sel[collection].has(id);check.setAttribute('aria-label',`多选 ${r.name||id}`);check.onchange=()=>toggle(collection,id,check.checked);checkCell.append(check);tr.append(checkCell);if(check.checked)tr.classList.add('on');
+    for(const text of [collection==='nodes'?'地点':'边',r.name?`${r.name} (${id})`:id,collection==='nodes'?`${r.lat.toFixed(6)}, ${r.lon.toFixed(6)}`:`${r.from} → ${r.to}`,collection==='edges'?`${r.estimated_duration_s} 秒 · ${r.enabled?'启用':'关闭'}`:(gates.has(id)?'出入口：'+G.modeText(gates.get(id)):'—')]){const td=document.createElement('td');td.textContent=text;tr.append(td);}
+    const td=document.createElement('td'),button=document.createElement('button');button.type='button';button.textContent='只选这项';button.onclick=()=>choose(collection,id);td.append(button);tr.append(td);body.append(tr);tableRows.set(collection+'|'+id,{tr,check});
+  }
+}
+$('filter').oninput=()=>{if(data)renderTable();};
+$('checkFiltered').onclick=()=>{if(!data)return;const nodes=[],edges=[];for(const [key] of tableRows){const [collection,...rest]=key.split('|');(collection==='nodes'?nodes:edges).push(rest.join('|'));}setSelection([...sel.nodes,...nodes],[...sel.edges,...edges]);status(`已勾选筛选结果。${countText()}。`);};
+window.addEventListener('resize',()=>{if(data)render();});
+$('file').onchange=async event=>{const file=event.target.files[0];if(!file)return;try{if(data&&!confirm('打开另一个图包会丢弃当前尚未导出的修改，继续？'))return;const candidate=JSON.parse(await file.text());G.check(candidate);if(candidate.digest!==await G.digest(candidate))throw Error('图包摘要不匹配');data=candidate;workingVersion=data.version+1;sel={nodes:new Set(),edges:new Set()};pendingEdge=null;lastUndo=null;view=[0,0,1000,650];configureProjection();buildBase();applyBasemapSettings();tileEls.clear();$('tileLayer').replaceChildren();$('undo').disabled=true;$('export').disabled=false;afterData();render();
+  const colored=data.vector_data.some(f=>['landcover','water','waterway','place'].includes(f.kind));
+  status(`已载入 ${data.graph_id} v${data.version}；下一次导出 v${workingVersion}。`+(colored?'':'\n此图包没有绿地、水面等彩色区域（旧缓存生成）。想要它们，请按教程重新生成：有数据文件时加 --source 数据文件 --refresh；当初用 --overpass 联网获取的，改用 --overpass --refresh（会重新联网请求一次，并受冷却期限制）。'));}catch(error){status('无法载入：'+error.message);}};
+$('export').onclick=async()=>{if(!data||busy)return;busy=true;$('export').disabled=true;$('file').disabled=true;try{const output=G.clone(data);output.version=workingVersion;output.build_report=G.report(output);output.edit_history.push({version:workingVersion,action:'export',at:new Date().toISOString(),changes:[]});G.check(output);output.digest=await G.digest(output);const url=URL.createObjectURL(new Blob([JSON.stringify(output,null,2)+'\n'],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=`${output.graph_id.replace(/[^a-zA-Z0-9_-]/g,'_')}-v${workingVersion}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);data=output;workingVersion++;lastUndo=null;$('undo').disabled=true;afterData();status(`已导出 v${output.version}，编辑历史及来源标注已保留。`);}catch(error){status('无法导出：'+error.message);}finally{busy=false;$('export').disabled=false;$('file').disabled=false;}};
+</script>
+</body>
+</html>

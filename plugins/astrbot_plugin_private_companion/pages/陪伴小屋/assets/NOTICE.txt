@@ -1,0 +1,5 @@
+Three.js renderer and OrbitControls
+The local voxel-room renderer was adapted from the existing companion panel.
+Preview additions include a code-generated courtyard, local weather and daylight variations, presentation callbacks and reduced-motion handling.
+Editable renderer sources: voxel-source/. Compiled browser entry: voxel-room.js.
+License: THREE-LICENSE.txt

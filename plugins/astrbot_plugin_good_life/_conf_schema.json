@@ -1,0 +1,130 @@
+{
+  "wallet_enabled": {
+    "description": "启用模拟钱包（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要 kernel_enabled。余额来自已记录的模拟收入。"
+  },
+  "city_enabled": {
+    "description": "启用城市出行（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要 wallet_enabled、campus_enabled 和已确认图包。城市往返使用日历空窗并按段结算。"
+  },
+  "amap_navigation_enabled": {
+    "description": "允许 A8 嵌入调用高德公交导航（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "启用表示允许向高德发送路线起终点坐标（常住区只用出口）、城市编码、Key 及出发日期时间。需显式 A8 宿主接线。"
+  },
+  "amap_poi_search_enabled": {
+    "description": "允许 A8 向高德查询公共地点名称（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "同时需要启用高德公交导航。搜索发送公共地点名称、城市编码和同一个 Web服务 Key。请勿传入原始聊天、用户或角色标识及位置。"
+  },
+  "amap_navigation_key": {
+    "description": "高德 Web服务 Key（敏感凭据）",
+    "type": "string",
+    "default": "",
+    "hint": "在高德开放平台申请 Web服务 类型的 Key。保存在宿主私有配置，限制读取权限；不要填入活动参数或日志。也可由可信宿主向 AmapConfig.api_key 注入秘密，不保存到插件配置。"
+  },
+  "amap_navigation_city_code": {
+    "description": "高德城市 citycode",
+    "type": "string",
+    "default": "",
+    "hint": "例如上海 021、北京 010；不是六位 adcode。稳定外部地点可单独配置目标城市 citycode。"
+  },
+  "campus_enabled": {
+    "description": "启用共享位置与校园步行（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要 kernel_enabled、已确认图包及可信起点。共享步行始终应用下方门禁规则，未命名建筑按普通建筑处理，不可进入。位置冲突或无映射时需人工确认。"
+  },
+  "academics_graph_id": {
+    "description": "已确认校园图包的 graph_id",
+    "type": "string",
+    "default": "",
+    "hint": "共享位置与校园步行需要已确认图包。在途活动固定图包版本和摘要。旧 A4 嵌入仍支持手工路径。"
+  },
+  "graph_access_enabled": {
+    "description": "A4/A8 启用结构化门禁与开放时间（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "显式宿主将设置传入 OfflineNavigation(settings=...) 或 Campus.from_settings。启用后未知门禁和开放时间默认阻断。"
+  },
+  "graph_access_credentials": {
+    "description": "角色门禁资格（默认空）",
+    "type": "list",
+    "default": [],
+    "hint": "支持 campus_member、student、staff、resident_of:<区域或宿舍ID>；student/staff 满足 campus_member。不会从角色描述自动推断。"
+  },
+  "graph_private_credentials": {
+    "description": "OSM private 的资格映射（JSON 对象）",
+    "type": "string",
+    "default": "{}",
+    "hint": "键为 graph_id 或 graph_id/区域，值为 student、staff、campus_member 或 resident_of:<区域>。未配置 private 映射始终阻断。"
+  },
+  "treat_unparsed_access_as": {
+    "description": "未知或未解析的门禁文字如何处理",
+    "type": "string",
+    "default": "blocked",
+    "options": ["blocked", "allowed"],
+    "hint": "allowed 只生成带明确假设和 needs_review 的路线；不会修改或杜撰原规则。已知 closed 或缺少资格仍阻断。"
+  },
+  "treat_unknown_opening_as": {
+    "description": "未知或未解析的开放时间如何处理",
+    "type": "string",
+    "default": "blocked",
+    "options": ["blocked", "allowed"],
+    "hint": "控制 unknown 和 unparsed 开放时间；allowed 会在报价和课次路线中记录具体假设及 needs_review。"
+  },
+  "kernel_enabled": {
+    "description": "启用生活活动内核（默认关闭；需配套宿主）",
+    "type": "bool",
+    "default": false,
+    "hint": "启用租约内的生活活动协调。各领域仍须独立启用。"
+  },
+  "academics_enabled": {
+    "description": "启用手动校历课表（A4，默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "启用学业数据与页面读写。自动到课还需要启用生活活动内核和课次执行。"
+  },
+  "class_enabled": {
+    "description": "启用课次占窗与到课（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要 academics_enabled 和 kernel_enabled。启用共享校园步行后可前往教室。"
+  },
+  "attendance_enabled": {
+    "description": "启用早课晚醒模拟（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "启用课次执行后，晚醒按课次固定判定，并使用前一晚的实际入睡时间。"
+  },
+  "home_place_id": {
+    "description": "角色住处的校园地点 ID",
+    "type": "string",
+    "default": "",
+    "hint": "留空关闭。启用共享校园步行后，住处可用作未知位置的默认起点，并授予对应的宿舍通行资格。启用到课后可在当天承诺结束后步行回家。"
+  },
+  "study_enabled": {
+    "description": "启用分步学习记录和产物（W6，默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要启用学业功能。开放学习产物只读接口，地点导航和学习调度接线另行启用。"
+  },
+  "reading_abort_own_enabled": {
+    "description": "启用阅读原命令中止与协调（契约 v2，默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "仅在宿主显式支持 abort-own 与 reconcile 时恢复停驻的阅读提交。中止已确认后才暂停并释放前台；未知决定保留屏障。关闭后未决 v2 操作等待重新启用，不降级重发。"
+  },
+  "reading_executor_enabled": {
+    "description": "启用生活侧阅读执行器（A3，默认关闭；需配套宿主异步能力）",
+    "type": "bool",
+    "default": false,
+    "hint": "只影响新阅读实例。在途实例固定执行路径，关闭后仍恢复已开始的生活侧阅读。不会切换生产执行归属标记。"
+  }
+}

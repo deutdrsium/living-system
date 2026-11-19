@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *' # 02:00 Asia/Shanghai
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TZ: Asia/Shanghai
+  PYTHONUTF8: '1'
+  PYTHONPATH: plugins/astrbot_plugin_good_life:plugins/astrbot_plugin_private_companion:tools
+
+jobs:
+  companion-changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      good-life: ${{ steps.filter.outputs.good-life || steps.fork.outputs.good-life }}
+      companion: ${{ steps.filter.outputs.companion || steps.fork.outputs.companion }}
+      contracts: ${{ steps.filter.outputs.contracts || steps.fork.outputs.contracts }}
+    steps:
+      - id: fork
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        shell: bash
+        run: |
+          printf '%s\n' good-life=true companion=true contracts=true >> "$GITHUB_OUTPUT"
+      - id: filter
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            printf '%s\n' good-life=true companion=true contracts=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Include the source of renames. Unknown paths are shared, and at
+          # GitHub's 3,000-file response cap the PR may contain unseen paths.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" | jq -sr '
+            def docs: startswith("docs/") or (ascii_downcase | endswith(".md"));
+            def life: startswith("plugins/astrbot_plugin_good_life/") and (contains("/contracts/") | not);
+            def companion: startswith("plugins/astrbot_plugin_private_companion/") and (contains("/contracts/") | not);
+            add as $files
+            | [$files[] | .filename, (.previous_filename // empty) | select(docs | not)] as $paths
+            | ($files | length >= 3000) as $truncated
+            | "good-life=\($truncated or any($paths[]; companion | not))",
+              "companion=\($truncated or any($paths[]; life | not))",
+              "contracts=\($truncated or ($paths | length > 0))"
+          ' >> "$GITHUB_OUTPUT"
+
+  good-life:
+    needs: companion-changes
+    if: needs.companion-changes.outputs.good-life == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+      - run: python -c 'import astrbot.api.web; print("AstrBot SDK import OK")'
+      - run: python tools/ci/run_tests.py good-life
+        env:
+          CI_XDIST_WORKERS: '6'
+          CI_SKIP_TIMING: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+
+  contracts:
+    needs: companion-changes
+    if: needs.companion-changes.outputs.contracts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+      - run: python tools/ci/run_tests.py contracts
+
+  companion-node:
+    needs: companion-changes
+    if: needs.companion-changes.outputs.companion == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: python3 tools/ci/run_tests.py node
+
+  companion-python:
+    needs: companion-changes
+    if: needs.companion-changes.outputs.companion == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      CI_SHARD_INDEX: ${{ matrix.shard }}
+      CI_SHARD_COUNT: '8'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+      - id: tests
+        timeout-minutes: 27
+        continue-on-error: true
+        run: python tools/ci/run_tests.py companion-python
+      - if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: python3 tools/ci/summarize.py tools/ci/reports
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-shard-${{ matrix.shard }}
+          path: tools/ci/reports/
+          if-no-files-found: error
+          retention-days: 1
+
+  companion-python-report:
+    needs: [companion-changes, companion-python]
+    if: ${{ !cancelled() && needs.companion-changes.outputs.companion == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-shard-*
+          merge-multiple: true
+          path: tools/ci/reports
+      - run: python3 tools/ci/summarize.py tools/ci/reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: companion-python-report
+          path: tools/ci/reports/
+          if-no-files-found: error

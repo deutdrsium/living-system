@@ -1,0 +1,1878 @@
+# =====================================================================
+#  生活活动库 Activity Library  v0.1
+#  适用于：大多数现实世界的人类角色，带 scope: student 的条目仅适用于学生
+#  设计原则：类型由人定义，内容由外部数据填充；角色个性只通过 modifiers 调制概率
+# =====================================================================
+#
+# ---------------------------- 字段说明 --------------------------------
+#
+# id            唯一标识，蛇形命名
+# name          中文名
+# category      分类，见 categories
+# scope         适用范围：universal（所有人）| student | worker
+# description   一句话说明，给开发者看，不进 prompt
+#
+# triggers      触发器列表。任一触发器命中即进入候选，再按概率抽取。
+#   - type: random        基础随机。rate 为每周期望次数（rate_per_week）
+#   - type: time_window   时间窗口。windows: ["HH:MM-HH:MM"], weekdays: [1-7]，p 为窗口内命中概率
+#   - type: state         角色状态条件。cond 为表达式，如 "stress > 0.6"
+#   - type: env           环境条件。weather / season / temp_c / daylight
+#   - type: calendar      日历事件。event 为 sources.calendar 中的事件 id
+#   - type: chain         由其他活动派生。after 为前置活动 id，delay_h 为延迟范围
+#   - type: intent        角色挂起的意图被满足时触发（如收藏的展、想买的东西）
+#   - type: feed          外部信息流中出现匹配兴趣的新条目
+#   每个触发器可带 p（命中后实际发生的概率，默认 1.0）
+#   chain 触发器可带 when：对前置活动产出的条件过滤，如 "outcome.finished == true"
+#
+# gating        硬性前置条件，不满足则不能发生
+#   time_min      需要的连续空闲分钟数
+#   energy_min    最低体力 [0,1]
+#   money_min     最低可用余额（货币单位由经济系统定义）
+#   locations     可发生的地点类型：home, campus, workplace, outdoor, venue, transit, any
+#   requires      需要的物品或条件，如 [kitchen, umbrella, laptop]
+#   excludes_state  处于这些状态时不能发生，如 [sick, exam_week]
+#
+# frequency     频率约束
+#   cooldown_h    两次之间的最短间隔（小时）
+#   max_per_week  每周上限
+#
+# duration_min  持续时间范围 [最短, 最长]（分钟），用于日程占位和 Live2D 时间线
+#
+# cost          资源消耗
+#   money         [最小, 最大] 或 source:<id>（从外部取真实价格）
+#   energy        体力变化，负数为消耗
+#
+# inputs        外部输入源 id 列表，见 sources。按顺序尝试，前一个失败则降级到下一个
+#
+# llm           LLM 用量
+#   tier          none | text | vision | image_gen | audio
+#   calls         单次活动预计调用次数
+#
+# outputs       产出类型列表，见 output_types
+#
+# followups     可能派生的后续活动
+#   - activity: <id>, p: 概率, delay_h: [最短, 最长]
+#
+# share         分享倾向（交给主动联系模块决定是否真的发送）
+#   score         low | medium | high
+#   form          text | link | image | voice
+#
+# presentation  表现层提示（给 Live2D / 桌面端）
+#   pose          idle | reading | phone | writing | eating | sleeping | out | screen | music
+#   interruptible 是否可被用户消息打断
+#
+# social        solo | npc_optional | npc_required
+#
+# modifiers     角色个性对触发概率的调制（这是角色与库解耦的关键）
+#   traits        大五人格维度的系数 k，取值建议 [-1, 1]
+#                 维度：openness, conscientiousness, extraversion, agreeableness, neuroticism
+#                 角色的特质值 t ∈ [0,1]，乘数 = max(0, 1 + k * (2t - 1))
+#   interests     兴趣标签。角色兴趣引擎中该标签的分数越高，概率越高；
+#                 同时活动完成后会向这些标签累积曝光
+#
+# variants      同一活动的不同形态，执行时按条件或随机选择一种
+#
+# visibility    产出默认可见性：public | owner_only
+#
+# ---------------------------------------------------------------------
+
+version: "0.1"
+
+categories:
+  daily:        起居与家务
+  food:         吃喝
+  errand:       跑腿与购物
+  media:        看与听
+  creative:     创作
+  learning:     学习与自我提升
+  study_work:   课业与工作
+  social:       社交
+  outdoor:      户外与出行
+  culture:      文化场馆与活动
+  fitness:      运动与身体
+  digital:      数字生活
+  inner:        内心活动
+  seasonal:     节日与季节
+
+output_types:
+  impression:   结构化印象（喜欢/不喜欢、一句话感受、记住的细节）
+  review:       观后感 / 读后感 / 短评
+  note:         笔记、摘抄、待办
+  diary:        日记
+  artwork_svg:  简笔画（LLM 生成 SVG，成本低）
+  artwork_img:  图像作品（生图，成本高）
+  photo:        照片（从地点照片库或街景选取，可附取景说明）
+  purchase:     消费记录（写入经济系统）
+  item:         获得物品（写入物品库）
+  skill_delta:  技能熟练度变化
+  progress:     任务进度变化（作业、阅读等）
+  memory:       写入长期记忆的事件
+  interest_exposure: 兴趣曝光（写入兴趣引擎）
+  mood_delta:   情绪变化
+  stress_delta: 压力变化
+  intent:       新的挂起意图（想去、想买、想试）
+  npc_update:   配角关系或状态变化
+  share_candidate: 可分享的瞬间
+
+sources:
+  # —— 基础环境 ——
+  weather:            { desc: 实时天气与预报, examples: [高德天气, 和风天气, Open-Meteo] }
+  sun_moon:           { desc: 日出日落、月相、天象, examples: [skyfield, astral] }
+  calendar_holidays:  { desc: 法定节假日与调休, examples: [国务院放假安排, holiday-cn] }
+  solar_terms:        { desc: 二十四节气与农历, examples: [lunar-python] }
+  anniversaries:      { desc: 名人诞辰忌日、历史上的今天, examples: [Wikidata] }
+  school_calendar:    { desc: 校历、考试周、开学放假, examples: [学校教务处官网] }
+  # —— 地理 ——
+  poi_search:         { desc: 周边地点、营业时间、人均, examples: [高德 POI, 百度地点检索] }
+  route_planner:      { desc: 步行/公交/驾车路径与耗时, examples: [高德路径规划] }
+  place_photos:       { desc: 开发者自拍的地点照片库, examples: [本地目录] }
+  street_view:        { desc: 街景静态图, examples: [百度全景静态图] }
+  local_events:       { desc: 本地展览、演出、讲座、市集, examples: [豆瓣同城, 场馆公众号, 校园 BBS] }
+  # —— 媒介 ——
+  rss_feed:           { desc: 通用信息流, examples: [RSSHub] }
+  video_platform:     { desc: 视频标题、字幕、弹幕、评论, examples: [B 站 via RSSHub] }
+  movie_db:           { desc: 电影剧情简介、短评、影评, examples: [豆瓣电影, TMDB] }
+  anime_schedule:     { desc: 番剧/剧集放送表与分集简介, examples: [Bangumi API] }
+  music_charts:       { desc: 榜单、歌曲信息、评论, examples: [网易云音乐, Last.fm] }
+  podcast_rss:        { desc: 播客节目与音频, examples: [播客 RSS] }
+  bookshelf:          { desc: 本地书库与阅读进度, examples: [插件内置书库] }
+  public_domain_text: { desc: 公版诗文, examples: [古诗文库, Project Gutenberg] }
+  recipe_site:        { desc: 菜谱, examples: [下厨房, TheMealDB] }
+  daily_puzzle:       { desc: 每日谜题, examples: [中文 Wordle, 数独生成器] }
+  trending:           { desc: 热搜、热榜, examples: [微博热搜, 知乎热榜 via RSSHub] }
+  shopping_trends:    { desc: 新品、种草, examples: [小红书 via RSSHub] }
+  # —— 插件内部系统 ——
+  memory_store:       { desc: 长期记忆库, examples: [记忆插件] }
+  npc_roster:         { desc: 配角名册与关系, examples: [插件内置] }
+  economy:            { desc: 余额、账本、预算, examples: [插件内置] }
+  inventory:          { desc: 物品库（衣物、书、日用品）, examples: [插件内置] }
+  course_system:      { desc: 课表、作业、考试, examples: [插件内置] }
+  job_system:         { desc: 兼职与工作排班, examples: [插件内置] }
+  interest_engine:    { desc: 兴趣状态与曝光, examples: [插件内置] }
+
+# =====================================================================
+#  活动
+# =====================================================================
+activities:
+
+# ---------------------------- 起居与家务 ------------------------------
+
+  - id: oversleep
+    name: 赖床
+    category: daily
+    scope: universal
+    description: 闹钟响后继续躺着，可能导致迟到
+    triggers:
+      - { type: time_window, windows: ["06:30-10:00"], p: 0.3 }
+      - { type: state, cond: "sleep_debt > 0.5", p: 0.6 }
+      - { type: env, temp_c: "< 8", p: 0.4 }
+    gating: { locations: [home] }
+    frequency: { cooldown_h: 20 }
+    duration_min: [10, 90]
+    cost: { energy: 0.05 }
+    inputs: [weather]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    followups:
+      - { activity: skip_class, p: 0.25, delay_h: [0, 1] }
+    share: { score: low, form: text }
+    presentation: { pose: sleeping, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: -0.6 }
+    visibility: public
+
+  - id: nap
+    name: 午睡
+    category: daily
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["12:30-15:00"], p: 0.4 }
+      - { type: state, cond: "energy < 0.3", p: 0.7 }
+    gating: { time_min: 30, locations: [home, campus] }
+    frequency: { cooldown_h: 20 }
+    duration_min: [20, 120]
+    cost: { energy: 0.3 }
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    followups:
+      - { activity: skip_class, p: 0.1, delay_h: [0, 1] }
+    share: { score: low, form: text }
+    presentation: { pose: sleeping, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: shower
+    name: 洗澡
+    category: daily
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["19:00-23:30"], p: 0.8 }
+      - { type: chain, after: exercise, delay_h: [0, 1] }
+    gating: { locations: [home], requires: [hot_water_available] }
+    frequency: { cooldown_h: 12 }
+    duration_min: [15, 40]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: false }
+    social: solo
+    visibility: public
+
+  - id: laundry
+    name: 洗衣服
+    category: daily
+    scope: universal
+    triggers:
+      - { type: state, cond: "dirty_clothes > 0.7", p: 0.8 }
+      - { type: random, rate: 1.5 }
+    gating: { time_min: 20, locations: [home] }
+    frequency: { cooldown_h: 48 }
+    duration_min: [20, 60]
+    cost: { money: [0, 5], energy: -0.05 }
+    inputs: [weather]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    followups:
+      - { activity: clothes_wont_dry, p: 0.0, delay_h: [24, 72] }   # 概率由天气决定：连续阴雨时上调
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: clothes_wont_dry
+    name: 衣服晾不干
+    category: daily
+    scope: universal
+    description: 连续阴雨天的小烦恼，只由 laundry 派生
+    triggers:
+      - { type: chain, after: laundry, delay_h: [24, 72] }
+    gating: {}
+    duration_min: [0, 0]
+    inputs: [weather]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: tidy_room
+    name: 收拾房间
+    category: daily
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.5 }
+      - { type: calendar, event: term_start, p: 0.6 }
+      - { type: chain, after: exam, delay_h: [12, 48], p: 0.3 }
+      - { type: state, cond: "procrastinating == true", p: 0.15 }   # 用收拾房间逃避正事
+    gating: { time_min: 30, locations: [home], energy_min: 0.3 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [30, 120]
+    cost: { energy: -0.15 }
+    inputs: [inventory, memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [mood_delta, memory]
+    followups:
+      - { activity: revisit_old_memory, p: 0.3, delay_h: [0, 0] }   # 翻出旧物
+      - { activity: revive_old_hobby, p: 0.1, delay_h: [0, 24] }
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.5 }
+    visibility: public
+
+  - id: seasonal_wardrobe
+    name: 换季整理衣柜
+    category: daily
+    scope: universal
+    triggers:
+      - { type: env, temp_c: "crosses 15", p: 0.7 }
+      - { type: env, temp_c: "crosses 25", p: 0.7 }
+    gating: { time_min: 40, locations: [home] }
+    frequency: { cooldown_h: 720 }
+    duration_min: [40, 120]
+    inputs: [weather, inventory]
+    llm: { tier: none, calls: 0 }
+    outputs: [intent]          # 可能产生「想买件厚外套」的意图
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: haircut
+    name: 剪头发
+    category: daily
+    scope: universal
+    triggers:
+      - { type: state, cond: "days_since_haircut > 40", p: 0.15 }
+    gating: { time_min: 60, money_min: 30, locations: [venue] }
+    frequency: { cooldown_h: 600 }
+    duration_min: [30, 90]
+    cost: { money: source:poi_search, energy: -0.05 }
+    inputs: [poi_search, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, mood_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    variants: [satisfied, regret]
+    visibility: public
+
+  - id: minor_illness
+    name: 小病（感冒等）
+    category: daily
+    scope: universal
+    description: 偶发的轻微不适，持续数日，降低体力与活动意愿
+    triggers:
+      - { type: state, cond: "sleep_debt > 0.7", p: 0.05 }
+      - { type: env, season: [autumn, spring], p: 0.02 }
+      - { type: chain, after: caught_in_rain, delay_h: [12, 36], p: 0.2 }
+    gating: {}
+    frequency: { cooldown_h: 480 }
+    duration_min: [1440, 5760]
+    cost: { energy: -0.3 }
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, memory]
+    followups:
+      - { activity: skip_class, p: 0.4, delay_h: [0, 24] }
+    share: { score: medium, form: text }
+    presentation: { pose: sleeping, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: insomnia
+    name: 失眠
+    category: daily
+    scope: universal
+    triggers:
+      - { type: state, cond: "stress > 0.6", p: 0.3 }
+      - { type: chain, after: drink_caffeine, delay_h: [4, 8], p: 0.3 }
+      - { type: random, rate: 0.3 }
+    gating: { locations: [home] }
+    frequency: { cooldown_h: 24 }
+    duration_min: [30, 180]
+    cost: { energy: -0.2 }
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [mood_delta, note]
+    followups:
+      - { activity: scroll_feed, p: 0.6, delay_h: [0, 0] }
+      - { activity: oversleep, p: 0.5, delay_h: [6, 9] }
+    share: { score: medium, form: text }        # 深夜主动联系的契机
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { neuroticism: 0.6 }
+    visibility: public
+
+# ------------------------------ 吃喝 ---------------------------------
+
+  - id: meal
+    name: 吃饭
+    category: food
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["07:00-09:30", "11:00-13:30", "17:00-19:30"], p: 0.9 }
+    gating: { time_min: 15 }
+    frequency: { cooldown_h: 3 }
+    duration_min: [10, 60]
+    cost: { money: source:economy, energy: 0.15 }
+    inputs: [poi_search, economy]
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase]
+    share: { score: low, form: text }
+    presentation: { pose: eating, interruptible: true }
+    social: npc_optional
+    variants: [cafeteria, takeout, eat_out, cook_self, skip]
+    visibility: public
+
+  - id: try_new_restaurant
+    name: 尝试新餐厅
+    category: food
+    scope: universal
+    triggers:
+      - { type: intent, intent: want_to_try_restaurant, p: 0.3 }
+      - { type: random, rate: 0.3 }
+    gating: { time_min: 60, money_min: 50 }
+    frequency: { cooldown_h: 96 }
+    duration_min: [45, 120]
+    cost: { money: source:poi_search, energy: -0.05 }
+    inputs: [poi_search, route_planner, shopping_trends]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, review, memory, interest_exposure]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.5, extraversion: 0.3 }
+      interests: [food]
+    visibility: public
+
+  - id: cook
+    name: 做饭
+    category: food
+    scope: universal
+    triggers:
+      - { type: random, rate: 1 }
+      - { type: feed, match: [recipe, cooking], p: 0.2 }
+    gating: { time_min: 40, requires: [kitchen], locations: [home] }
+    frequency: { cooldown_h: 24 }
+    duration_min: [30, 90]
+    cost: { money: [10, 40], energy: -0.1 }
+    inputs: [recipe_site]
+    llm: { tier: text, calls: 1 }
+    outputs: [skill_delta, mood_delta, memory, share_candidate]
+    share: { score: medium, form: image }
+    presentation: { pose: idle, interruptible: true }
+    social: npc_optional
+    modifiers:
+      interests: [cooking, food]
+    variants: [success, partial, disaster]      # 结果概率由 skill 决定
+    visibility: public
+
+  - id: snack_run
+    name: 买零食饮料
+    category: food
+    scope: universal
+    triggers:
+      - { type: random, rate: 2 }
+      - { type: state, cond: "stress > 0.5", p: 0.2 }
+      - { type: feed, match: [snack, new_product], p: 0.15 }
+    gating: { time_min: 10, money_min: 10 }
+    frequency: { cooldown_h: 12 }
+    duration_min: [10, 30]
+    cost: { money: [5, 30] }
+    inputs: [shopping_trends, poi_search]
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase, mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: drink_caffeine
+    name: 喝咖啡或茶
+    category: food
+    scope: universal
+    triggers:
+      - { type: state, cond: "energy < 0.4 and has_task == true", p: 0.4 }
+      - { type: time_window, windows: ["09:00-16:00"], p: 0.2 }
+    gating: {}
+    frequency: { cooldown_h: 4 }
+    duration_min: [5, 30]
+    cost: { money: [0, 30], energy: 0.15 }
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase]
+    followups:
+      - { activity: insomnia, p: 0.2, delay_h: [4, 8] }
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: public
+
+# --------------------------- 跑腿与购物 -------------------------------
+
+  - id: online_shopping
+    name: 网购
+    category: errand
+    scope: universal
+    triggers:
+      - { type: intent, intent: want_to_buy, p: 0.4 }
+      - { type: calendar, event: shopping_festival, p: 0.7 }
+      - { type: state, cond: "stress > 0.6", p: 0.1 }
+    gating: { money_min: 20 }
+    frequency: { cooldown_h: 48 }
+    duration_min: [10, 60]
+    cost: { money: source:economy }
+    inputs: [shopping_trends, economy]
+    llm: { tier: text, calls: 1 }        # 只在纠结的大额消费时调用
+    outputs: [purchase, mood_delta]
+    followups:
+      - { activity: pick_up_parcel, p: 1.0, delay_h: [24, 96] }
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: pick_up_parcel
+    name: 取快递
+    category: errand
+    scope: universal
+    description: 只由网购派生；拆开后可能满意也可能失望
+    triggers:
+      - { type: chain, after: online_shopping, delay_h: [24, 96] }
+    gating: { time_min: 10 }
+    duration_min: [10, 30]
+    cost: { energy: -0.05 }
+    llm: { tier: none, calls: 0 }
+    outputs: [item, mood_delta]
+    share: { score: medium, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    variants: [happy, meh, disappointed, wrong_item]
+    visibility: public
+
+  - id: buy_daily_goods
+    name: 买日用品
+    category: errand
+    scope: universal
+    triggers:
+      - { type: state, cond: "consumable_low == true", p: 0.8 }
+    gating: { time_min: 20, money_min: 20 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [20, 60]
+    cost: { money: [20, 100] }
+    inputs: [inventory, poi_search]
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase, item]
+    share: { score: low, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: secondhand_browse
+    name: 逛二手平台
+    category: errand
+    scope: universal
+    triggers:
+      - { type: intent, intent: want_to_buy, p: 0.2 }
+      - { type: random, rate: 0.3 }
+    gating: {}
+    frequency: { cooldown_h: 72 }
+    duration_min: [10, 40]
+    inputs: [rss_feed]
+    llm: { tier: text, calls: 1 }
+    outputs: [intent, impression]
+    share: { score: low, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.2 }
+    visibility: public
+
+# ------------------------------ 看与听 --------------------------------
+
+  - id: watch_movie
+    name: 看电影
+    category: media
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.5 }
+      - { type: intent, intent: want_to_watch, p: 0.4 }
+      - { type: calendar, event: weekend_evening, p: 0.2 }
+    gating: { time_min: 120, energy_min: 0.3 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [90, 180]
+    cost: { money: [0, 60] }
+    inputs: [movie_db]
+    llm: { tier: text, calls: 1 }      # 用简介+短评生成观后感，不需要真看片
+    outputs: [review, impression, memory, interest_exposure, mood_delta]
+    share: { score: medium, form: text }
+    presentation: { pose: screen, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.4 }
+      interests: [film]
+    variants: [home, cinema_alone, cinema_with_friend]
+    visibility: public
+
+  - id: follow_series
+    name: 追剧/追番
+    category: media
+    scope: universal
+    description: 按真实放送表更新，一集一集地看
+    triggers:
+      - { type: calendar, event: episode_release, p: 0.7 }
+      - { type: state, cond: "procrastinating == true", p: 0.2 }
+    gating: { time_min: 25 }
+    frequency: { cooldown_h: 6 }
+    duration_min: [20, 120]
+    inputs: [anime_schedule, movie_db]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, mood_delta, interest_exposure]
+    followups:
+      - { activity: browse_discussion, p: 0.3, delay_h: [0, 2] }
+    share: { score: medium, form: text }
+    presentation: { pose: screen, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [anime, tv_series]
+    visibility: public
+
+  - id: browse_discussion
+    name: 看剧集/作品讨论区
+    category: media
+    scope: universal
+    triggers:
+      - { type: chain, after: follow_series, delay_h: [0, 2] }
+      - { type: chain, after: watch_movie, delay_h: [0, 12] }
+    gating: {}
+    duration_min: [10, 40]
+    inputs: [rss_feed, video_platform]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression]
+    share: { score: low, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: watch_videos
+    name: 看视频
+    category: media
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["11:30-13:30", "17:30-19:30", "21:00-01:00"], p: 0.4 }
+      - { type: chain, after: meal, delay_h: [0, 0], p: 0.4 }     # 下饭
+      - { type: state, cond: "procrastinating == true", p: 0.4 }
+    gating: { time_min: 10 }
+    frequency: { cooldown_h: 2 }
+    duration_min: [10, 90]
+    inputs: [video_platform]
+    llm: { tier: text, calls: 2 }
+    outputs: [impression, interest_exposure, share_candidate]
+    share: { score: medium, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: scroll_feed
+    name: 刷社交媒体
+    category: media
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["07:30-09:00", "12:00-14:00", "22:00-01:00"], p: 0.5 }
+      - { type: state, cond: "procrastinating == true", p: 0.5 }
+      - { type: chain, after: insomnia, delay_h: [0, 0] }
+    gating: {}
+    frequency: { cooldown_h: 1 }
+    duration_min: [5, 60]
+    inputs: [rss_feed, trending, shopping_trends]
+    llm: { tier: text, calls: 2 }
+    outputs: [impression, interest_exposure, intent, share_candidate]
+    share: { score: medium, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: -0.3 }
+    visibility: public
+
+  - id: listen_music
+    name: 听音乐
+    category: media
+    scope: universal
+    triggers:
+      - { type: chain, after: walk, delay_h: [0, 0], p: 0.5 }
+      - { type: chain, after: study_session, delay_h: [0, 0], p: 0.4 }
+      - { type: random, rate: 4 }
+    gating: {}
+    frequency: { cooldown_h: 2 }
+    duration_min: [15, 120]
+    inputs: [music_charts]
+    llm: { tier: none, calls: 0 }
+    outputs: [interest_exposure]
+    followups:
+      - { activity: curate_playlist, p: 0.05, delay_h: [0, 24] }
+    share: { score: low, form: link }
+    presentation: { pose: music, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [music]
+    visibility: public
+
+  - id: listen_podcast
+    name: 听播客
+    category: media
+    scope: universal
+    triggers:
+      - { type: chain, after: walk, delay_h: [0, 0], p: 0.3 }
+      - { type: chain, after: commute, delay_h: [0, 0], p: 0.3 }
+      - { type: random, rate: 1 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 12 }
+    duration_min: [20, 90]
+    inputs: [podcast_rss]
+    llm: { tier: text, calls: 1 }     # 默认只用节目简介；偶尔 tier 升为 audio 做完整转写
+    outputs: [impression, interest_exposure, share_candidate]
+    share: { score: medium, form: link }
+    presentation: { pose: music, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.4 }
+    visibility: public
+
+  - id: read_book
+    name: 读书
+    category: media
+    scope: universal
+    triggers:
+      - { type: random, rate: 4 }
+      - { type: time_window, windows: ["20:00-23:30"], p: 0.3 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 4 }
+    duration_min: [20, 150]
+    inputs: [bookshelf]
+    llm: { tier: text, calls: 1 }
+    outputs: [progress, note, impression, interest_exposure, share_candidate]
+    share: { score: medium, form: text }
+    presentation: { pose: reading, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.6 }
+      interests: [reading]
+    visibility: public
+
+  - id: daily_puzzle
+    name: 做每日谜题
+    category: media
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["08:00-23:00"], p: 0.15 }
+      - { type: state, cond: "procrastinating == true", p: 0.1 }
+    gating: {}
+    frequency: { cooldown_h: 20 }
+    duration_min: [5, 30]
+    inputs: [daily_puzzle]
+    llm: { tier: text, calls: 1 }     # 也可以用规则求解器 + 按角色能力加噪
+    outputs: [skill_delta, mood_delta]
+    share: { score: medium, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    variants: [solved_fast, solved_slow, gave_up]
+    visibility: public
+
+# ------------------------------- 创作 ---------------------------------
+
+  - id: doodle
+    name: 涂鸦
+    category: creative
+    scope: universal
+    triggers:
+      - { type: state, cond: "bored == true", p: 0.15 }
+      - { type: chain, after: attend_class, delay_h: [0, 0], p: 0.05 }
+    gating: {}
+    frequency: { cooldown_h: 48 }
+    duration_min: [5, 30]
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }     # 生成简笔 SVG
+    outputs: [artwork_svg, share_candidate]
+    share: { score: medium, form: image }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [drawing]
+    visibility: public
+
+  - id: serious_artwork
+    name: 认真画一幅画
+    category: creative
+    scope: universal
+    description: 低频高成本；产出一张真正的作品
+    triggers:
+      - { type: random, rate: 0.1 }
+      - { type: state, cond: "interest.drawing > 0.7", p: 0.1 }
+    gating: { time_min: 120, energy_min: 0.5 }
+    frequency: { cooldown_h: 240 }
+    duration_min: [120, 300]
+    inputs: [memory_store, place_photos]
+    llm: { tier: image_gen, calls: 1 }
+    outputs: [artwork_img, memory, share_candidate, skill_delta]
+    share: { score: high, form: image }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [drawing]
+    visibility: public
+
+  - id: take_photo
+    name: 拍照
+    category: creative
+    scope: universal
+    triggers:
+      - { type: chain, after: walk, delay_h: [0, 0], p: 0.3 }
+      - { type: chain, after: sunset_watch, delay_h: [0, 0], p: 0.8 }
+      - { type: env, weather: [first_snow, clear_after_rain], p: 0.4 }
+    gating: { locations: [outdoor, venue, campus] }
+    frequency: { cooldown_h: 6 }
+    duration_min: [1, 15]
+    inputs: [place_photos, street_view, weather]
+    llm: { tier: text, calls: 1 }     # 选图 + 写取景说明；偶尔可升为 image_gen
+    outputs: [photo, memory, share_candidate]
+    share: { score: high, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [photography]
+    visibility: public
+
+  - id: write_poem_or_prose
+    name: 写诗或短文
+    category: creative
+    scope: universal
+    triggers:
+      - { type: chain, after: read_book, delay_h: [0, 24], p: 0.05 }
+      - { type: state, cond: "mood.intensity > 0.7", p: 0.1 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [15, 90]
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [note, memory]
+    share: { score: low, form: text }      # 大部分不给人看
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.7 }
+      interests: [writing, poetry]
+    visibility: owner_only
+
+  - id: write_diary
+    name: 写日记
+    category: creative
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["21:30-01:00"], p: 0.3 }
+      - { type: state, cond: "notable_events_today >= 2", p: 0.4 }
+    gating: { time_min: 15 }
+    frequency: { cooldown_h: 20 }
+    duration_min: [10, 40]
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [diary]
+    share: { score: low, form: text }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.3, openness: 0.3 }
+    visibility: owner_only
+
+  - id: write_review
+    name: 写短评
+    category: creative
+    scope: universal
+    triggers:
+      - { type: chain, after: watch_movie, delay_h: [0, 24], p: 0.3 }
+      - { type: chain, after: read_book, when: "outcome.finished == true", delay_h: [0, 48], p: 0.4 }
+      - { type: chain, after: visit_exhibition, delay_h: [0, 24], p: 0.3 }
+    gating: { time_min: 10 }
+    duration_min: [10, 30]
+    inputs: [movie_db, bookshelf]
+    llm: { tier: text, calls: 1 }
+    outputs: [review]
+    share: { score: medium, form: text }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: curate_playlist
+    name: 整理歌单
+    category: creative
+    scope: universal
+    triggers:
+      - { type: chain, after: listen_music, delay_h: [0, 24] }
+      - { type: random, rate: 0.2 }
+    gating: { time_min: 15 }
+    frequency: { cooldown_h: 168 }
+    duration_min: [15, 60]
+    inputs: [music_charts]
+    llm: { tier: text, calls: 1 }
+    outputs: [note, share_candidate]
+    share: { score: medium, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    modifiers:
+      interests: [music]
+    visibility: public
+
+  - id: write_postcard
+    name: 写明信片/信
+    category: creative
+    scope: universal
+    triggers:
+      - { type: chain, after: trip, delay_h: [0, 48], p: 0.4 }
+      - { type: calendar, event: major_holiday, p: 0.1 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 336 }
+    duration_min: [15, 40]
+    cost: { money: [5, 15] }
+    inputs: [npc_roster, memory_store]
+    llm: { tier: text, calls: 1 }      # 可选再加一次 image_gen 生成明信片正面
+    outputs: [note, npc_update, share_candidate]
+    share: { score: high, form: image }
+    presentation: { pose: writing, interruptible: true }
+    social: npc_optional
+    visibility: owner_only
+
+# ---------------------------- 学习与自我提升 ---------------------------
+
+  - id: language_practice
+    name: 练外语
+    category: learning
+    scope: universal
+    description: 有连续打卡天数，断签概率随压力与拖延上升
+    triggers:
+      - { type: state, cond: "streak.language > 0", p: 0.75 }
+      - { type: feed, match: [language], p: 0.1 }
+    gating: { time_min: 10 }
+    frequency: { cooldown_h: 20 }
+    duration_min: [10, 40]
+    llm: { tier: none, calls: 0 }
+    outputs: [skill_delta, mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.6 }
+      interests: [language]
+    visibility: public
+
+  - id: online_course
+    name: 看公开课
+    category: learning
+    scope: universal
+    triggers:
+      - { type: feed, match: [lecture, course], p: 0.15 }
+      - { type: random, rate: 0.3 }
+    gating: { time_min: 30, energy_min: 0.4 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [30, 90]
+    inputs: [video_platform]
+    llm: { tier: text, calls: 1 }
+    outputs: [note, interest_exposure]
+    share: { score: low, form: link }
+    presentation: { pose: screen, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.5, conscientiousness: 0.3 }
+    visibility: public
+
+  - id: attend_talk
+    name: 去讲座
+    category: learning
+    scope: universal
+    triggers:
+      - { type: feed, source: local_events, match: [talk, lecture], p: 0.25 }
+    gating: { time_min: 90, locations: [campus, venue] }
+    frequency: { cooldown_h: 72 }
+    duration_min: [60, 150]
+    inputs: [local_events, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [note, memory, interest_exposure, share_candidate]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.5 }
+    visibility: public
+
+  - id: practice_skill
+    name: 练习一项技能
+    category: learning
+    scope: universal
+    description: 乐器、书法、编程等，具体技能由兴趣引擎决定
+    triggers:
+      - { type: state, cond: "interest.top_active.kind == skill", p: 0.3 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 24 }
+    duration_min: [20, 90]
+    llm: { tier: none, calls: 0 }
+    outputs: [skill_delta, mood_delta]
+    share: { score: low, form: voice }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.5 }
+    visibility: public
+
+  - id: revive_old_hobby
+    name: 重拾旧爱好
+    category: learning
+    scope: universal
+    triggers:
+      - { type: chain, after: tidy_room, delay_h: [0, 24] }
+      - { type: feed, match: [dormant_interest], p: 0.1 }
+    gating: { time_min: 20 }
+    frequency: { cooldown_h: 336 }
+    duration_min: [20, 90]
+    inputs: [interest_engine]
+    llm: { tier: none, calls: 0 }
+    outputs: [interest_exposure, mood_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: public
+
+# ------------------------------ 课业与工作 -----------------------------
+
+  - id: attend_class
+    name: 上课
+    category: study_work
+    scope: student
+    triggers:
+      - { type: calendar, event: class_slot, p: 1.0 }   # 是否真去由 skip_class 竞争决定
+    gating: { locations: [campus] }
+    duration_min: [45, 200]
+    inputs: [course_system, route_planner]
+    llm: { tier: text, calls: 0 }     # 每周批量生成课堂笔记，不在单次课调用
+    outputs: [progress, note]
+    share: { score: low, form: text }
+    presentation: { pose: writing, interruptible: true }
+    social: npc_optional
+    variants: [attentive, half_listening, asleep]
+    visibility: public
+
+  - id: skip_class
+    name: 逃课
+    category: study_work
+    scope: student
+    triggers:
+      - { type: calendar, event: class_slot, p: 0.0 }   # 基础概率由课程态度、时间、天气、睡眠计算
+    gating: {}
+    duration_min: [45, 200]
+    inputs: [course_system, weather]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, progress]
+    followups:
+      - { activity: caught_absent, p: 0.0, delay_h: [0, 0] }   # 概率 = 该课点名率
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: -0.7 }
+    visibility: public
+
+  - id: caught_absent
+    name: 逃课被点名
+    category: study_work
+    scope: student
+    triggers:
+      - { type: chain, after: skip_class, delay_h: [0, 0] }
+    gating: {}
+    duration_min: [0, 0]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, stress_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: study_session
+    name: 自习/写作业
+    category: study_work
+    scope: student
+    triggers:
+      - { type: state, cond: "deadline_pressure > 0.3", p: 0.5 }
+      - { type: calendar, event: exam_week, p: 0.8 }
+    gating: { time_min: 45, energy_min: 0.25, locations: [home, campus] }
+    frequency: { cooldown_h: 3 }
+    duration_min: [45, 240]
+    cost: { energy: -0.25 }
+    inputs: [course_system]
+    llm: { tier: text, calls: 1 }     # 只在论文选题、提纲、卡点时调用
+    outputs: [progress, stress_delta]
+    share: { score: low, form: text }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: 0.7 }
+    variants: [productive, distracted, all_nighter]
+    visibility: public
+
+  - id: exam
+    name: 考试
+    category: study_work
+    scope: student
+    triggers:
+      - { type: calendar, event: exam_slot, p: 1.0 }
+    gating: { locations: [campus] }
+    duration_min: [90, 180]
+    cost: { energy: -0.3 }
+    inputs: [course_system]
+    llm: { tier: none, calls: 0 }
+    outputs: [progress, stress_delta, memory]
+    followups:
+      - { activity: get_grade, p: 1.0, delay_h: [72, 336] }
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: false }
+    social: solo
+    visibility: public
+
+  - id: get_grade
+    name: 出成绩
+    category: study_work
+    scope: student
+    triggers:
+      - { type: chain, after: exam, delay_h: [72, 336] }
+    gating: {}
+    duration_min: [0, 0]
+    inputs: [course_system]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    variants: [great, ok, bad]
+    visibility: public
+
+  - id: course_registration
+    name: 选课
+    category: study_work
+    scope: student
+    triggers:
+      - { type: calendar, event: course_registration, p: 0.95 }   # 5% 忘记选课
+    gating: {}
+    duration_min: [15, 60]
+    inputs: [course_system]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: screen, interruptible: false }
+    social: solo
+    variants: [got_all, missed_favorite, forgot]
+    visibility: public
+
+  - id: group_project_meeting
+    name: 小组作业讨论
+    category: study_work
+    scope: student
+    triggers:
+      - { type: state, cond: "has_group_assignment == true", p: 0.3 }
+    gating: { time_min: 60 }
+    frequency: { cooldown_h: 48 }
+    duration_min: [45, 150]
+    inputs: [npc_roster, course_system]
+    llm: { tier: text, calls: 1 }
+    outputs: [progress, npc_update, mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: screen, interruptible: true }
+    social: npc_required
+    variants: [smooth, freeloader, last_night_rush]
+    visibility: public
+
+  - id: part_time_shift
+    name: 兼职/上班
+    category: study_work
+    scope: universal
+    triggers:
+      - { type: calendar, event: work_shift, p: 1.0 }
+    gating: { locations: [workplace, campus] }
+    duration_min: [120, 480]
+    cost: { energy: -0.3 }
+    inputs: [job_system]
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase, mood_delta]       # purchase 为负，表示收入
+    share: { score: low, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    variants: [quiet, busy, annoying_customer, nice_coworker]
+    visibility: public
+
+# ------------------------------- 社交 ---------------------------------
+
+  - id: chat_with_roommate
+    name: 和室友/同住者聊天
+    category: social
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["22:00-01:00"], p: 0.25 }
+    gating: { locations: [home] }
+    frequency: { cooldown_h: 24 }
+    duration_min: [15, 120]
+    inputs: [npc_roster, memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [npc_update, mood_delta, memory]
+    followups:
+      - { activity: oversleep, p: 0.3, delay_h: [6, 9] }
+    share: { score: low, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: npc_required
+    modifiers:
+      traits: { extraversion: 0.6 }
+    visibility: public
+
+  - id: meal_with_friend
+    name: 和朋友吃饭
+    category: social
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.7 }
+      - { type: calendar, event: weekend, p: 0.15 }
+    gating: { time_min: 60, money_min: 30 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [60, 150]
+    cost: { money: source:poi_search }
+    inputs: [npc_roster, poi_search, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, npc_update, memory, mood_delta]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_required
+    modifiers:
+      traits: { extraversion: 0.7, agreeableness: 0.3 }
+    visibility: public
+
+  - id: call_family
+    name: 给家里打电话
+    category: social
+    scope: universal
+    triggers:
+      - { type: random, rate: 1 }
+      - { type: calendar, event: major_holiday, p: 0.7 }
+      - { type: state, cond: "homesick > 0.6", p: 0.4 }
+    gating: { time_min: 10 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [5, 60]
+    inputs: [npc_roster]
+    llm: { tier: text, calls: 1 }
+    outputs: [mood_delta, npc_update]
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: false }
+    social: npc_required
+    modifiers:
+      traits: { agreeableness: 0.4 }
+    visibility: owner_only
+
+  - id: npc_birthday
+    name: 朋友过生日
+    category: social
+    scope: universal
+    triggers:
+      - { type: calendar, event: npc_birthday, p: 1.0 }
+    gating: {}
+    duration_min: [30, 240]
+    cost: { money: [30, 200] }
+    inputs: [npc_roster, economy]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, npc_update, memory]
+    followups:
+      - { activity: online_shopping, p: 0.5, delay_h: [-168, -48] }  # 提前买礼物
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_required
+    visibility: public
+
+  - id: club_activity
+    name: 社团/兴趣小组活动
+    category: social
+    scope: universal
+    triggers:
+      - { type: calendar, event: club_meeting, p: 0.7 }
+      - { type: feed, source: local_events, match: [club, meetup], p: 0.1 }
+    gating: { time_min: 60 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [60, 180]
+    inputs: [local_events, npc_roster]
+    llm: { tier: text, calls: 1 }
+    outputs: [npc_update, memory, interest_exposure]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_required
+    modifiers:
+      traits: { extraversion: 0.5 }
+    visibility: public
+
+  - id: lurk_group_chat
+    name: 潜水群聊
+    category: social
+    scope: universal
+    description: 班级群、工作群、兴趣群的通知与闲聊
+    triggers:
+      - { type: random, rate: 5 }
+    gating: {}
+    frequency: { cooldown_h: 4 }
+    duration_min: [2, 20]
+    inputs: [npc_roster, rss_feed]
+    llm: { tier: none, calls: 0 }
+    outputs: [intent]                    # 如收到截止通知、活动通知
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+# ---------------------------- 户外与出行 -------------------------------
+
+  - id: walk
+    name: 散步
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["16:00-21:00"], p: 0.3 }
+      - { type: chain, after: meal, delay_h: [0, 1], p: 0.2 }
+      - { type: state, cond: "stress > 0.5", p: 0.15 }
+    gating: { time_min: 20, energy_min: 0.2, excludes_state: [sick] }
+    frequency: { cooldown_h: 8 }
+    duration_min: [15, 90]
+    cost: { energy: -0.1 }
+    inputs: [route_planner, place_photos, street_view, weather, poi_search]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, memory, mood_delta, interest_exposure, share_candidate]
+    followups:
+      - { activity: take_photo, p: 0.3, delay_h: [0, 0] }
+      - { activity: caught_in_rain, p: 0.0, delay_h: [0, 0] }  # 概率由降水预报决定
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.2, extraversion: -0.1 }
+      interests: [walking, nature]
+    visibility: public
+
+  - id: caught_in_rain
+    name: 淋雨/被天气困住
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: chain, after: walk, delay_h: [0, 0] }
+      - { type: chain, after: commute, delay_h: [0, 0] }
+    gating: {}
+    duration_min: [5, 40]
+    inputs: [weather]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, memory]
+    followups:
+      - { activity: minor_illness, p: 0.15, delay_h: [12, 36] }
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    variants: [no_umbrella, shelter_wait, borrowed_umbrella]
+    visibility: public
+
+  - id: sunset_watch
+    name: 看日落
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: env, daylight: "sunset_in_min < 40", weather: [clear, partly_cloudy], p: 0.1 }
+    gating: { time_min: 30, locations: [outdoor, campus] }
+    frequency: { cooldown_h: 96 }
+    duration_min: [20, 50]
+    inputs: [sun_moon, weather, place_photos]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, memory, share_candidate]
+    followups:
+      - { activity: take_photo, p: 0.8, delay_h: [0, 0] }
+    share: { score: high, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      interests: [nature, photography]
+    visibility: public
+
+  - id: sky_watch
+    name: 看月亮/星星
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: env, daylight: night, weather: [clear], p: 0.05 }
+      - { type: calendar, event: astro_event, p: 0.5 }    # 满月、流星雨、行星合月等
+    gating: { time_min: 20, locations: [outdoor, campus] }
+    frequency: { cooldown_h: 72 }
+    duration_min: [15, 60]
+    inputs: [sun_moon, weather]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, memory, share_candidate]
+    share: { score: high, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      interests: [astronomy, nature]
+    visibility: public
+
+  - id: seasonal_scenery
+    name: 赏季节景色
+    category: outdoor
+    scope: universal
+    description: 花期、红叶、银杏、雪景等有窗口期的景色，具体内容由物候数据决定
+    triggers:
+      - { type: calendar, event: phenology_window, p: 0.3 }
+      - { type: env, weather: [first_snow], p: 0.5 }
+    gating: { time_min: 30 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [30, 120]
+    inputs: [rss_feed, poi_search, place_photos, weather]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, memory, share_candidate]
+    followups:
+      - { activity: take_photo, p: 0.7, delay_h: [0, 0] }
+    share: { score: high, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      interests: [nature, photography]
+    visibility: public
+
+  - id: city_walk
+    name: 城市漫步
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: calendar, event: weekend, p: 0.08 }
+      - { type: intent, intent: want_to_explore, p: 0.3 }
+    gating: { time_min: 180, energy_min: 0.5 }
+    frequency: { cooldown_h: 168 }
+    duration_min: [120, 300]
+    cost: { money: [20, 150], energy: -0.35 }
+    inputs: [route_planner, poi_search, street_view, weather]
+    llm: { tier: text, calls: 2 }
+    outputs: [impression, photo, purchase, memory, interest_exposure, share_candidate]
+    share: { score: high, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.6 }
+      interests: [walking, city]
+    visibility: public
+
+  - id: commute
+    name: 通勤/出行
+    category: outdoor
+    scope: universal
+    description: 作为其他活动的组成部分，按距离与条件选择交通方式
+    triggers:
+      - { type: chain, after: "*", delay_h: [0, 0] }   # 任何需要换地点的活动都会插入
+    gating: {}
+    duration_min: [5, 120]
+    cost: { money: source:route_planner }
+    inputs: [route_planner, weather, economy]
+    llm: { tier: none, calls: 0 }
+    outputs: [purchase]
+    followups:
+      - { activity: caught_in_rain, p: 0.0, delay_h: [0, 0] }
+    share: { score: low, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    variants: [walk, bike, metro, bus, taxi]
+    visibility: public
+
+  - id: trip
+    name: 短途/长途旅行
+    category: outdoor
+    scope: universal
+    triggers:
+      - { type: calendar, event: long_holiday, p: 0.3 }
+      - { type: intent, intent: want_to_travel, p: 0.2 }
+    gating: { time_min: 1440, money_min: 300, energy_min: 0.5 }
+    frequency: { cooldown_h: 720 }
+    duration_min: [1440, 10080]
+    cost: { money: source:route_planner, energy: -0.4 }
+    inputs: [route_planner, poi_search, weather, street_view]
+    llm: { tier: text, calls: 4 }
+    outputs: [photo, purchase, memory, impression, share_candidate]
+    followups:
+      - { activity: write_postcard, p: 0.4, delay_h: [0, 48] }
+    share: { score: high, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.6, extraversion: 0.2 }
+      interests: [travel]
+    visibility: public
+
+  - id: go_home
+    name: 回家/返校
+    category: outdoor
+    scope: student
+    triggers:
+      - { type: calendar, event: term_end, p: 0.95 }
+      - { type: calendar, event: term_start, p: 0.95 }
+      - { type: calendar, event: long_holiday, p: 0.4 }
+    gating: { money_min: 100 }
+    duration_min: [120, 1440]
+    cost: { money: source:route_planner, energy: -0.3 }
+    inputs: [route_planner, npc_roster]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, memory, mood_delta]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    variants: [got_ticket, standing_ticket, delayed]
+    visibility: owner_only
+
+# --------------------------- 文化场馆与活动 -----------------------------
+
+  - id: visit_exhibition
+    name: 看展
+    category: culture
+    scope: universal
+    triggers:
+      - { type: intent, intent: want_to_see_exhibition, p: 0.25 }
+      - { type: feed, source: local_events, match: [exhibition], p: 0.1 }
+    gating: { time_min: 120, energy_min: 0.4 }
+    frequency: { cooldown_h: 168 }
+    duration_min: [60, 180]
+    cost: { money: source:local_events, energy: -0.2 }
+    inputs: [local_events, route_planner, poi_search]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, purchase, memory, interest_exposure, share_candidate]
+    followups:
+      - { activity: write_review, p: 0.3, delay_h: [0, 24] }
+    share: { score: high, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { openness: 0.7 }
+      interests: [art, museum]
+    variants: [went, missed_deadline]
+    visibility: public
+
+  - id: live_performance
+    name: 看演出
+    category: culture
+    scope: universal
+    triggers:
+      - { type: intent, intent: want_to_see_show, p: 0.2 }
+    gating: { time_min: 180, money_min: 80 }
+    frequency: { cooldown_h: 336 }
+    duration_min: [90, 240]
+    cost: { money: source:local_events, energy: -0.25 }
+    inputs: [local_events, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, purchase, memory, share_candidate]
+    share: { score: high, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { extraversion: 0.4, openness: 0.4 }
+      interests: [music, theater]
+    visibility: public
+
+  - id: bookstore_visit
+    name: 逛书店/图书馆
+    category: culture
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.5 }
+      - { type: intent, intent: want_book, p: 0.3 }
+    gating: { time_min: 45 }
+    frequency: { cooldown_h: 72 }
+    duration_min: [30, 120]
+    cost: { money: [0, 120] }
+    inputs: [poi_search, bookshelf, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [item, purchase, intent, interest_exposure]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.5 }
+      interests: [reading]
+    visibility: public
+
+  - id: market_or_fair
+    name: 逛市集/展会
+    category: culture
+    scope: universal
+    triggers:
+      - { type: feed, source: local_events, match: [market, fair, expo], p: 0.15 }
+    gating: { time_min: 90, money_min: 30 }
+    frequency: { cooldown_h: 336 }
+    duration_min: [60, 180]
+    cost: { money: [20, 200], energy: -0.2 }
+    inputs: [local_events, route_planner]
+    llm: { tier: text, calls: 1 }
+    outputs: [purchase, item, impression, share_candidate]
+    share: { score: medium, form: image }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { extraversion: 0.3, openness: 0.4 }
+    visibility: public
+
+# ---------------------------- 运动与身体 -------------------------------
+
+  - id: exercise
+    name: 运动
+    category: fitness
+    scope: universal
+    description: 跑步、球类、健身、游泳等，具体项目由兴趣引擎和场地决定
+    triggers:
+      - { type: random, rate: 1.5 }
+      - { type: calendar, event: fitness_test, p: 0.6 }    # 体测前突击
+      - { type: state, cond: "stress > 0.6", p: 0.1 }
+    gating: { time_min: 30, energy_min: 0.4, excludes_state: [sick] }
+    frequency: { cooldown_h: 24 }
+    duration_min: [30, 120]
+    cost: { energy: -0.3 }
+    inputs: [weather, poi_search]
+    llm: { tier: none, calls: 0 }
+    outputs: [skill_delta, mood_delta]
+    followups:
+      - { activity: shower, p: 0.9, delay_h: [0, 1] }
+    share: { score: low, form: text }
+    presentation: { pose: out, interruptible: true }
+    social: npc_optional
+    modifiers:
+      traits: { conscientiousness: 0.4, extraversion: 0.2 }
+      interests: [sports]
+    visibility: public
+
+  - id: fitness_test
+    name: 体测
+    category: fitness
+    scope: student
+    triggers:
+      - { type: calendar, event: fitness_test_day, p: 1.0 }
+    gating: { locations: [campus] }
+    duration_min: [60, 180]
+    cost: { energy: -0.5 }
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, memory]
+    share: { score: medium, form: text }
+    presentation: { pose: out, interruptible: false }
+    social: npc_optional
+    variants: [passed, barely_passed, failed]
+    visibility: public
+
+# ------------------------------ 数字生活 -------------------------------
+
+  - id: check_trending
+    name: 看热搜
+    category: digital
+    scope: universal
+    triggers:
+      - { type: time_window, windows: ["07:30-09:30", "12:00-13:30", "21:00-23:30"], p: 0.3 }
+    gating: {}
+    frequency: { cooldown_h: 6 }
+    duration_min: [3, 20]
+    inputs: [trending]
+    llm: { tier: text, calls: 1 }     # 过滤争议与引战内容后再生成印象
+    outputs: [impression]
+    share: { score: low, form: link }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: grab_tickets
+    name: 抢票/抢名额
+    category: digital
+    scope: universal
+    triggers:
+      - { type: intent, intent: need_ticket, p: 0.9 }
+    gating: {}
+    duration_min: [5, 60]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta, purchase]
+    share: { score: medium, form: text }
+    presentation: { pose: phone, interruptible: false }
+    social: solo
+    variants: [success, waitlist, failed]
+    visibility: public
+
+  - id: phone_cleanup
+    name: 整理手机/备忘录
+    category: digital
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.15 }
+      - { type: state, cond: "procrastinating == true", p: 0.05 }
+    gating: { time_min: 15 }
+    frequency: { cooldown_h: 336 }
+    duration_min: [15, 45]
+    inputs: [memory_store, interest_engine]
+    llm: { tier: text, calls: 1 }
+    outputs: [memory, intent]
+    followups:
+      - { activity: revive_old_hobby, p: 0.1, delay_h: [0, 48] }
+      - { activity: revisit_old_memory, p: 0.3, delay_h: [0, 0] }
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+# ------------------------------ 内心活动 -------------------------------
+
+  - id: revisit_old_memory
+    name: 翻看旧照片/旧物
+    category: inner
+    scope: universal
+    description: 从记忆库随机抽取旧记忆重新体验，让长期记忆真正被使用
+    triggers:
+      - { type: random, rate: 0.5 }
+      - { type: calendar, event: memory_anniversary, p: 0.5 }   # 「一年前的今天」
+      - { type: chain, after: tidy_room, delay_h: [0, 0] }
+    gating: {}
+    frequency: { cooldown_h: 72 }
+    duration_min: [5, 30]
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [mood_delta, impression, share_candidate]
+    share: { score: high, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: owner_only
+
+  - id: reread_diary
+    name: 重读旧日记
+    category: inner
+    scope: universal
+    triggers:
+      - { type: random, rate: 0.1 }
+      - { type: calendar, event: year_end, p: 0.4 }
+    gating: { time_min: 15 }
+    frequency: { cooldown_h: 720 }
+    duration_min: [15, 45]
+    inputs: [memory_store]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, mood_delta]
+    share: { score: low, form: text }
+    presentation: { pose: reading, interruptible: true }
+    social: solo
+    visibility: owner_only
+
+  - id: daydream
+    name: 发呆/想事情
+    category: inner
+    scope: universal
+    description: 思考最近学到或遇到的一个问题；输入来自记忆和课程，不凭空生成
+    triggers:
+      - { type: random, rate: 3 }
+      - { type: state, cond: "bored == true", p: 0.3 }
+    gating: {}
+    frequency: { cooldown_h: 6 }
+    duration_min: [5, 60]
+    inputs: [memory_store, course_system, bookshelf]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, note, share_candidate]
+    share: { score: medium, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { openness: 0.5, extraversion: -0.3 }
+    visibility: public
+
+  - id: homesick
+    name: 想家
+    category: inner
+    scope: universal
+    triggers:
+      - { type: calendar, event: major_holiday, p: 0.3 }
+      - { type: chain, after: call_family, delay_h: [0, 6], p: 0.2 }
+      - { type: state, cond: "days_away_from_home > 60", p: 0.05 }
+    gating: {}
+    frequency: { cooldown_h: 168 }
+    duration_min: [10, 60]
+    inputs: [npc_roster, memory_store]
+    llm: { tier: none, calls: 0 }
+    outputs: [mood_delta]
+    followups:
+      - { activity: call_family, p: 0.3, delay_h: [0, 24] }
+    share: { score: medium, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: solo
+    visibility: owner_only
+
+  - id: plan_and_procrastinate
+    name: 列计划然后拖着
+    category: inner
+    scope: universal
+    triggers:
+      - { type: state, cond: "deadline_pressure > 0.4", p: 0.3 }
+      - { type: calendar, event: week_start, p: 0.3 }
+    gating: {}
+    frequency: { cooldown_h: 48 }
+    duration_min: [5, 20]
+    inputs: [course_system]
+    llm: { tier: none, calls: 0 }
+    outputs: [note, stress_delta]
+    followups:
+      - { activity: scroll_feed, p: 0.4, delay_h: [0, 1] }
+      - { activity: study_session, p: 0.3, delay_h: [0, 6] }
+    share: { score: low, form: text }
+    presentation: { pose: writing, interruptible: true }
+    social: solo
+    modifiers:
+      traits: { conscientiousness: -0.5 }
+    visibility: public
+
+# ---------------------------- 节日与季节 -------------------------------
+
+  - id: solar_term_custom
+    name: 节气习俗
+    category: seasonal
+    scope: universal
+    description: 冬至、立春等节气的饮食与习俗，具体内容按角色籍贯和地区决定
+    triggers:
+      - { type: calendar, event: solar_term, p: 0.4 }
+    gating: {}
+    duration_min: [15, 90]
+    cost: { money: [0, 40] }
+    inputs: [solar_terms, weather]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, purchase, share_candidate]
+    share: { score: medium, form: text }
+    presentation: { pose: eating, interruptible: true }
+    social: npc_optional
+    visibility: public
+
+  - id: festival
+    name: 过节
+    category: seasonal
+    scope: universal
+    triggers:
+      - { type: calendar, event: festival, p: 1.0 }
+    gating: {}
+    duration_min: [60, 1440]
+    cost: { money: [0, 200] }
+    inputs: [calendar_holidays, solar_terms, npc_roster]
+    llm: { tier: text, calls: 1 }
+    outputs: [memory, purchase, mood_delta, share_candidate]
+    share: { score: high, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: npc_optional
+    visibility: public
+
+  - id: shopping_festival
+    name: 购物节
+    category: seasonal
+    scope: universal
+    triggers:
+      - { type: calendar, event: shopping_festival, p: 0.8 }
+    gating: {}
+    duration_min: [30, 120]
+    inputs: [shopping_trends, economy]
+    llm: { tier: none, calls: 0 }
+    outputs: [intent]
+    followups:
+      - { activity: online_shopping, p: 0.7, delay_h: [0, 24] }
+    share: { score: low, form: text }
+    presentation: { pose: phone, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: anniversary_of_figure
+    name: 名人纪念日
+    category: seasonal
+    scope: universal
+    description: 角色喜欢的作家、艺术家、科学家的诞辰忌日
+    triggers:
+      - { type: calendar, event: favorite_figure_anniversary, p: 0.6 }
+    gating: {}
+    duration_min: [10, 60]
+    inputs: [anniversaries, public_domain_text, bookshelf]
+    llm: { tier: text, calls: 1 }
+    outputs: [impression, share_candidate]
+    share: { score: medium, form: text }
+    presentation: { pose: reading, interruptible: true }
+    social: solo
+    visibility: public
+
+  - id: term_milestone
+    name: 学期节点
+    category: seasonal
+    scope: student
+    description: 开学、期中、期末结束、毕业季等节点的情绪与仪式
+    triggers:
+      - { type: calendar, event: term_milestone, p: 1.0 }
+    gating: {}
+    duration_min: [0, 120]
+    inputs: [school_calendar]
+    llm: { tier: text, calls: 1 }
+    outputs: [mood_delta, memory, share_candidate]
+    followups:
+      - { activity: tidy_room, p: 0.3, delay_h: [0, 48] }
+    share: { score: medium, form: text }
+    presentation: { pose: idle, interruptible: true }
+    social: npc_optional
+    variants: [term_start, midterm, finals_over, graduation_season]
+    visibility: public

@@ -1,0 +1,7 @@
+#!/usr/bin/python3 -I
+"""Root console entry point, deliberately absent from the SSH command dispatcher."""
+import runpy
+
+
+if __name__ == "__main__":
+    runpy.run_path("/usr/local/lib/companion-deploy/deploy_host.py")["approve_main"]()
