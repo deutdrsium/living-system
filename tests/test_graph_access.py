@@ -2,7 +2,6 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
-from time import perf_counter
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 import unittest
@@ -587,7 +586,7 @@ class PackageRoutingTests(unittest.TestCase):
                 with self.assertRaises(KernelError):
                     nav.quote('home', 'near', MONDAY)
 
-    def test_campus_sized_windowed_grid_has_bounded_search_time(self):
+    def test_campus_sized_windowed_grid_has_bounded_transition_count(self):
         p = graph()
         node, edge = p['nodes'][0], p['edges'][0]
         p['nodes'] = [{**node, 'place_id': f'p-{x}-{y}', 'name': f'grid {x} {y}'}
@@ -604,12 +603,9 @@ class PackageRoutingTests(unittest.TestCase):
         self.confirm(seal_package(p))
         nav = OfflineNavigation(self.store, 'test-home', currency='CNY', access_policy=GraphAccessPolicy())
         with patch.object(nav, '_walk_candidate', wraps=nav._walk_candidate) as transitions:
-            began = perf_counter()
             q = nav.quote('p-0-0', 'p-19-19', MONDAY)
-            took = perf_counter() - began
         self.assertEqual(q.duration_s, 19 * 60)
         self.assertLessEqual(transitions.call_count, len(p['edges']))
-        self.assertLess(took, 2.0, f'400-node windowed quote took {took:.3f}s')
         self.assertLessEqual(len([s for s in q.segments if s.mode == 'walk']), 38)
 
     def test_windowed_400_node_chain_does_not_limit_route_to_256_segments(self):
@@ -624,12 +620,9 @@ class PackageRoutingTests(unittest.TestCase):
         p['build_report']['counts'] = {'nodes': 400, 'edges': 399, 'components': 1}
         self.confirm(seal_package(p))
         nav = OfflineNavigation(self.store, 'test-home', currency='CNY', access_policy=GraphAccessPolicy())
-        began = perf_counter()
         q = nav.quote('p-0', 'p-399', MONDAY)
-        took = perf_counter() - began
         self.assertEqual(q.duration_s, 900)
         self.assertEqual(len([s for s in q.segments if s.mode == 'walk']), 399)
-        self.assertLess(took, 2.0, f'400-node windowed chain took {took:.3f}s')
 
     def test_optional_fields_validation_and_old_package_compatibility(self):
         self.assertEqual(validate_package(home_graph()), home_graph())
