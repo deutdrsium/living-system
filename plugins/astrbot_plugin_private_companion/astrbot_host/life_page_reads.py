@@ -20,11 +20,14 @@ from .web_api import outcome_response
 
 
 # Only the visible life workspace consumes these fields. The full host life API
-# also serves journals and interests and must keep its existing contract.
+# also serves journals and diary receipts and must keep its existing contract.
+# The role's interests are the owner's own dashboard view of the role, so the
+# interests panel's fields are forwarded as-is.
 LIFE_PAGE_FIELDS = frozenset({
     "role_id", "host_state", "failure_code", "edit_token", "view_token",
     "next_sleep_at", "sleep_schedule", "body_sleep", "reading_plan",
-    "activities", "next_activity", "next_date",
+    "activities", "next_activity", "next_date", "next_note_cursor", "refresh_active",
+    "interests", "profile_hobbies", "disliked_items", "recent_exposures",
 })
 NOTE_FIELDS = {
     "reading_note": frozenset({"kind", "activity_id", "local_date", "completed_at", "state",
@@ -37,6 +40,7 @@ WALLET_FIELDS = frozenset({"enabled", "currency", "minor_unit_digits", "balance_
 RESERVATION_FIELDS = frozenset({"reservation_id", "activity_label", "limit_minor", "amount_remaining_minor",
     "status", "review_at"})
 TRANSACTION_FIELDS = frozenset({"transaction_id", "kind", "amount_minor", "currency", "occurred_at", "activity_label"})
+CLASS_FIELDS = ("course", "date", "start", "end", "place", "cancelled")
 
 
 def wallet_page_data(data):
@@ -164,22 +168,21 @@ class LifePageReads:
             async with self.controller._control_lock:
                 manager, operator = LifeWebAPI(self.controller).manager()
                 manager.authorize(operator)
-                # Wallet reads need neither the legacy activity snapshot nor a
-                # host runtime transaction; the provider takes a short read lock.
-                data = {"enabled": False}
-                if callable(reader):
-                    try:
-                        data = reader(owner_key=digest(manager.owner), context_key=manager.context.key,
-                                      limit=limit, before=before)
-                    except ValueError as error:
-                        # Provider KernelError carries a code. Preserve it before
-                        # the query fallback without importing the optional plugin
-                        # (AstrBot can load it under a different package name).
-                        code = getattr(error, "code", None)
-                        if type(code) is not str or not code:
-                            raise
-                        raise TaskError(code, str(error)) from error
-                return outcome_response(Outcome.success(wallet_page_data(data)))
+                scope = {"owner_key": digest(manager.owner), "context_key": manager.context.key}
+            # Like management(), acquire the provider's read lock off-loop. Even
+            # waiting for another life snapshot must not stall unrelated requests.
+            data = {"enabled": False}
+            if callable(reader):
+                try:
+                    data = await asyncio.to_thread(reader, **scope, limit=limit, before=before)
+                except ValueError as error:
+                    # Provider KernelError carries a code. Preserve it before
+                    # the query fallback without importing the optional plugin.
+                    code = getattr(error, "code", None)
+                    if type(code) is not str or not code:
+                        raise
+                    raise TaskError(code, str(error)) from error
+            return outcome_response(Outcome.success(wallet_page_data(data)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except sqlite3.Error:
@@ -228,6 +231,35 @@ class LifePageReads:
                 "skipped": max(page["skipped"] for page in pages), "skipped_reasons": reasons,
                 "scan_truncated": any(page["scan_truncated"] for page in pages),
                 "occurrences_truncated": overflow + sum(page["occurrences_truncated"] for page in pages)}
+
+        return await self._run(read, calendar=True)
+
+    async def class_sessions(self):
+        """The role's class sessions on [start, end) local dates in its planning timezone.
+
+        Fails with missing_dependency while academics is unavailable, so the page
+        keeps treating blank time as unknown instead of free.
+        """
+        try:
+            query = _query({"start", "end"})
+            first, last = _day(query.get("start")), _day(query.get("end"))
+            if not 0 < (last - first).days <= 7:
+                raise ValueError("query one to 7 local dates; end is exclusive")
+        except (ValueError, TypeError):
+            return outcome_response(Outcome.failed("life_query_invalid", "invalid class date range"))
+
+        def read(manager, operator, _access):
+            app, context = manager.app, manager.context
+            config = require(app.configuration.read(operator, target=state_target(context), group_id=STATE_GROUP,
+                                                    observed_at=app.now()))
+            zone_name = config.values[STATE_GROUP + ".planning_timezone"]
+            zone = ZoneInfo(zone_name)
+            sessions = app.calendar.class_sessions(context, _midnight(first, zone), _midnight(last, zone))
+            if sessions is None:
+                raise TaskError("missing_dependency", "academics is unavailable")
+            items = [{key: item.get(key) for key in CLASS_FIELDS} for item in sessions
+                     if first.isoformat() <= str(item.get("date")) < last.isoformat()]
+            return {"start": first.isoformat(), "end": last.isoformat(), "timezone": zone_name, "items": items}
 
         return await self._run(read, calendar=True)
 

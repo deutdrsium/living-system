@@ -36,7 +36,7 @@ from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, Ta
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.storage.repositories import OperationRepository
 
 from .models import SCREEN_OWNER, ScreenCaptureRef, ScreenFeedbackKind, ScreenInterpretation
@@ -51,7 +51,7 @@ OWNER = "screen.interpretation"
 ACTION = "extension.tool.invoke"
 PROFILE_KIND = KIND
 PROCESSOR_ID = "screen-interpretation-v1"
-TIMEOUT_SECONDS = 60
+TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 # Reasoning-capable vision providers count reasoning in this limit as well.
 # Keep the visible interpretation short through PROMPT instead of truncating JSON.
 MAX_OUTPUT_TOKENS = 2048
@@ -69,7 +69,8 @@ PROMPT = (
 )
 
 
-def screen_interpretation_profile(provider, *, max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=20):
+def screen_interpretation_profile(provider, *, max_output_tokens=MAX_OUTPUT_TOKENS,
+                                  timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS):
     """The background vision profile this interpretation needs; unconfigured by default."""
     return ModelTaskProfile(PROFILE_KIND, Lane.BACKGROUND, provider,
         "对已授权的屏幕原件写简短、谨慎的可见内容解读。",

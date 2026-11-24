@@ -2,13 +2,15 @@
  *
  * 读取：academics/places（开关与地点）、academics/term、academics/timetable、
  *       academics/occurrences（只读当前看的那一周）。
+ * 学习（只读）：展开某门课时才读 academics/syllabus、assignments、study_progress、grades（每学期一次），
+ *       以及每项作业的 academics/study_artifacts；点开一份记录时读 study_artifacts/<编号> 的全文。
  * 写入：只有 academics/command。每条命令带上最近一次读到的 revision；
  *       命令成功后用回执里的 revision 接着发下一条，全部完成后整页重读。
  * 换角色时 app.js 调 reset()，世代号让切换前发出的响应作废。 */
 "use strict";
 window.GoodLifeTimetablePage = (() => {
   const fresh = () => ({status:"idle", code:"", setup:null, revision:0, termRevision:0, terms:[], termId:null, entries:null, week:0,
-    occurrences:null, panel:null, draft:null, placeFilter:"", confirm:null, busy:false, message:null});
+    occurrences:null, panel:null, draft:null, placeFilter:"", confirm:null, busy:false, message:null, study:null});
   const hex = () => {
     const bytes = new Uint8Array(8);
     globalThis.crypto.getRandomValues(bytes);
@@ -28,7 +30,19 @@ window.GoodLifeTimetablePage = (() => {
     const group = id => V.courses(state.entries).find(item => item.course.course_id === id) || null;
     const today = () => V.localParts(now(), term()?.timezone || zone()).date;
 
+    /* 异步结果到达时整页重绘；键盘焦点在学习区的展开标题或记录按钮上时，重绘后放回原处。 */
+    const quote = value => '"' + String(value).replace(/["\\]/g, "\\$&") + '"';
+    function kept() {
+      const active = globalThis.document?.activeElement;
+      if (!active || !root.contains?.(active)) return null;
+      const openKey = active.matches?.("summary") && active.parentElement?.getAttribute?.("data-tt-open");
+      if (openKey) return `[data-tt-open=${quote(openKey)}] > summary`;
+      for (const name of ["data-tt-artifact", "data-tt-artifacts-more", "data-tt-study-retry"])
+        if (active.hasAttribute?.(name)) return `[${name}=${quote(active.getAttribute(name))}]`;
+      return null;
+    }
     function render(focus) {
+      focus = focus || kept();
       root.innerHTML = V.render(state, {now:now(), zone:zone()});
       if (!focus) return;
       const target = root.querySelector(focus);
@@ -57,6 +71,7 @@ window.GoodLifeTimetablePage = (() => {
       const list = terms.value.terms;
       const termId = list.some(item => item.term_id === state.termId) ? state.termId : V.defaultTerm(list, today())?.term_id || null;
       const changedTerm = termId !== state.termId;
+      /* 学习区的展开状态与已读结果跟着学期走；换学期时 studyOf() 自动给出新的空状态。 */
       state = {...state, status:"ready", setup, revision:terms.value.revision, termRevision:terms.value.revision, terms:list, termId,
         week:changedTerm ? 0 : state.week, entries:changedTerm ? null : state.entries, occurrences:changedTerm ? null : state.occurrences};
       render();
@@ -91,6 +106,83 @@ window.GoodLifeTimetablePage = (() => {
       if (!current(run) || state.occurrences?.key !== key) return;
       state = {...state, occurrences:entry};
       render();
+    }
+
+    /* === 学习（只读）=== */
+    const study = () => V.studyOf(state);
+    const setStudy = change => { state = {...state, study:{...study(), ...change}}; };
+    const failure = reason => ({status:"error", code:reason?.code || "read_failed"});
+
+    async function loadCourse(courseId, run = generation) {
+      const selected = term();
+      if (!selected) return;
+      const termId = selected.term_id, query = {term_id:termId, course_id:courseId};
+      const needGrades = !study().grades || study().grades.status === "error";
+      setStudy({courses:{...study().courses, [courseId]:{status:"loading"}}, ...(needGrades ? {grades:{status:"loading"}} : {})});
+      render();
+      const [units, list, progress, grades] = await Promise.allSettled([
+        api("GET", "academics/syllabus", query), api("GET", "academics/assignments", query), api("GET", "academics/study_progress", query),
+        needGrades ? api("GET", "academics/grades", {term_id:termId}) : Promise.resolve(null)]);
+      if (!current(run) || state.termId !== termId) return;
+      const pick = (result, field) => result.status === "fulfilled" && Array.isArray(result.value?.[field]) ? result.value[field] : null;
+      const entry = {status:"ok", units:pick(units, "units"), assignments:pick(list, "assignments"), progress:pick(progress, "items"),
+        codes:{units:units.reason?.code, assignments:list.reason?.code}};
+      /* 大纲和作业都读不到才算整门课读取失败；进度读不到只是不显示进度条。 */
+      const result = !entry.units && !entry.assignments ? failure(list.reason || units.reason) : entry;
+      const change = {courses:{...study().courses, [courseId]:result}};
+      if (needGrades) change.grades = pick(grades, "grades") ? {status:"ok", items:grades.value.grades} : failure(grades.reason);
+      setStudy(change);
+      render();
+      if (result.status === "ok") await Promise.all((result.assignments || []).map(item => loadArtifacts(item.assignment_id, {run})));
+    }
+
+    async function loadArtifacts(assignmentId, {run = generation, more = false} = {}) {
+      const termId = state.termId, previous = study().artifacts[assignmentId];
+      if (more && (!previous?.next || previous.more)) return;
+      setStudy({artifacts:{...study().artifacts, [assignmentId]:more ? {...previous, more:true} : {status:"loading"}}});
+      render();
+      let entry;
+      try {
+        const data = await api("GET", "academics/study_artifacts", {assignment_id:assignmentId, limit:20, ...(more ? {before:previous.next} : {})});
+        entry = Array.isArray(data?.items) ? {status:"ok", items:[...(more ? previous.items : []), ...data.items], next:data.next_before || null}
+          : failure({code:"invalid_response"});
+      } catch (error) { entry = more ? {...previous, more:false} : failure(error); }
+      if (!current(run) || state.termId !== termId) return;
+      setStudy({artifacts:{...study().artifacts, [assignmentId]:entry}});
+      render();
+    }
+
+    async function openArtifact(id, run = generation) {
+      if (study().artifact?.id === id) { setStudy({artifact:null}); return render(); }
+      const termId = state.termId;
+      setStudy({artifact:{id, status:"loading"}});
+      render();
+      let entry;
+      try {
+        const record = await api("GET", "academics/study_artifacts/" + encodeURIComponent(id), {});
+        entry = record && typeof record === "object" ? {id, status:"ok", record} : {id, ...failure({code:"invalid_response"})};
+      } catch (error) { entry = {id, ...failure(error)}; }
+      if (!current(run) || state.termId !== termId || study().artifact?.id !== id) return;
+      setStudy({artifact:entry});
+      render();
+    }
+
+    /* 展开 / 收起只记下键；第一次展开一门课时才去读。
+       主要靠点 <summary>（键盘回车、空格也会触发 click）：浏览器的 toggle 事件要排到下一个任务才发，
+       这中间要是有异步结果重绘了页面，它会落在已经换掉的旧元素上，展开就丢了。
+       toggle（在根节点上捕获，它不冒泡）只作补充，状态已一致时什么也不做。 */
+    function setOpen(key, opened) {
+      const open = new Set(study().open);
+      if (opened === open.has(key)) return;
+      if (opened) open.add(key); else open.delete(key);
+      setStudy({open:[...open]});
+      const courseId = key.startsWith("course:") ? key.slice(7) : null;
+      const data = courseId && study().courses[courseId];
+      if (opened && courseId && (!data || data.status === "error")) void loadCourse(courseId);
+    }
+    function toggle(event) {
+      const key = event.target?.getAttribute?.("data-tt-open");
+      if (key) setOpen(key, !!event.target.open);
     }
 
     /* 依次发命令。开始保存时就定下接口前缀（角色）和 revision；step(send) 里每次 send 都用上一条的回执 revision。
@@ -213,6 +305,18 @@ window.GoodLifeTimetablePage = (() => {
         state = {...state, week, panel:state.panel?.kind === "session" ? null : state.panel};
         return void loadWeek();
       }
+      /* 点的是 <summary>：click 先于浏览器的展开动作，所以新状态是当前状态取反。 */
+      const box = event.target.closest?.("summary")?.parentElement;
+      const openKey = box?.getAttribute?.("data-tt-open");
+      if (openKey) return setOpen(openKey, !box.open);
+      if (hit("data-tt-artifact")) return void openArtifact(data("data-tt-artifact"));
+      if (hit("data-tt-artifact-close")) {
+        const id = study().artifact?.id;
+        setStudy({artifact:null});
+        return render(id ? `[data-tt-artifact=${quote(id)}]` : undefined);
+      }
+      if (hit("data-tt-artifacts-more")) return void loadArtifacts(data("data-tt-artifacts-more"), {more:true});
+      if (hit("data-tt-study-retry")) return void loadCourse(data("data-tt-study-retry"));
       if (hit("data-tt-close")) { state = {...state, panel:null, draft:null, confirm:null}; return render(); }
       if (hit("data-tt-unconfirm")) { state = {...state, confirm:null}; return render(); }
       if (hit("data-tt-confirm")) { state = {...state, confirm:data("data-tt-confirm")}; return render(); }
@@ -266,6 +370,7 @@ window.GoodLifeTimetablePage = (() => {
     root.addEventListener("input", input);
     root.addEventListener("change", change);
     root.addEventListener("submit", submit);
+    root.addEventListener("toggle", toggle, true);
 
     return {
       show() { if (state.status === "idle") void load(); else render(); },

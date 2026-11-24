@@ -4,7 +4,7 @@
 
 普通核心聊天在唤醒主模型前执行已启用的 Laya 分类。INFO 日志中的 `Laya 核心接话判断` 包含 `event_ref`、`turn_id`、`status`、实际启用的 `action`、跳过/失败原因、失败原因的真实说明和 `elapsed_ms`；`reason_detail` 只在配置被拒绝等可操作失败时给出具体字段与合法取值，没有说明时记 `-`。等待或沉默另有 `Laya 决策跳过主模型`。`非@群核心回复候选` 只是规则筛选，最终群日志的 `reason_source=laya/model/policy` 区分分类模型、主模型选择与规则来源。Laya 关闭、分类全部关闭、引用机器人消息和调用失败都会留下明确状态；调用失败继续原有处理。复读是否参与也先经过已启用的 Laya，放行后沿用固定复读动作，不调用主模型生成复读正文。
 
-私聊在 Laya 判定之外另有确定性的收尾判断：INFO 日志 `私聊收尾判断` 记录 `event_ref`、`turn_id`、`status`、`action`、`reason`、`last_reply_at`、`categories` 和 `elapsed_ms`，不记录消息正文；实际跳过默认模型时另记 `私聊收尾判断跳过主模型`。该判断只使用已授权的原生对话和 `conversation.presentation` 中的三个收尾配置，读取失败时继续普通回复；它不是 Laya 调用，不写入 `laya_decision_events`。跳过后的核心观察沿用 `generation_state=suppressed`，请求和发送计数为零。
+私聊也走 Laya：`Laya 核心接话判断` 日志带 `channel=private`，`reason` 为 `laya_private_silent`（达到私聊沉默阈值，跳过回复）、`laya_private_silence_below_threshold` / `laya_private_silence_confidence_unavailable`（判为沉默但不够确定，照常回复）或 `laya_private_disabled`（私聊开关关闭）。实际跳过默认模型时另记 `Laya 决策跳过主模型`，未回复台账的原因码为 `laya_private_silent`。跳过后的核心观察沿用 `generation_state=suppressed`，请求和发送计数为零。
 
 撤回通知受理后记 `已记录消息撤回`（含 `notice`、scope、message_id 与 withdrawn_inputs/revoked_quotes/recalled_replies），重复通知按同一消息与路由幂等。群管理员撤回他人消息时，标记仍按消息与路由命中原文作者；核心回复在发送前再次检查触发消息，已撤回则拒绝发送。`msg_id` 作为 `message_id` 的兼容别名读取。核心管理员在聊天中明确询问撤回内容时，本轮上下文注入最近 5 条有界摘要；普通提及「撤回」不触发，非核心管理员只得到权限说明，不注入原文。
 

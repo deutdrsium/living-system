@@ -12,7 +12,8 @@
     bridge_timeout: "等待超时，结果未确认，可能已在处理；请先刷新核对，确认未完成再重试。" };
   let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null, archiveKind = "reading_note", loadSequence = 0;
-  let readGeneration;
+  let readGeneration, workspaceActive = false;
+  const visibleView = () => tab === "archive" ? "archive" : tab === "interests" ? "interests" : tab === "sleep" ? "settings" : "reading";
   /* 每个板块查询自己的 archive_kind（后端接受 diary / reading_note / social_note）。
      宿主的生活读取只放行 reading_note、social_note 两类 journals，diary 查到的日记会被过滤，
      所以内嵌时不再以 diary 起步。作息与设置不展示笔记，沿用 reading_note。 */
@@ -24,6 +25,52 @@
   const configFields = [...booleanFields, "timezone", "diary_time", "sleep_time", "sleep_timezone", ...numberFields];
   const date = value => value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
   const kind = item => item.kind === "dream" ? "梦境" : item.kind === "reading_note" ? "读书笔记" : item.kind === "social_note" ? "上网笔记" : "日记";
+  /* 阅读按书归组。页面拿不到书的稳定 id：读书笔记只带 book_title，书架片段的 title 是
+     「书名 · 起–止 / 总数 字符」，后端的 book_title 也是取最后一个「 · 」之前的部分，
+     所以两处都按同一规则取书名归组（同名的两本书会并成一组）。没有书名的归入「其他」。 */
+  const otherBook = "其他";
+  const bookName = title => {
+    const text = typeof title === "string" ? title.trim() : "";
+    const cut = text.lastIndexOf(" · ");
+    return (cut > 0 ? text.slice(0, cut) : text).trim() || otherBook;
+  };
+  const bookTotal = title => { const match = /\/ (\d+) 字符$/.exec(typeof title === "string" ? title : ""); return match ? Number(match[1]) : null; };
+  const timeValue = value => { const at = value ? Date.parse(value) : NaN; return Number.isNaN(at) ? -Infinity : at; };
+  const shortDate = value => new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  /* 每组的展开状态只记用户亲手点过的；没点过的按默认（最近的一组展开）。轮询重绘时保持不变。 */
+  const bookOpen = new Map();
+  function groupByBook(items, nameOf, timeOf) {
+    const groups = new Map();
+    for (const item of items) {
+      const name = nameOf(item);
+      if (!groups.has(name)) groups.set(name, { name, items: [], latest: -Infinity, latestAt: null });
+      const group = groups.get(name), at = timeValue(timeOf(item));
+      group.items.push(item);
+      if (at > group.latest) { group.latest = at; group.latestAt = timeOf(item); }
+    }
+    return [...groups.values()].sort((a, b) => (a.name === otherBook) - (b.name === otherBook) || b.latest - a.latest || a.name.localeCompare(b.name, "zh-CN"));
+  }
+  function bookGroup(scope, group, summaryText, defaultOpen) {
+    const key = scope + ":" + group.name, details = node("details", undefined, "book-group");
+    details.open = bookOpen.has(key) ? bookOpen.get(key) : defaultOpen;
+    const summary = node("summary");
+    summary.dataset.focusKey = key;
+    summary.append(node("strong", group.name === otherBook ? group.name : "《" + group.name + "》"), node("small", summaryText));
+    summary.addEventListener("click", () => bookOpen.set(key, !details.open));
+    const body = node("div", undefined, "book-group-body");
+    details.append(summary, body);
+    return { details, body };
+  }
+  /* 轮询每 3 秒重绘列表；记下焦点所在的项，重绘后放回去，键盘用户不会被打回页首。 */
+  function focusedKey(list) {
+    const active = document.activeElement;
+    return active && list.contains?.(active) ? active.dataset?.focusKey || null : null;
+  }
+  function restoreFocus(list, key) {
+    if (!key) return;
+    const target = [...(list.querySelectorAll?.("[data-focus-key]") || [])].find(el => el.dataset.focusKey === key);
+    target?.focus?.();
+  }
   const display = () => bridge?.getContext?.()?.display || {};
   function roleName() {
     if (display().role_name || state.role_name) return display().role_name || state.role_name;
@@ -57,12 +104,12 @@
     busy = value;
     document.querySelectorAll("button, select").forEach(b => { b.disabled = value; });
     $("close-dialog").disabled = false;
-    $("newer").disabled = value || datePage === 0; $("older").disabled = value || !state?.next_date;
+    $("newer").disabled = value || datePage === 0; $("older").disabled = value || !(state?.next_note_cursor || state?.next_date);
     $("more-activities").disabled = value || !state?.next_activity;
     $("first-activities").disabled = value || !activityCursor;
     /* 只有能翻页时才显示翻页条；没有下一批也不在首批时整条收起。 */
     $("activity-pages").classList.toggle("is-idle", !state?.next_activity && !activityCursor);
-    $("newer").parentElement.classList.toggle("is-idle", datePage === 0 && !state?.next_date);
+    $("newer").parentElement.classList.toggle("is-idle", datePage === 0 && !(state?.next_note_cursor || state?.next_date));
     $("start-host").disabled = value || state?.host_state === "running";
     $("stop-host").disabled = value || !state || ["new", "stopped"].includes(state.host_state);
     ["write-diary", "start-sleep"].forEach(id => { $(id).disabled = value || !state?.config?.enabled || state?.host_state !== "running"; });
@@ -117,19 +164,40 @@
     b.type = "button"; b.addEventListener("click", () => direct ? send(action, {}, item) : open(action, item)); return b;
   }
   function renderArchive() {
-    const list = $("journal-list"); list.replaceChildren();
+    const list = $("journal-list"), keepFocus = focusedKey(list); list.replaceChildren();
     const labels = {diary: "日记与梦境", reading_note: "读书笔记", social_note: "上网笔记"};
     const items = state.journals.filter(j => archiveKind === "diary" ? ["diary", "dream"].includes(j.kind) : j.kind === archiveKind);
     if (!items.length) list.append(node("p", `这里还没有${labels[archiveKind]}。`, "empty"));
     selected = items.find(j => j.kind === selected?.kind && j.local_date === selected?.local_date &&
       (!["reading_note", "social_note"].includes(j.kind) || j.activity_id === selected?.activity_id)) || items[0] || null;
-    for (const item of items) {
-      const b = node("button", `${item.local_date} · ${kind(item)}`, "journal-link"); b.type = "button";
+    const noteLink = (item, label, preview) => {
+      const b = node("button", label, "journal-link"); b.type = "button";
+      b.dataset.focusKey = "note:" + item.kind + ":" + item.local_date + ":" + (item.activity_id || "");
       b.setAttribute("aria-current", String(item === selected));
-      b.append(node("small", item.state === "deleted" ? "已删除" : item.unavailable_reason ? "来源不可用" :
-        (item.kind === "reading_note" ? item.book_title + " · " + (item.body || "") : item.body || item.afterglow || "").slice(0, 45)));
-      b.addEventListener("click", () => { selected = item; renderArchive(); }); list.append(b);
+      b.append(node("small", item.state === "deleted" ? "已删除" : item.unavailable_reason ? "来源不可用" : (preview || "").slice(0, 45)));
+      b.addEventListener("click", () => { selected = item; renderArchive(); });
+      return b;
+    };
+    if (archiveKind === "reading_note") {
+      /* 读书笔记按书归组；组内按读完的时间从早到晚，读起来就是这本书的阅读顺序。 */
+      const totals = new Map();
+      for (const a of state.activities) if (a.kind === "reading" && bookTotal(a.title)) totals.set(bookName(a.title), bookTotal(a.title));
+      const groups = groupByBook(items, item => bookName(item.book_title), item => item.completed_at || item.local_date);
+      groups.forEach((group, index) => {
+        const notes = [...group.items].sort((a, b) => timeValue(a.completed_at || a.local_date) - timeValue(b.completed_at || b.local_date) || (a.start_offset || 0) - (b.start_offset || 0));
+        const readTo = Math.max(0, ...notes.map(n => Number.isInteger(n.end_offset) ? n.end_offset : 0));
+        const total = totals.get(group.name);
+        const summary = [`${notes.length} 篇`, group.latestAt ? "最近 " + (group.latestAt.length > 10 ? shortDate(group.latestAt) : group.latestAt) : "",
+          readTo ? (total ? `读到 ${readTo} / ${total} 字` : `读到第 ${readTo} 字`) : ""].filter(Boolean).join(" · ");
+        const holdsSelected = group.items.includes(selected);
+        const {details, body} = bookGroup("notes", group, summary, index === 0 || holdsSelected);
+        for (const item of notes) body.append(noteLink(item, `${item.local_date}${Number.isInteger(item.start_offset) && Number.isInteger(item.end_offset) ? ` · 第 ${item.start_offset + 1}–${item.end_offset} 字` : ""}`, item.body));
+        list.append(details);
+      });
+    } else {
+      for (const item of items) list.append(noteLink(item, `${item.local_date} · ${kind(item)}`, item.body || item.afterglow || ""));
     }
+    restoreFocus(list, keepFocus);
     const detail = $("journal-detail"); detail.replaceChildren();
     if (!selected) { detail.append(node("p", `选择一篇${labels[archiveKind]}。`, "empty")); return; }
     const item = selected;
@@ -165,13 +233,32 @@
         (plan.reason ? " " + plan.reason : "")};
     $("reading-plan").textContent = planText[plan.state] || "";
     for (const type of ["reading", "sleep", "social"]) {
-      const list = $(type + "-list"); list.replaceChildren();
+      const list = $(type + "-list"), keepFocus = type === "reading" ? focusedKey(list) : null; list.replaceChildren();
       const items = state.activities.filter(a => a.kind === type);
       if (!items.length) list.append(node("p", type === "reading" ? "本批暂无阅读片段。" : type === "sleep" ? "本批没有睡眠记录。" : "本批暂无浏览记录。", "empty"));
-      for (const item of items) {
+      /* 阅读片段按书归组，组内按原文位置排；睡眠与浏览仍是平铺列表。 */
+      const targets = new Map();
+      let ordered = items;
+      if (type === "reading") {
+        ordered = [];
+        groupByBook(items, item => bookName(item.title), item => item.updated_at || item.started_at).forEach((group, index) => {
+          const parts = [...group.items].sort((a, b) => (a.start_offset ?? Infinity) - (b.start_offset ?? Infinity));
+          const total = parts.map(p => bookTotal(p.title)).find(Boolean);
+          const readTo = Math.max(0, ...parts.filter(p => p.state === "completed" && Number.isInteger(p.end_offset)).map(p => p.end_offset));
+          const summary = [`${parts.length} 段`, parts.some(p => p.state === "active") ? "正在读" : "",
+            total && readTo ? `已读 ${Math.min(100, Math.floor(readTo / total * 100))}%` : "",
+            group.latestAt ? "最近 " + shortDate(group.latestAt) : ""].filter(Boolean).join(" · ");
+          const {details, body} = bookGroup("shelf", group, summary, index === 0);
+          list.append(details);
+          for (const item of parts) { targets.set(item, body); ordered.push(item); }
+        });
+      }
+      for (const item of ordered) {
         const card = node("article", undefined, "activity");
         const badge = node("span", names[item.state] || "状态待核对", "badge"); badge.dataset.state = item.state || "";
-        card.append(node("h3", item.title), badge);
+        /* 组标题已写明书名，卡片只留这段的位置；取不出位置时保留原标题。 */
+        const span = type === "reading" && typeof item.title === "string" && item.title.includes(" · ") ? item.title.slice(item.title.lastIndexOf(" · ") + 3).trim() : "";
+        card.append(node("h3", span ? "片段 " + span : item.title), badge);
         /* due_at 对睡眠是计划醒来，对阅读/浏览是按速度排定的结束时间。 */
         const dueLabel = type === "sleep" ? "计划醒来" : "预计结束";
         card.append(node("p", `${item.started_at ? date(item.started_at) : "尚未开始"}${item.due_at ? " · " + dueLabel + " " + date(item.due_at) : ""}`, "muted"));
@@ -194,11 +281,16 @@
         if (["planned", "active", "paused"].includes(item.state)) actions.append(actionButton("取消", "cancel", item));
         if (type === "reading" && !item.unavailable_reason) actions.append(actionButton("撤回原文", "withdraw", item));
         if (type === "reading" && ["completed", "cancelled"].includes(item.state)) actions.append(actionButton("删除", "remove", item));
-        card.append(actions); list.append(card);
+        card.append(actions); (targets.get(item) || list).append(card);
       }
+      restoreFocus(list, keepFocus);
     }
   }
+  let interestSignature = "";
   function renderInterests() {
+    const signature = JSON.stringify([state.profile_hobbies, state.interests, state.disliked_items, state.recent_exposures]);
+    if (signature === interestSignature) return;
+    interestSignature = signature;
     const profile = $("profile-hobbies"); profile.replaceChildren();
     if (state.profile_hobbies) profile.append(node("h3", "角色档案中的爱好"),
       node("p", state.profile_hobbies, "prose"), node("p", "这是已有设定；下方是从实际活动中逐渐形成的线索。", "muted"));
@@ -219,9 +311,26 @@
       card.append(node("h3", item.name), badge);
       if (item.exposure_count) card.append(node("p", `有效接触 ${item.exposure_count} 次 · ${item.content_count} 条内容 · 熟悉度 ${item.familiarity}`, "muted"));
       if (item.summary) card.append(node("p", item.summary, "prose"));
-      for (const contact of item.contacts || []) card.append(node("p", `${date(contact.occurred_at)} · ${contact.platform} · ${contact.title}${contact.coverage ? " · " + (coverageNames[contact.coverage] || contact.coverage) : ""}`, "muted"));
       if (item.next_question) card.append(node("p", "想继续了解：" + item.next_question, "muted"));
-      for (const evidence of item.evidence || []) card.append(node("p", `${date(evidence.occurred_at)} · ${evidence.source || "活动"}${evidence.active === false ? " · 历史反馈" : ""} · ${evidence.reason}`, "muted"));
+      const trail = node("div"); card.append(trail);
+      const showDetails = detail => {
+        for (const contact of detail.contacts || []) trail.append(node("p", `${date(contact.occurred_at)} · ${contact.platform} · ${contact.title}${contact.coverage ? " · " + (coverageNames[contact.coverage] || contact.coverage) : ""}`, "muted"));
+        for (const evidence of detail.evidence || []) trail.append(node("p", `${date(evidence.occurred_at)} · ${evidence.source || "活动"}${evidence.active === false ? " · 历史反馈" : ""} · ${evidence.reason}`, "muted"));
+      };
+      if (item.compact) {
+        const more = node("button", "最近接触与感受记录", "secondary"); more.type = "button";
+        more.addEventListener("click", async () => {
+          const sequence = loadSequence; more.disabled = true;
+          try {
+            const result = await api("GET", {view: "interests", interest_id: item.interest_id});
+            if (sequence !== loadSequence) return;
+            const detail = result.interests?.find(entry => entry.interest_id === item.interest_id);
+            if (detail) { trail.replaceChildren(); showDetails(detail); more.hidden = true; }
+          } catch (error) { if (sequence === loadSequence) notice(error.message, true); }
+          finally { more.disabled = false; }
+        });
+        card.append(more);
+      } else showDetails(item);
       const actions = node("div", undefined, "actions");
       const args = {interest_id: item.interest_id, expected_revision: item.revision, view_token: item.view_token};
       const pause = node("button", item.status === "paused" ? "恢复探索" : "暂停探索", "secondary");
@@ -325,20 +434,22 @@
     if (state.failure_code) notice(errors[state.failure_code] || "生活日程已暂停，请检查执行权限与设置。", true);
   }
   async function load(preserveNotice = false) {
-    if (!bridge) return;
+    if (!bridge || !workspaceActive) return;
     const sequence = ++loadSequence;
+    clearTimeout(polling);
     try {
-      const result = await api("GET", { archive_kind: archiveKind, ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
+      const result = await api("GET", { compact: "1", limit: 20, view: visibleView(), archive_kind: archiveKind,
+        ...(datePages[datePage] ? { note_cursor: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
       if (sequence !== loadSequence) return;
       /* 宿主的生活读取按白名单裁剪：receipts / running 现在恒为空数组（日记与梦境的回执不再下发），
-         其余已移除的字段（interests 等）可能整个缺失。列表字段统一补成数组、config 补成对象，
+         其余未下发的字段（如 next_diary_at）可能整个缺失。列表字段统一补成数组、config 补成对象，
          各渲染函数不必逐处判空，也不会因缺字段抛错。 */
       const list = value => Array.isArray(value) ? value : [];
       state = {...result, journals: list(result.journals), activities: list(result.activities), receipts: list(result.receipts),
         running: list(result.running), config: result.config && typeof result.config === "object" ? result.config : {}};
       if (!preserveNotice) notice(""); render();
       clearTimeout(polling);
-      if (state.running.length || state.activities.some(a => a.state === "active") || state.config.reading_enabled) polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, 3000);
+      if (state.refresh_active || state.running.length || state.activities.some(a => a.state === "active") || state.reading_plan?.state === "choosing") polling = setTimeout(() => { if (!busy && !document.hidden && workspaceActive) load(true); }, 3000);
     } catch (error) {
       if (sequence !== loadSequence) return;
       state = selected = null;
@@ -392,7 +503,7 @@
     state = selected = dialogAction = dialogItem = null;
     datePages = [null]; datePage = 0; activityCursor = null;
     dirty = false;
-    blockedRetries.clear();
+    blockedRetries.clear(); bookOpen.clear(); interestSignature = "";
     $("config-form").reset();
     $("editor").close();
     $("dialog-error").hidden = $("retry-form").hidden = true;
@@ -406,20 +517,25 @@
     notice("");
     controls(false);
   }
-  document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => selectTab(b.dataset.tab)));
+  document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { selectTab(b.dataset.tab); void load(); }));
   document.querySelectorAll("[data-archive-kind]").forEach(b => b.addEventListener("click", () => selectArchiveKind(b.dataset.archiveKind)));
   /* 宿主切换板块：直接改 tab 与 archive_kind，不靠模拟点击（忙碌时按钮被禁用，点击会丢）。
      首次 context 在 ready() 之前处理，bridge 尚未就绪，load() 不发请求，首查即用该板块的 archive_kind。 */
   document.addEventListener("companion-section-change", event => {
-    const {section, tab: wanted, readGeneration: generation} = event.detail || {};
+    const {section, tab: wanted, readGeneration: generation, active} = event.detail || {};
+    const wasActive = workspaceActive, previousTab = tab;
+    workspaceActive = active !== false;
+    if (!workspaceActive) clearTimeout(polling);
     const scopeChanged = readGeneration !== generation;
     if (scopeChanged) {
       readGeneration = generation;
       resetScope();
     }
     if (wanted) selectTab(wanted);
-    if (sectionArchiveKinds[section]) selectArchiveKind(sectionArchiveKinds[section], !scopeChanged);
-    if (scopeChanged) void load();
+    const previousArchive = archiveKind;
+    if (sectionArchiveKinds[section]) selectArchiveKind(sectionArchiveKinds[section], false);
+    if (!workspaceActive) { loadSequence++; return; }
+    if (scopeChanged || !wasActive || previousTab !== tab || previousArchive !== archiveKind) void load();
   });
   $("config-form").addEventListener("input", () => { dirty = true; });
   $("config-form").addEventListener("submit", e => {
@@ -519,7 +635,7 @@
   $("epub-folder").addEventListener("change", importBooks);
   $("start-sleep").addEventListener("click", () => open("sleep"));
   $("write-diary").addEventListener("click", () => send("diary"));
-  $("older").addEventListener("click", () => { datePages[++datePage] = state.next_date; load(); });
+  $("older").addEventListener("click", () => { datePages[++datePage] = state.next_note_cursor || state.next_date; load(); });
   $("newer").addEventListener("click", () => { datePage--; load(); });
   $("more-activities").addEventListener("click", () => { activityCursor = state.next_activity; load(); });
   $("first-activities").addEventListener("click", () => { activityCursor = null; load(); });

@@ -427,6 +427,8 @@ class AstrBotStagingController:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
             from companion_v2.role_work.growth.configuration import migrate_legacy_skill_values
+            from companion_v2.conversation.reply_settings import retire_private_closing_values
+            retire_private_closing_values(runtime)
             migrate_window_values(runtime)
             migrate_legacy_policy_values(runtime)
             migrate_legacy_skill_values(runtime)

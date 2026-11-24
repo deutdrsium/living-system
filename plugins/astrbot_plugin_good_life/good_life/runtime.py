@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from threading import RLock
 from time import monotonic
+from zoneinfo import ZoneInfo
 
 from .kernel.binding import OptionalGroupBinding, OptionalKernel
 from .kernel.clock import MonotonicClock
@@ -21,13 +22,15 @@ from .state_records import StagedStateRecords
 from .state_commands import StagedStateCommands
 from .state_scheduler import StateSchedules
 from .staged_calendar_commands import StagedCalendarCommands
+from .economy.planned_spending import PlannedSpending
 
 
 class LifeRuntime:
     def __init__(self, storage, plugin, *, kernel_config=None, kernel_access=None, kernel_registry=None,
                  reading_executor_enabled=False, reading_abort_own_enabled=False,
                  state_model_config=None, state_model_access=None,
-                 academics_config=None, campus=None, kernel_enabled=False, wall_clock=None, monotonic_clock=None):
+                 academics_config=None, campus=None, kernel_enabled=False, wall_clock=None, monotonic_clock=None,
+                 planned_spending_config=None):
         self.storage, self.plugin = storage, plugin
         self.wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self.monotonic_clock = monotonic_clock or monotonic
@@ -86,14 +89,18 @@ class LifeRuntime:
         PreparedCommands(storage).install()
         configuration_commands = StagedConfigurationCommands(storage)
         configuration_commands.install()
+        self.activity_control = ActivityControl(storage, stop_reading=self._stop_reading)
+        self.planned_spending = PlannedSpending(storage, wallet=lambda: self._wallet, **(planned_spending_config or {}))
         self.handlers = {
-            "calendar_read": StagedCalendarRecords(storage).dispatch,
+            "calendar_read": StagedCalendarRecords(storage, spending=self.planned_spending,
+                                                   classes=self.read_class_sessions).dispatch,
             "configuration_read": StagedConfigurationRecords(storage).dispatch,
             "configuration_command": configuration_commands.dispatch,
-            "calendar_command": StagedCalendarCommands(storage).dispatch,
+            "calendar_command": StagedCalendarCommands(storage, spending=self.planned_spending).dispatch,
             "activity_read": StagedActivityRecords(storage).dispatch,
-            "activity_control": ActivityControl(storage, stop_reading=self._stop_reading).dispatch,
-            "activity_history": LifeEventDelivery(storage).dispatch,
+            "activity_control": self.activity_control.dispatch,
+            "activity_history": LifeEventDelivery(storage,
+                grades_enabled=lambda: getattr(self.academics, "term_grades", None) is not None).dispatch,
             "browsing_read": StagedExposureRecords(storage).dispatch,
             "browsing_command": StagedExposureCommands(storage).dispatch,
             "state_read": StagedStateRecords(storage).dispatch,
@@ -188,7 +195,9 @@ class LifeRuntime:
                         handlers=self.handlers, is_active=lambda: not self.closed and self._lease is lease
                         and self.api is api and self.token is not None)
                     capabilities = api.life_host_capabilities(plugin=self.plugin, registration_id=self.token)
-                    self.scheduler = DueSleepScheduler(self.storage, capabilities, clock=self.wall_clock)
+                    self.scheduler = DueSleepScheduler(self.storage, capabilities, clock=self.wall_clock,
+                                                       monotonic_clock=self.monotonic_clock,
+                                                       spending_tick=self._tick_planned_spending)
                     self.scheduler.start()
                 except BaseException:
                     await self._unbind()
@@ -196,6 +205,24 @@ class LifeRuntime:
             await self._optional.refresh()
             self._bind_economy_access()
             self._bind_reading()
+            grades = getattr(self.academics, "term_grades", None)
+            if grades is not None and not self._optional.enabled:
+                # With the activity kernel off, the existing dependency refresh drives grades.
+                from .kernel.binding import LeaseAccess
+
+                def grade_access():
+                    host = api.life_kernel_access(plugin=self.plugin, registration_id=self.token, version=1)
+                    return LeaseAccess(self, self._lease, host)
+
+                self._optional.attempt("term_grades", lambda: grades.tick(now=self.wall_clock(), get_access=grade_access))
+
+    def _tick_planned_spending(self, now):
+        wallet = self._optional.groups.get("wallet")
+        if wallet is None or wallet.commitments is None:
+            self.planned_spending.tick(now)
+        else:
+            # The ordinary allowance check may have run just before local midnight.
+            self.planned_spending.tick(now, before_charge=lambda at: wallet.commitments(now=at, force=True))
 
     def _bind_economy_access(self):
         wallet = self._optional.groups.get("wallet")
@@ -332,6 +359,27 @@ class LifeRuntime:
             return {"items": [], "partial": False}
         return read_activities(self.storage, owner_key=owner_key, context_key=context_key, now=now,
                                kernel=kernel, academics=academics)
+
+    def read_class_sessions(self, *, owner_key, context_key, start, end):
+        """Timetable sessions in a window for an already authorized role; None while academics is off."""
+        academics = self.academics
+        if self.closed or academics is None or academics.storage is None:
+            return None
+        sessions = academics.upcoming_sessions(owner_key, context_key, start=start, end=end)
+        names = {}
+        if sessions:
+            from .academics.places import place_options
+            settings = getattr(self.plugin, "_campus_settings", None) or {}
+            names = {place["place_id"]: place["name"]
+                     for place in place_options(self.storage, settings.get("academics_graph_id", ""))[1]}
+
+        def local(value, zone):
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (moment.astimezone(ZoneInfo(zone)) if zone else moment).isoformat()
+
+        return [{"course": item["course_name"], "date": item["local_date"],
+                 "start": local(item["start_at"], item["timezone"]), "end": local(item["end_at"], item["timezone"]),
+                 "place": names.get(item["place_id"]), "cancelled": item["cancelled"]} for item in sessions]
 
     def read_academic_places(self):
         """Internal read for the host-authorized course page: class flag and graph place options.

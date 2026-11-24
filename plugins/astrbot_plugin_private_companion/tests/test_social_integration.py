@@ -334,6 +334,61 @@ class SocialLifecycleTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         self.profiles += (social_profile("primary", max_output_tokens=100),)
         self.registry = FieldRegistry(version="social.test.v1", fields=configuration_fields(self.profiles))
 
+    async def test_growing_tool_context_finishes_within_the_input_reservation(self):
+        from companion_v2.adapters.astrbot.model_wire import build_wire
+        from companion_v2.execution.models import TaskError
+
+        estimates = []
+        reserve = self.providers[0].reserve
+        def bounded_reserve(envelope):
+            estimate = build_wire(envelope).input_estimate()
+            estimates.append(estimate)
+            if estimate > 131072:
+                raise TaskError("host_model_limit_input", "fixture input limit exceeded")
+            return reserve(envelope)
+        self.providers = tuple(replace(provider, reserve=bounded_reserve) for provider in self.providers)
+        await self.setup_life()
+        await self.configure(social_recommendation_enabled=False)
+        class LargePort(FakeSocialPort):
+            async def call(self, operation, args, *, include_images=False):
+                self.calls.append((operation, args.copy()))
+                return {"ok": True, "text": json.dumps({"data": {"transcript": {"text": "星" * 10000}}},
+                                                      ensure_ascii=False)}
+        port = self.app.social_port = LargePort()
+        now = self.clock.now()
+        plan = {"state": "accepted", "kind": "role_plan", "title": "刷视频",
+                "start": (now - timedelta(minutes=1)).isoformat(), "end": (now + timedelta(hours=1)).isoformat()}
+        self.app.calendar.occurrences = lambda *args, **kwargs: {"items": [plan], "partial": False}
+        async def model(envelope):
+            self.assertLessEqual(build_wire(envelope).input_estimate(), 131072)
+            # A missing round cap must fail assertions, not leave this test looping.
+            if not envelope.allow_tool_calls or len(envelope.tool_history) >= 12:
+                plan["title"] = "上课"
+                return social_answered("读到一些字幕，先停下来记下感想。")
+            count = len(envelope.tool_history)
+            return requested(call("read-" + str(count), "social_browse", operation="bili_watch", id="BV1234567890"))
+        self.model_behavior = model
+        self.app.life_runtime.advance()
+        await self.until(lambda: bool(self.called))
+        await self.settle()
+        activity = next(a for a in self.manager._activities() if a.work.kind == "social")
+        self.assertEqual(activity.state, RoleActivityState.COMPLETED)
+        self.assertEqual(len(port.calls), 8)
+        turns = [envelope for envelope in self.called if envelope.original.output_format == "social_reflection"]
+        self.assertEqual(len(turns), 9)
+        self.assertTrue(turns[-1].tools)
+        self.assertFalse(turns[-1].allow_tool_calls)
+        history = turns[-1].tool_history
+        self.assertEqual([exchange.call.call_id for exchange in history], ["read-" + str(i) for i in range(8)])
+        self.assertTrue(any(json.loads(exchange.result_json).get("context_omitted") for exchange in history))
+        self.assertTrue(json.loads(history[-1].result_json)["ok"])
+        self.assertLessEqual(max(estimates), 131072)
+        untrimmed = tuple(replace(exchange, result_json=turns[1].tool_history[0].result_json) for exchange in history)
+        self.assertGreater(build_wire(replace(turns[-1], tool_history=untrimmed)).input_estimate(), 131072)
+        checkpoint = json.loads(activity.checkpoint)
+        self.assertEqual(len(checkpoint["actual_actions"]), 8)
+        self.assertIn("感想", checkpoint["subjective_reflection"])
+
     async def test_real_scheduler_records_read_then_confirmed_interaction(self):
         await self.setup_life()
         port = self.app.social_port = FakeSocialPort()

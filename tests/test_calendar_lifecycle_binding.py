@@ -127,6 +127,46 @@ class CalendarLifecycleBindingTests(StateFixture, unittest.IsolatedAsyncioTestCa
             with self.assertRaises(TaskError):
                 app.calendar.read(context, "event")
 
+    async def test_life_owned_state_reads_outside_a_host_snapshot_and_in_a_contact_plan(self):
+        # Contact planning and presence read role state on their own, without a host
+        # transaction or a pinned life snapshot; the source walks must not pin one either.
+        app, context, _, controller, api, plugin, handlers, certificate = await self.setup_lifecycle()
+        app.role_state.write(context, data=state_data(energy=48, sleep="有点困"),
+                             expected_revision=0, operation_key="life-owned-state")
+        before = app.role_state.read(context)
+        life = handlers["calendar_command"].__self__.storage
+        directory = Path(life._connection.execute("PRAGMA database_list").fetchone()[2]).parent
+        version = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key='schema_version'", ())["value"]
+        stage_state(self.runtime.database_path, expected_version=version, destination=directory)
+        stage_activities(self.runtime.database_path, expected_version=version, destination=directory)
+        StateSchedules(life).install()
+        handlers["state_read"] = StagedStateRecords(life).dispatch
+        handlers["state_command"] = StagedStateCommands(life).dispatch
+        handlers["activity_read"] = StagedActivityRecords(life).dispatch
+        handlers["activity_history"] = LifeEventDelivery(life).dispatch
+        self.certificate(certificate)
+        controller.session = SimpleNamespace(application=app)
+        self.register(api, plugin, handlers)
+        with self.runtime.transaction() as db:
+            db.execute("INSERT INTO runtime_metadata VALUES (?, 'good_life')", (LIFE_ACTIVITY_OWNER_KEY,))
+            db.execute("INSERT INTO runtime_metadata VALUES (?, 'good_life')", (LIFE_STATE_OWNER_KEY,))
+        self.assertEqual(app.role_state.state_owner(), "good_life")
+        now = self.clock.now()
+        self.assertEqual(app.role_state.read(context, at=now), app.role_state.read(context, at=now))
+        self.assertEqual(app.role_state.read(context)["values"], before["values"])
+        with app.role_state.read_scope():
+            self.assertEqual(app.role_state.read(context, at=now)["values"], before["values"])
+        hints = []
+        schedule = app.contact_schedule
+        # The greeting producer swallows read errors, so a broken read would only lose the hint.
+        with patch.object(schedule, "_plan_unscoped",
+                          lambda row, at: hints.append(schedule.greeting_events._state_hint(context, at))), \
+                patch.object(type(app.role_state), "_read", autospec=True,
+                             side_effect=type(app.role_state)._read) as read:
+            schedule._plan_one({"origin_key": "life-owned"}, now)
+        self.assertIn("精力=48", hints[0])
+        self.assertEqual(read.call_count, 1)
+
     async def test_imported_state_is_read_and_sealed_with_the_life_snapshot(self):
         app, context, _, controller, api, plugin, handlers, certificate = await self.setup_lifecycle()
         app.role_state.write(context, data=state_data(energy=48, hunger="有点饿", health="状态平稳"),

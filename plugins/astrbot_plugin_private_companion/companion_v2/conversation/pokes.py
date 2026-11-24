@@ -44,7 +44,7 @@ CONTEXT_STREAM_PROMPT = (
 # latency: in 48 h 20 of 38 poke rounds stopped at exactly 15.0-15.3 s while
 # role.state.maintain (22.8 s average) and proactive.compose (28.4 s average)
 # finished on the same provider.
-POKE_BUDGET_SECONDS = 60
+POKE_BUDGET_SECONDS = 90
 POKE_MARGIN_SECONDS = 15
 POKE_PROVIDER_TIMEOUT_SECONDS = POKE_BUDGET_SECONDS - POKE_MARGIN_SECONDS
 

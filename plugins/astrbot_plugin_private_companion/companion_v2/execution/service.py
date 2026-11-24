@@ -501,10 +501,11 @@ class TaskSupervisor:
             return self._record(self._change(row, "running", "started", now))
 
     @outcome
-    def validate(self, claim: TaskClaim) -> TaskRecord:
+    def validate(self, claim: TaskClaim, *, inputs: bool = True) -> TaskRecord:
+        """``inputs=False`` keeps fencing and authority but skips owner input revalidation."""
         with self.runtime.read_snapshot():
             row, _ = self._fenced(claim, self._now())
-            self._authorize(row, self._now())
+            self._authorize(row, self._now(), inputs=inputs)
             return self._record(row)
 
     @outcome

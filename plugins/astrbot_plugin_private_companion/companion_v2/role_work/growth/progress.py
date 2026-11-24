@@ -13,7 +13,7 @@ from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, SourceRef, VersionRef
 from companion_v2.memory.activity_receipts import RoleReceiptReader, TABLES
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 
@@ -22,6 +22,7 @@ from .models import GrowthKind, GrowthState
 
 
 KIND = "role.growth.progress"
+TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 OWNER = "role.growth.progress"
 CURSOR_PREFIX = "role.growth.progress.cursor.v1:"
 TERMINAL_UNAVAILABLE = frozenset({"source_revoked", "source_expired",
@@ -35,7 +36,7 @@ PROMPT = (
 def growth_progress_profile(provider, *, max_output_tokens=768):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
         "依据已完成回执，为已确认目标提出待审阅的成长进展。",
-        max_output_tokens=max_output_tokens)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def receipt_fingerprint(experience):
@@ -79,7 +80,7 @@ class GrowthProgressService:
         self.closed = False
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER, "role.growth.read", Lane.BACKGROUND,
             side_effect=SideEffect.LOCAL, binding=ProviderBinding(OWNER, "local", "1", "progress-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, app):
         self.app, self.tasks, self.gateway = app, app.tasks, app.gateway
@@ -183,7 +184,7 @@ class GrowthProgressService:
             self.pending[identifier] = job
             try:
                 require(self.tasks.submit(TaskSpec(identifier, context, KIND, digest(job), identifier,
-                    job["at"], job["at"] + timedelta(seconds=480))))
+                    job["at"], job["at"] + timedelta(seconds=TASK_TIMEOUT_SECONDS))))
             except BaseException:
                 self.pending.pop(identifier, None)
                 raise

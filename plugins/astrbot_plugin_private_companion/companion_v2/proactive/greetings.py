@@ -72,42 +72,63 @@ class GreetingContactEvents:
             return True
         return at >= datetime.fromisoformat(last) + timedelta(minutes=minutes)
 
-    def _sleep_hint(self, context, at):
-        """The role's own live sleep condition as a hint only, when it is readable."""
+    def _read_role_state(self, context, at):
         if self.role_state is None:
-            return ""
+            return None
         try:
             state = self.role_state.read(context, at=at)
         except (TaskError, ValueError, TypeError, KeyError):
-            return ""
+            return None
+        return state if isinstance(state, dict) else None
+
+    @staticmethod
+    def _sleep_condition_text(state):
         conditions = (state.get("values") or {}).get("conditions") or []
         texts = [item.get("text", "") for item in conditions
                  if isinstance(item, dict) and item.get("kind") == "sleep" and item.get("text")]
-        if texts:
-            return texts[0][:200]
-        body_clock = getattr(self.role_state, "body_clock", None)
-        if body_clock is not None:
-            try:
-                body_sleep = (state.get("body_sleep") or {})
-                if isinstance(body_sleep, dict) and body_sleep.get("state") == "awake":
-                    last = body_sleep.get("last_completed")
-                    if isinstance(last, dict) and isinstance(last.get("completed_at"), str):
-                        woke_at = datetime.fromisoformat(last["completed_at"])
-                        elapsed_min = int((at - woke_at).total_seconds() // 60)
-                        if 0 <= elapsed_min <= 90:
-                            slept_min = max(1, int((last.get("slept_seconds") or 0) // 60))
-                            return f"角色刚醒来约{elapsed_min}分钟（共睡约{slept_min}分钟）"
-            except Exception:
-                pass
+        return texts[0][:200] if texts else ""
+
+    @staticmethod
+    def _wake_hint(state, at):
+        """Recent wake-up hint from sleep_execution for day-anchor greetings."""
+        sleep = state.get("sleep_execution")
+        if not isinstance(sleep, dict) or sleep.get("state") not in ("awake", "interrupted"):
+            return ""
+        ended_at = sleep.get("ended_at")
+        if not isinstance(ended_at, str):
+            return ""
+        try:
+            woke_at = datetime.fromisoformat(ended_at)
+        except ValueError:
+            return ""
+        if woke_at.tzinfo is None or woke_at.utcoffset() is None:
+            return ""
+        elapsed_min = int((at - woke_at).total_seconds() // 60)
+        if 0 <= elapsed_min <= 90:
+            raw_slept = sleep.get("slept_minutes")
+            slept_min = (max(1, int(raw_slept))
+                         if isinstance(raw_slept, (int, float)) and not isinstance(raw_slept, bool)
+                         else 1)
+            return f"角色刚醒来约{elapsed_min}分钟（共睡约{slept_min}分钟）"
+        return ""
+
+    def _insomnia_hint(self, context, at):
+        """Sleep state evidence for insomnia night messages: condition or interrupted sleep."""
+        state = self._read_role_state(context, at)
+        if state is None:
+            return ""
+        condition = self._sleep_condition_text(state)
+        if condition:
+            return condition
+        sleep = state.get("sleep_execution")
+        if isinstance(sleep, dict) and sleep.get("state") == "interrupted" and not sleep.get("ended_at"):
+            return "睡眠被打断，当前处于清醒状态"
         return ""
 
     def _state_hint(self, context, at):
         """A short, non-binding summary of the role's own current energy/mood/sleep."""
-        if self.role_state is None:
-            return ""
-        try:
-            state = self.role_state.read(context, at=at)
-        except (TaskError, ValueError, TypeError, KeyError):
+        state = self._read_role_state(context, at)
+        if state is None:
             return ""
         values = state.get("values") or {}
         if not isinstance(values, dict):
@@ -123,9 +144,9 @@ class GreetingContactEvents:
             parts.append("心情=" + mood_val.strip()[:60])
         elif isinstance(mood_val, dict) and isinstance(mood_val.get("description"), str) and mood_val["description"].strip():
             parts.append("心情=" + mood_val["description"].strip()[:60])
-        sleep_hint = self._sleep_hint(context, at)
-        if sleep_hint and sleep_hint not in parts:
-            parts.append(sleep_hint[:80])
+        for hint in (self._sleep_condition_text(state), self._wake_hint(state, at)):
+            if hint and hint not in parts:
+                parts.append(hint[:80])
         return "；".join(parts)[:180]
 
     # ---- day anchors -----------------------------------------------------
@@ -188,7 +209,7 @@ class GreetingContactEvents:
         night = self._night(preferences, at)
         if night is None:
             return None
-        if preferences.values["insomnia_require_sleep_state"] and not self._sleep_hint(context, at):
+        if preferences.values["insomnia_require_sleep_state"] and not self._insomnia_hint(context, at):
             return None
         opportunity = Opportunity("insomnia-" + digest([context.key, night["night_key"], night["slot"]]),
             context.scope, night["opened"], night["expires"])
@@ -216,7 +237,7 @@ class GreetingContactEvents:
                 or self.runtime.read_one("SELECT 1 FROM proactive_contacts WHERE task_id = ?", (task_id,))):
             return None
         if marker["kind"] == "insomnia_night":
-            hint = self._sleep_hint(context, at)
+            hint = self._insomnia_hint(context, at)
             summary = ("现在落在配置的夜间低压力问候窗口，有话就简单说一句；不把时段当成事实，不报时、不报日期和星期、不追问、不要求回应。"
                        + ("角色状态里有一条睡眠相关的临时状况：" + hint if hint else ""))
             purpose = INSOMNIA_PURPOSE

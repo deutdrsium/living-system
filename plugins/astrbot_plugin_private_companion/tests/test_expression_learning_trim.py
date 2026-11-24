@@ -2,9 +2,9 @@
 
 Production evidence (2026-11-01): a window that had accumulated 128 expression
 rules failed every learning run in the local reservation estimate. A batch reads
-only the newest 80 rules, and those 80 alone were 1.42× the default 131072-byte
-ceiling once the adapter's wire JSON-escaped them a second time (each material
-payload is already JSON, and serializing the wire escapes it again). Nothing in
+only the newest 80 rules. Current prompt serialization keeps CJK text literal;
+the synthetic rules below are sized to exceed the default 131072-byte ceiling
+under that accounting, rather than relying on the old Unicode escaping. Nothing in
 the batch could be dropped to recover, so the same material failed again on every
 scan. These tests pin the owner-side answer: the samples stay, the kept rules
 stay newest first, only the reference rules are trimmed, and the task says how
@@ -41,8 +41,8 @@ WIRE_BUDGET = BudgetPolicy(*(Amount(200000, 200000) for _ in range(5)))
 
 def reference_rule(index):
     """One synthetic rule long enough that a few dozen of them become a budget."""
-    return {"observation": "合成参考规则" + str(index) + "：" + "先把短句收住，再把话头交回去。" * 8,
-            "proposal": "合成参考规则" + str(index) + "：" + "短句确认，再说条件，不交代背景。" * 8}
+    return {"observation": "合成参考规则" + str(index) + "：" + "先把短句收住，再把话头交回去。" * 12,
+            "proposal": "合成参考规则" + str(index) + "：" + "短句确认，再说条件，不交代背景。" * 12}
 
 
 class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.IsolatedAsyncioTestCase):
@@ -69,7 +69,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         """Reject when the material bytes alone exceed the declared ceiling."""
         size = self.material_size(envelope)
         if size > self.learning_ceiling:
-            raise TaskError("host_model_limit", "request exceeds its declared input profile")
+            raise TaskError("host_model_limit_input", "request exceeds its declared input profile")
         return Amount(size + envelope.max_output_tokens, 1000)
 
     def reserve_wire_budget(self, envelope):
@@ -77,7 +77,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         size = self.wire_size(envelope)
         self.reserved.append((envelope.original.output_format, size))
         if size > self.learning_ceiling:
-            raise TaskError("host_model_limit", "request exceeds its declared input profile")
+            raise TaskError("host_model_limit_input", "request exceeds its declared input profile")
         return Amount(size + envelope.max_output_tokens, 1000)
 
     @staticmethod
@@ -91,8 +91,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         """The adapter's local estimate: the wire, escaped again, plus its overhead.
 
         Reuses the adapter's own functions so the test measures what production
-        measures, including the second layer of JSON escaping that makes the
-        newest 80 rules exceed the default ceiling.
+        measures, including literal CJK prompt text and protocol overhead.
         """
         estimate = build_wire(envelope, model_name="synthetic").input_estimate()
         structured = response_format(envelope.original)
@@ -287,7 +286,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         # window that fits as the short self page — a normal window the baseline
         # sent whole. The persona still fits a reply, so the seeded conversation is
         # an ordinary one; only the learning route would have been judged too tight.
-        persona = "很长的宿主人格提示。" * 800
+        persona = "很长的宿主人格提示。" * 2500
         app, context = await self.prepare(reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
                                           persona=persona, self_page={"name": "阿灯"})
         # Fewer than a full read window, with room to spare: this case is about
@@ -322,7 +321,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         self_page = {"personality": "很长的角色自述。" * 300, "identity": "很长的角色自述。" * 250,
                      "voice_examples": "很长的角色自述。" * 225, "motivations": "很长的角色自述。" * 225,
                      "appearance": "很长的角色自述。" * 225}
-        app, context = await self.prepare(reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
+        app, context = await self.prepare(ceiling=80000, reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
                                           self_page=self_page)
         rows = self.seed_rules(app, context, 30)
 
@@ -333,10 +332,10 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         # while the dispatched self page does not.
         captured = replace(envelope, original=replace(envelope.original,
             role_instruction="原角色人格提示", role_guard_instruction=None))
-        self.assertLessEqual(self.wire_size(captured), DEFAULT_INPUT_CEILING)
+        self.assertLessEqual(self.wire_size(captured), self.learning_ceiling)
         sizes = self.learning_sizes()
-        self.assertGreater(sizes[0], DEFAULT_INPUT_CEILING, "the whole dispatched request does not fit")
-        self.assertLessEqual(sizes[-1], DEFAULT_INPUT_CEILING)
+        self.assertGreater(sizes[0], self.learning_ceiling, "the whole dispatched request does not fit")
+        self.assertLessEqual(sizes[-1], self.learning_ceiling)
         material = self.learning_material(envelope)
         kept = [rule["signal_id"] for rule in material["existing_rules"]]
         self.assertGreater(len(kept), MIN_EXISTING_RULES)
@@ -344,7 +343,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
                          "a window of equal value keeps the newest prefix")
         self.assertEqual(last["trimmed_rules"], 30 - len(kept))
         self.assertEqual(last["trim_reason"], "model_input_budget")
-        self.assertEqual(last["input_ceiling"], DEFAULT_INPUT_CEILING)
+        self.assertEqual(last["input_ceiling"], self.learning_ceiling)
 
     async def test_the_samples_are_never_trimmed(self):
         app, context = await self.prepare(ceiling=30000)

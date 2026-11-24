@@ -8,7 +8,8 @@ from .staged_activity_deletions import StagedActivityDeletions
 class ActivityControl:
     def __init__(self, storage, stop_reading=None):
         self._stop_reading = stop_reading
-        self._handlers = {"activity_creation": StagedActivityCreations(storage),
+        self.creations = StagedActivityCreations(storage)
+        self._handlers = {"activity_creation": self.creations,
                           "activity_transition": StagedActivityTransitions(storage),
                           "reading_deletion": StagedActivityDeletions(storage)}
 

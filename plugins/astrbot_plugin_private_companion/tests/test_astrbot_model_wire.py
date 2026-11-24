@@ -149,6 +149,94 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.tool_calls[0].action, "social_browse")
         self.assertEqual(json.loads(result.tool_calls[0].arguments_json)["operation"], "bili_recommend")
 
+    async def test_first_browse_tool_turn_does_not_require_a_reflection_body(self):
+        from companion_v2.role_work.social import catalog
+        tools = catalog({"brightdata": True})
+        envelope = await self.envelope(tools=tools)
+        request = replace(envelope.original, output_format="social_reflection", response_format="text")
+        async def respond(*_):
+            raw = completion(tools=[NS(id="browse-1", type="function", function=NS(
+                name=tool_alias("social_browse"), arguments='{"operation":"google_search","query":"stars"}'))])
+            raw.choices[0].message.content = None
+            return raw
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated")
+        self.assertIsNone(result.draft)
+        self.assertEqual(result.tool_calls[0].action, "social_browse")
+        self.assertEqual(result.diagnostics.finish_reason, "tool_calls")
+        self.assertEqual(result.diagnostics.parse_state, "tools")
+
+    async def test_relay_browse_turn_with_missing_ids_gets_unique_local_ids(self):
+        from companion_v2.role_work.social import catalog
+        tools = catalog({"brightdata": True})
+        envelope = await self.envelope(tools=tools)
+        request = replace(envelope.original, output_format="social_reflection", response_format="text")
+        raw_calls = [NS(id=identifier, type="function", function=NS(
+            name=tool_alias("social_browse"), arguments=json.dumps({"operation": "google_search", "query": query})))
+            for identifier, query in ((None, "stars"), ("", "planets"))]
+        async def respond(payload, offered):
+            if any(message["role"] == "tool" for message in payload["messages"]):
+                assistant_calls = [item for message in payload["messages"] for item in message.get("tool_calls", ())]
+                replies = [message for message in payload["messages"] if message["role"] == "tool"]
+                self.assertEqual([item["id"] for item in assistant_calls],
+                                 [item["tool_call_id"] for item in replies])
+                self.assertEqual(len(set(item["tool_call_id"] for item in replies)), 2)
+                return completion('{"reflection":"读到了搜索结果。"}')
+            raw = completion(tools=raw_calls)
+            raw.choices[0].message.content = None
+            return raw
+        self.native.provider.client.state.behavior = respond
+        continued = replace(envelope, original=request)
+        result = await self.native_model.generate(continued)
+        self.assertEqual(result.status, "generated", result.diagnostics)
+        self.assertEqual(len(result.tool_calls), 2)
+        ids = [call.call_id for call in result.tool_calls]
+        self.assertEqual(len(set(ids)), 2)
+        self.assertTrue(all(identifier and identifier == identifier.strip() for identifier in ids))
+        self.assertEqual([raw.id for raw in raw_calls], [None, ""])
+        history = tuple(ToolExchange(call, '{"ok":true,"text":"search results"}') for call in result.tool_calls)
+        final = await self.native_model.generate(replace(continued, tool_history=history))
+        self.assertEqual(final.status, "generated")
+        self.assertEqual(json.loads(final.draft.text)["reflection"], "读到了搜索结果。")
+
+    async def test_missing_id_normalization_does_not_hide_host_mismatch_or_duplicate_ids(self):
+        from companion_v2.role_work.social import catalog
+        envelope = await self.envelope(tools=catalog({"brightdata": True}))
+        wire = build_wire(envelope)
+        for raw_ids, parsed_ids in (((None,), ("changed-by-host",)), (("duplicate", "duplicate"), ("duplicate", "duplicate"))):
+            with self.subTest(raw_ids=raw_ids):
+                raw_calls = [NS(id=identifier, type="function", function=NS(
+                    name=tool_alias("social_browse"), arguments='{"operation":"google_search","query":"stars"}'))
+                    for identifier in raw_ids]
+                response = NS(raw_completion=completion(tools=raw_calls), tools_call_ids=list(parsed_ids),
+                    tools_call_name=[raw.function.name for raw in raw_calls],
+                    tools_call_args=[json.loads(raw.function.arguments) for raw in raw_calls])
+                with self.assertRaisesRegex(ValueError, "native tool result differs"):
+                    decode_response(response, wire)
+
+    async def test_social_tool_catalog_uses_the_action_name_visible_in_its_description(self):
+        from companion_v2.role_work.social import catalog
+        tools = catalog({"brightdata": True})
+        envelope = await self.envelope(tools=tools)
+        request = replace(envelope.original, output_format="social_reflection", response_format="text")
+        async def respond(payload, offered):
+            return completion(tools=[NS(id="deepseek-call-1", type="function", function=NS(
+                name="social_browse", arguments='{"operation":"google_search","query":"stars"}'))])
+        self.native.provider.client.state.behavior = respond
+        result = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(result.status, "generated", result.diagnostics)
+        self.assertEqual(result.tool_calls[0].action, "social_browse")
+        self.assertEqual(build_wire(replace(envelope, original=request)).tools[0]["name"], "social_browse")
+        # An operation is still not a separately declared tool.
+        raw = completion(tools=[NS(id="bad", type="function", function=NS(name="google_search", arguments="{}"))])
+        async def undeclared(*_):
+            return raw
+        self.native.provider.client.state.behavior = undeclared
+        rejected = await self.native_model.generate(replace(envelope, original=request))
+        self.assertEqual(rejected.status, "unknown")
+        self.assertEqual(rejected.diagnostics.error_code, "wire_undeclared_tool")
+
     async def test_reasoning_tool_round_is_preserved_without_logging_or_serializing_it(self):
         from companion_v2.adapters.astrbot.provider import _developer_content
         tool = ToolSpec("social_browse", "自主浏览", '{"type":"object","properties":{}}')
@@ -682,8 +770,9 @@ class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_native_invalid_tool_json_is_not_repaired_into_an_operation(self):
         envelope = await self.envelope(tools=(ToolSpec("memo.list", "list", '{"type":"object"}'),))
-        cases = [('{bad', tool_alias("memo.list"), "call-1"), ('[]', tool_alias("memo.list"), "call-1"),
-                 ('{}', "undeclared", "call-1"), ('{}', tool_alias("memo.list"), ""),
+        cases = [('{bad', tool_alias("memo.list"), "call-1"), ('{bad', tool_alias("memo.list"), None),
+                 ('[]', tool_alias("memo.list"), "call-1"),
+                 ('{}', "undeclared", "call-1"), ('{}', tool_alias("memo.list"), " "),
                  ('{"limit":1,"limit":2}', tool_alias("memo.list"), "call-1")]
         for arguments, name, call_id in cases:
             with self.subTest(arguments=arguments, name=name, call_id=call_id):

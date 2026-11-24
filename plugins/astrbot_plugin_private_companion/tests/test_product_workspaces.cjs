@@ -110,6 +110,8 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
       apiGet: async (endpoint, params, requestOptions) => {
         calls.push({method: "GET", endpoint, params, requestOptions});
         if (options.getFailure && endpoint === options.getFailureEndpoint) throw options.getFailure;
+        const answer = options.getResponder?.(endpoint, params);
+        if (answer !== undefined) return answer;
         if (pending && endpoint === pending.endpoint) {
           const request = pending; pending = null; return request.promise;
         }
@@ -374,6 +376,25 @@ test("a late home summary cannot replace a newer refresh in the same role", asyn
   assert.equal(await oldRefresh, false);
   assert.equal(h.product.data.state?.state?.values?.location, undefined);
   assert.equal(h.updates.filter(reason => reason?.kind === "state-refresh").length, 1);
+});
+
+test("the home summary reads today's classes from the role's life route with local dates", async () => {
+  const classesPath = "targets/first/roles/synthetic-role/life/classes";
+  let reply = range => ({...range, timezone: "Asia/Shanghai", items: [{course: "马克思主义哲学导论", date: range.start,
+    start: range.start + "T09:55:00+08:00", end: range.start + "T11:35:00+08:00", place: "示例教学楼", cancelled: false}]});
+  const h = await harness(null, [], {getResponder: (endpoint, params) => endpoint === classesPath ? reply(params) : undefined});
+  assert.equal(await h.product.refreshSummary(), true);
+  const read = h.calls.find(call => call.endpoint === classesPath);
+  const today = new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"}).format(new Date());
+  assert.equal(read.params.start, today);
+  assert.equal(read.params.end, new Date(Date.parse(today) + 86400000).toISOString().slice(0, 10), "end is exclusive");
+  assert.equal(h.product.data.classes.items[0].course, "马克思主义哲学导论");
+  reply = () => ({status: "error", data: {code: "missing_dependency"}});
+  assert.equal(await h.product.refreshSummary(), true);
+  assert.equal(h.product.data.classes, undefined, "an unavailable academics read leaves classes unknown");
+  reply = () => ({start: "2000-01-01", end: "2000-01-02", items: []});
+  assert.equal(await h.product.refreshSummary(), true);
+  assert.equal(h.product.data.classes, undefined, "a response for another day is not today's classes");
 });
 
 test("persona questionnaire reads the selected source and relays standardization only to its role API", async () => {

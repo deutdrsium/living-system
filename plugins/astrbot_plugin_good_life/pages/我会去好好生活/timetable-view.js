@@ -525,6 +525,139 @@ window.GoodLifeTimetable = (() => {
     return `<article class="gl-card gl-tt-courses">${head("课程", `${groups.length} 门`, add)}<ul class="gl-tt-course-list">${rows}</ul></article>`;
   }
 
+  /* === 学习（只读）：每门课的大纲、作业与进度、角色的自习记录、已发布的成绩 ===
+   * state.study = {termId, open:[键], courses:{课程编号:读取结果}, grades, artifacts:{作业编号:列表}, artifact:打开的那份}。
+   * 展开的 <details> 用 data-tt-open 的键记在 state.study.open 里，重绘后照样展开。 */
+  const ARTIFACT_KINDS = {draft:"作业稿", note:"笔记", review:"复习"};
+  const freshStudy = termId => ({termId:termId ?? null, open:[], courses:{}, grades:null, artifacts:{}, artifact:null});
+  const studyOf = state => state.study?.termId === state.termId ? state.study : freshStudy(state.termId);
+  function moment(at, zone, withWeekday = false) {
+    const time = Date.parse(at);
+    if (!Number.isFinite(time)) return "";
+    const parts = localParts(time, zone);
+    return `${shortDate(parts.date)}${withWeekday ? " " + WEEKDAYS[isoWeekday(parts.date)] : ""} ${parts.time}`;
+  }
+  function duration(seconds) {
+    const total = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+    if (total < 60) return `${total} 分钟`;
+    return `${Math.floor(total / 60)} 小时${total % 60 ? ` ${total % 60} 分` : ""}`;
+  }
+  /* 一项作业的进度：把它的各段工作加起来。没有分段记录时 chunks 为空。 */
+  function progressOf(assignment, items, now) {
+    const chunks = (Array.isArray(items) ? items : []).filter(item => item.assignment_id === assignment.assignment_id);
+    const required = chunks.reduce((sum, item) => sum + (Number(item.required_work_s) || 0), 0);
+    const completed = chunks.reduce((sum, item) => sum + (Number(item.completed_work_s) || 0), 0);
+    const done = chunks.length > 0 && chunks.every(item => item.status === "completed");
+    const started = completed > 0 || chunks.some(item => item.status !== "pending");
+    const late = !done && Date.parse(assignment.due_at) <= now;
+    const status = done ? ["done", "已完成", "is-ok"] : late ? ["late", "已过截止", "is-warn"] : started ? ["active", "进行中", ""] : ["todo", "未开始", "is-muted"];
+    return {chunks, required, completed, finished:chunks.filter(item => item.status === "completed").length, status};
+  }
+  const quiet = (message, extra = "") => `<p class="gl-tt-study-quiet">${e(message)}${extra}</p>`;
+  const unavailable = (what, code) => code === "missing_dependency" ? `${what}还没开启。` : `${what}暂时看不到，可以稍后再试。`;
+  const gradeOf = (study, courseId) => study.grades?.status === "ok" ? study.grades.items.find(item => item.course_id === courseId) || null : null;
+
+  function artifactDetail(view, zone) {
+    let body;
+    if (view.status === "loading") body = `<p class="gl-empty" aria-busy="true">正在打开…</p>`;
+    else if (view.status !== "ok") body = quiet("这份记录暂时打不开，可以稍后再试。");
+    else if (view.record.availability !== "available" || typeof view.record.text !== "string")
+      body = quiet("这份记录用到的材料现在不能读，暂时看不到全文。");
+    else body = `<div class="gl-tt-artifact-text">${e(view.record.text)}</div>${text(view.record.next_step)
+      ? `<p class="gl-tt-artifact-next"><strong>下一步</strong><span>${e(view.record.next_step)}</span></p>` : ""}`;
+    const title = view.record?.title || "自习记录";
+    return `<div class="gl-tt-artifact-open" role="region" aria-label="${e(title)}">${body}
+      <div class="gl-tt-actions">${button("收起", 'data-tt-artifact-close')}</div></div>`;
+  }
+  function artifactList(list, study, assignmentId, zone) {
+    if (!list || list.status === "loading") return `<p class="gl-empty" aria-busy="true">正在读取自习记录…</p>`;
+    if (list.status !== "ok") return quiet(unavailable("自习记录", list.code));
+    if (!list.items.length) return quiet("还没有自习记录。");
+    const rows = list.items.map(item => {
+      const opened = study.artifact?.id === item.artifact_id;
+      const meta = [ARTIFACT_KINDS[item.kind] || text(item.kind), moment(item.updated_at, zone) && `${moment(item.updated_at, zone)} 更新`].filter(Boolean).join(" · ");
+      return `<li><button type="button" class="gl-tt-artifact" data-tt-artifact="${e(item.artifact_id)}" aria-expanded="${opened}">
+        <strong>${e(item.title || "自习记录")}</strong><small>${e(meta)}</small>${icon("chevron")}</button>${opened ? artifactDetail(study.artifact, zone) : ""}</li>`;
+    }).join("");
+    const more = list.next ? button(list.more ? "正在读取…" : "更早的记录", `data-tt-artifacts-more="${e(assignmentId)}"${list.more ? " disabled" : ""}`) : "";
+    return `<ul class="gl-tt-artifacts" aria-label="自习记录">${rows}</ul>${more}`;
+  }
+
+  function assignmentBlock(data, study, zone, now) {
+    if (!Array.isArray(data.assignments)) return quiet(unavailable("作业", data.codes?.assignments));
+    if (!data.assignments.length) return quiet("这门课还没有作业。");
+    const units = new Map((data.units || []).map(unit => [unit.unit_id, unit]));
+    const lists = data.assignments.map(item => study.artifacts[item.assignment_id]);
+    /* 所有作业都还没有记录（或都读不到）时只在列表下面说一次，不在每项下面重复。 */
+    const allEmpty = lists.every(list => list?.status === "ok" && !list.items.length);
+    const allOff = lists.every(list => list && list.status === "error");
+    const shared = allEmpty || allOff;
+    const rows = [...data.assignments].sort((a, b) => String(a.due_at).localeCompare(String(b.due_at))).map(item => {
+      const progress = progressOf(item, data.progress, now), [state_, label, tone] = progress.status, unit = units.get(item.unit_id);
+      const facts = [`截止 ${moment(item.due_at, zone, true) || "未定"}`, unit ? `第 ${unit.week} 周 · ${unit.topic}` : ""].filter(Boolean).join(" · ");
+      let work = "";
+      if (!Array.isArray(data.progress)) work = "";
+      else if (progress.chunks.length) {
+        const share = progress.required ? Math.min(100, Math.round(progress.completed / progress.required * 100)) : 0;
+        work = `<div class="gl-tt-progress" role="img" aria-label="完成 ${share}%"><span style="--tt-done:${share}%"></span></div>
+          <small class="gl-tt-work">已做 ${e(duration(progress.completed))} / ${e(duration(progress.required))} · ${progress.finished}/${progress.chunks.length} 段完成</small>`;
+      } else if (Number(item.estimated_work_s) > 0) work = `<small class="gl-tt-work">预计 ${e(duration(item.estimated_work_s))}，还没开始做。</small>`;
+      return `<li class="gl-tt-assignment" data-state="${state_}">
+        <div class="gl-tt-assignment-head"><strong>${e(item.title || "作业")}</strong><span class="gl-chip${tone ? " " + tone : ""}">${e(label)}</span></div>
+        <small class="gl-tt-assignment-facts">${e(facts)}</small>${work}
+        ${shared ? "" : artifactList(study.artifacts[item.assignment_id], study, item.assignment_id, zone)}</li>`;
+    }).join("");
+    const note = allEmpty ? quiet("还没有自习记录，上过课、开始写作业后会出现在这里。")
+      : allOff ? quiet(unavailable("自习记录", lists[0].code)) : "";
+    return `<ul class="gl-tt-assignments">${rows}</ul>${note}`;
+  }
+
+  function syllabusBlock(data, open, courseId) {
+    if (!Array.isArray(data.units)) return quiet(unavailable("大纲", data.codes?.units));
+    if (!data.units.length) return quiet("这门课还没有录入大纲。");
+    const key = "syllabus:" + courseId;
+    const units = [...data.units].sort((a, b) => (a.week - b.week) || String(a.topic).localeCompare(String(b.topic)));
+    const rows = units.map(unit => `<li><span class="gl-tt-unit-week">第 ${e(unit.week)} 周</span><div><strong>${e(unit.topic)}</strong>${
+      (unit.concepts || []).length ? `<small>${e(unit.concepts.join("、"))}</small>` : ""}</div></li>`).join("");
+    return `<details class="gl-tt-syllabus" data-tt-open="${e(key)}"${open.has(key) ? " open" : ""}>
+      <summary>大纲 · ${units.length} 个单元</summary><ol class="gl-tt-units">${rows}</ol></details>`;
+  }
+
+  function studyCourse(course, study, open, zone, now) {
+    const id = course.course_id, key = "course:" + id, data = study.courses[id], grade = gradeOf(study, id);
+    let meta = "展开看大纲、作业和自习记录";
+    if (data?.status === "ok" && Array.isArray(data.assignments)) {
+      const next = data.assignments.filter(item => Date.parse(item.due_at) > now && progressOf(item, data.progress, now).status[0] !== "done")
+        .sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)))[0];
+      meta = data.assignments.length ? `${data.assignments.length} 项作业${next ? ` · 最近截止 ${moment(next.due_at, zone)}` : ""}` : "还没有作业";
+    }
+    let body;
+    if (!data || data.status === "loading") body = `<p class="gl-empty" aria-busy="true">正在读取大纲和作业…</p>`;
+    else if (data.status !== "ok") body = quiet(unavailable("这门课的大纲和作业", data.code), " " + button("重新读取", `data-tt-study-retry="${e(id)}"`));
+    else {
+      const grades = study.grades;
+      const gradeLine = grade ? `<p class="gl-tt-grade"><span>成绩</span><strong>${e(grade.score)}</strong>${grade.letter ? `<em>${e(grade.letter)}</em>` : ""}${
+        moment(grade.release_at, zone) ? `<small>${e(shortDate(localParts(Date.parse(grade.release_at), zone).date))}发布</small>` : ""}</p>`
+        : grades?.status === "ok" ? quiet("成绩还没发布。") : grades?.status === "error" ? quiet(unavailable("成绩", grades.code)) : "";
+      body = `${gradeLine}<section class="gl-tt-study-part"><h3>作业</h3>${assignmentBlock(data, study, zone, now)}</section>
+        <section class="gl-tt-study-part">${syllabusBlock(data, open, id)}</section>`;
+    }
+    const chip = grade ? `<span class="gl-chip is-ok">${e(grade.score)}${grade.letter ? ` · ${e(grade.letter)}` : ""}</span>` : "";
+    return `<details class="gl-tt-study-course" data-tt-open="${e(key)}"${open.has(key) ? " open" : ""}>
+      <summary><span class="gl-tt-study-name"><strong>${e(course.name)}</strong><small>${e(meta)}</small></span>${chip}${icon("chevron")}</summary>
+      <div class="gl-tt-study-body">${body}</div></details>`;
+  }
+
+  function studyCard(state, ctx) {
+    const term = currentTerm(state);
+    if (!term || !state.entries) return "";
+    const groups = courses(state.entries);
+    if (!groups.length) return "";
+    const study = studyOf(state), open = new Set(study.open);
+    return `<article class="gl-card gl-tt-study" aria-label="学习">${head("学习", "大纲、作业和角色的自习记录，只读")}
+      <div class="gl-tt-study-list">${groups.map(({course}) => studyCourse(course, study, open, term.timezone, ctx.now)).join("")}</div></article>`;
+  }
+
   function panel(state, ctx) {
     if (!state.panel) return "";
     const body = {term:termPanel, course:coursePanel, slot:slotPanel, session:sessionPanel}[state.panel.kind]?.(state, ctx) || "";
@@ -543,10 +676,10 @@ window.GoodLifeTimetable = (() => {
       return `<article class="gl-card gl-tt-only" role="status">${head("课表")}${empty("alert", "课表暂时读不到",
         state.code ? `错误代码：${state.code}。可以稍后再试。` : "可以稍后再试。", button("重新读取", "data-tt-reload", "gl-chip-button gl-tt-cta"))}</article>`;
     const message = state.message ? `<p class="gl-tt-message" role="status" data-tone="${state.message.tone || "ok"}">${e(state.message.text)}</p>` : "";
-    return `<div class="gl-tt"${state.panel ? " data-panel" : ""}>${message}${termCard(state, input)}${weekCard(state, input)}${panel(state, input)}${courseCard(state)}</div>`;
+    return `<div class="gl-tt"${state.panel ? " data-panel" : ""}>${message}${termCard(state, input)}${weekCard(state, input)}${panel(state, input)}${courseCard(state)}${studyCard(state, input)}</div>`;
   }
 
-  return {WEEKDAYS, isDate, isTime, addDays, isoWeekday, localParts, weekOf, windows, pageOf, teaches, weekRange, defaultWeek, defaultTerm, parseDates, parseMakeups,
+  return {freshStudy, studyOf, progressOf, WEEKDAYS, isDate, isTime, addDays, isoWeekday, localParts, weekOf, windows, pageOf, teaches, weekRange, defaultWeek, defaultTerm, parseDates, parseMakeups,
     termRecord, termForm, parseWeeks, formatWeeks, courseRecord, slotRecord, slotForm, courses, entryRecord, withException, exceptionOf, command,
     placeOptions, sessionPreview, sessionTimes, reason, reminderNote, render, sessionPanel};
 })();

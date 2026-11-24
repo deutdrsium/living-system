@@ -45,7 +45,8 @@
     const section = page === "reading" ? readingPage : page === "browsing" ? "browsing" : "settings";
     const tab = section === "notes" ? "archive" : section === "browsing" ? "social" : section === "settings" ? "sleep" : "reading";
     frame.contentWindow.postMessage({channel:"companion-workspace",kind:"context",context:{section,tab,
-      display:{role_name:selectedRole?.name,subject_name:selectedTarget?.name},confirm:false,readGeneration:scopeGeneration}}, "*");
+      display:{role_name:selectedRole?.name,subject_name:selectedTarget?.name},confirm:false,readGeneration:scopeGeneration,
+      active:["reading","browsing","settings"].includes(page)}}, "*");
     if(refreshMappings && selectedRole)frame.contentWindow.postMessage({channel:"companion-workspace",kind:"host-mappings-refreshed"}, "*");
   }
   const snapshotInput = () => ({...snapshot, loading:fetching, now:Date.now()});
@@ -240,6 +241,7 @@
     if(page === "wallet")renderWallet();
   }
   function schedulePoll() {
+    if(!["overview","calendar","settings"].includes(page))return;
     if(pollTimer != null || pendingSnapshot || fetching || stateReads || !selectedRole)return;
     if(document.visibilityState !== "visible")return;
     pollTimer = setTimeout(()=>{
@@ -274,6 +276,28 @@
       return null;
     }
   }
+  /* 当天课次：和课表页一样读 academics/term 取当前学期，再按日期读 academics/occurrences（end 不含）。
+     未启用、没有学期或读取出错时返回 null，总览据此不把空白说成空闲；今天不在任何学期里就是没有课。
+     地点名称只在有课时顺带读 academics/places，读不到就不显示地点。 */
+  async function readClasses(scope, range, options) {
+    try {
+      const terms = await api("GET", `${scope.path}/academics/term`, {}, options);
+      if(!isCurrentScope(scope) || !Array.isArray(terms?.terms) || !terms.terms.length)return null;
+      const term = terms.terms.find(item => item.start_date <= range.start && range.start < item.end_date);
+      if(!term)return {...range, items:[]};
+      const data = await api("GET", `${scope.path}/academics/occurrences`, {term_id:term.term_id, ...range}, options);
+      if(!isCurrentScope(scope) || data?.start !== range.start || data.end !== range.end || !Array.isArray(data.items))return null;
+      let places = new Map();
+      if(data.items.some(item => item.place_id && !item.cancelled)) {
+        try {
+          const setup = await api("GET", `${scope.path}/academics/places`, {}, options);
+          places = new Map((Array.isArray(setup?.places) ? setup.places : []).map(place => [place.place_id, place.name]));
+        } catch { /* 地点只是附加说明。 */ }
+      }
+      return {...range, items:data.items.map(item => ({id:item.session_id, title:item.course_name, start:item.start_at,
+        end:item.end_at, place:places.get(item.place_id) || "", cancelled:item.cancelled === true}))};
+    } catch { return null; }
+  }
   async function readSnapshot(initial=false) {
     if(!selectedRole || pendingSnapshot)return;
     const scope = captureScope(), editorScope = editorScopeFor(scope), sequence = ++stateReadSequence;
@@ -287,27 +311,31 @@
       acceptState(editorScope, state, sequence);
       return state;
     });
+    let classesRead = Promise.resolve(null);
     const stateRead = rawStateRead.then(async state=>{
       if(!state || !isCurrentScope(scope))return null;
       const zone = state.settings?.planning_timezone;
       if(!zone)return state;
       const range = window.GoodLifeOverview.calendarRequest({state}, Date.now());
+      const calendarRead = api("GET", `${scope.path}/calendar/occurrences`, {...range, include_cancelled:"1"}, options);
+      classesRead = readClasses(scope, range, options);
       try {
-        const result = await api("GET", `${scope.path}/calendar/occurrences`, {...range, include_cancelled:"1"}, options);
+        const result = await calendarRead;
         if(result?.start === range.start && result.end === range.end && result.timezone === zone && Array.isArray(result.items)) {
           return {...state, occurrences:result};
         }
       } catch { /* /state 的期次仍可展示，但没有覆盖范围，不能判断空闲。 */ }
       return state;
     });
-    const request = Promise.allSettled([lifeRead, stateRead]);
+    const classes = stateRead.then(() => classesRead);
+    const request = Promise.allSettled([lifeRead, stateRead, classes]);
     pendingSnapshot={done:request, state:rawStateRead};
     try {
-      const [nextLife, nextState] = await request;
+      const [nextLife, nextState, nextClasses] = await request;
       if(!isCurrentScope(scope))return;
       fetching=false;
       if(nextLife.value && nextState.value) {
-        snapshot={state:nextState.value, life:nextLife.value, snapshotUpdatedAt:Date.now()};
+        snapshot={state:nextState.value, life:nextLife.value, classes:nextClasses.value ?? null, snapshotUpdatedAt:Date.now()};
         pollDelay=pollInterval;
       } else pollDelay=Math.min(pollDelay * 2, maxPollDelay);
       if(initial && !editorState)renderCalendar();
@@ -411,6 +439,8 @@
     $("reading-nav").hidden=page!=="reading"; $("state-settings").hidden=page!=="settings";
     [$("page-eyebrow").textContent, $("page-title").textContent] = titles[page] || titles.overview;
     setRail(false); tellFrame();
+    if(["overview","calendar","settings"].includes(page))schedulePoll();
+    else { clearTimeout(pollTimer); pollTimer=null; }
     if(page==="calendar")renderCalendarView();
     if(page==="wallet")renderWallet();
     if(page==="timetable" && selectedRole)timetable.show();

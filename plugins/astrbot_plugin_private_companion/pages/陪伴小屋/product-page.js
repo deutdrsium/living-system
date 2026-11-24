@@ -642,6 +642,16 @@ window.CompanionProduct = (() => {
         rejectedCodes[names[index]] = code;
       }
     });
+    /* 当天课次：按角色当地今天读 life/classes（日期，end 不含）。读不到（未启用、出错）时不放进 data，
+       右栏据此不把空白说成未安排。 */
+    const range = fresh.state && fresh.life && window.CompanionHomeSidebar?.classRange?.({state:fresh.state, life:fresh.life});
+    if (range) {
+      try {
+        const classes = await api("GET", relative(current.life_api + "/classes"), range);
+        if (classes?.start === range.start && classes.end === range.end && Array.isArray(classes.items)) fresh.classes = classes;
+      } catch { /* 课表只是右栏时间线的一部分，读不到时保持「不完整」。 */ }
+      if (ticket !== generation || request !== summaryRequest) return false;
+    }
     data = fresh; failures = rejected; failureCodes = rejectedCodes;
     if (Object.keys(fresh).length) {
       writeSummaryCache(key, {at: Date.now(), data: fresh, failures: rejected, failureCodes: rejectedCodes});
@@ -899,7 +909,7 @@ window.CompanionProduct = (() => {
       unavailableCode:name=>failureCodes[name]||""});
   }
   function scheduleCard() {
-    return window.CompanionHomeSidebar.renderSchedule({state:data.state,life:data.life,loading,unavailable,
+    return window.CompanionHomeSidebar.renderSchedule({state:data.state,life:data.life,classes:data.classes ?? null,loading,unavailable,
       unavailableCode:name=>failureCodes[name]||""});
   }
   function capabilityCard() {

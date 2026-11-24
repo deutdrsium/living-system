@@ -1,5 +1,7 @@
 """Versioned role simulation; never a diagnosis or observation of the user."""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import json
 from threading import RLock
@@ -23,6 +25,7 @@ FIELDS = ("energy", "hunger", "health", "sleep", "busy", "mood", "location", "cy
 PERSONA_STATE_FIELDS = frozenset(FIELDS)
 ONLINE_MODES = frozenset({"online", "away", "busy", "invisible"})
 LIFE_STATE_OWNER_KEY = "life.state.execution_owner.v1"
+_SCOPED_READS = ContextVar("role_state_scoped_reads", default=None)
 INSTRUCTION = """role_state 描述角色自身的人格模拟感受，不是用户身体信息或医疗结论。精力、饥饿、健康、忙碌、心情、周期和位置是当前角色的持续体验，不按阈值拒答，也不播报数值或套台词。
 每轮参考当前最相关的一两项，让状态自然影响具体反应、措辞、情绪浓度、回应节奏或主动性；话题合适时可以用第一人称带出感受。即使不直接说，也留下一点可感知的状态色彩，不要把它藏成无关的后台资料；不逐项复述，也不压过对方正在聊的事。
 状态只作为语气底色，不能改写成连续的状态汇报；对方没问时，不把饥饿、健康、忙碌等自身状态当聊天主线。
@@ -312,8 +315,39 @@ class RoleStateService:
                 operator=operator, reason="cycle_alignment", cycle_alignment=data, projected_inputs=True,
                 expected_settings_token=expected_settings_token)
 
+    @contextmanager
+    def read_scope(self):
+        """One synchronous pass (a contact plan) reads each window's state once per instant.
+
+        Every producer in the pass asks for the same context at the same ``at``;
+        the first read's result, or its TaskError, answers the rest.
+        """
+        if _SCOPED_READS.get() is not None:
+            yield
+            return
+        token = _SCOPED_READS.set({})
+        try:
+            yield
+        finally:
+            _SCOPED_READS.reset(token)
+
     def read(self, context, *, operator=None, at=None, cycle_at=None, injection=False):
         at = at or self.tasks.now()
+        reads = _SCOPED_READS.get() if operator is None else None
+        if reads is None:
+            return self._read(context, operator=operator, at=at, cycle_at=cycle_at, injection=injection)
+        key = (context.key, at, cycle_at, injection)
+        if key not in reads:
+            try:
+                reads[key] = (self._read(context, at=at, cycle_at=cycle_at, injection=injection), None)
+            except TaskError as error:
+                reads[key] = (None, error)
+        result, error = reads[key]
+        if error is not None:
+            raise error
+        return result
+
+    def _read(self, context, *, operator=None, at, cycle_at=None, injection=False):
         if cycle_at is not None and cycle_at > at:
             raise TaskError("state_snapshot_invalid", "cycle observation cannot be in the future")
         if injection and operator is None:

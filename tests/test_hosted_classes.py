@@ -1,4 +1,5 @@
 """W6 class wiring through a provider lease, a synthetic map and a virtual clock."""
+from dataclasses import replace
 from datetime import timedelta
 import json
 from tempfile import TemporaryDirectory
@@ -24,7 +25,7 @@ from good_life.contracts.ports import AuthorizedMaterial
 from good_life.graph_package_storage import GraphPackageStore
 from good_life.graph_packages import seal_package
 from good_life.kernel import ActivityKernel, ComponentRegistry, KernelConfig
-from good_life.kernel.codec import wire
+from good_life.kernel.codec import digest, wire
 from good_life.runtime import LifeRuntime, OptionalGroupBinding
 from good_life.sleep_scheduler import DueSleepScheduler
 from good_life.storage import LifeStorage, StorageReader
@@ -45,9 +46,10 @@ class HostedClasses(IsolatedAsyncioTestCase):
         self.revision = 0
         self.settings = {**SETTINGS, "campus_enabled": True, "home_place_id": "home"}
 
-    def confirm_graph(self):
+    def confirm_graph(self, *, far_travel_s=240):
         package = graph()
         package["nodes"][0]["access_requirement"] = "resident_of:home"
+        next(edge for edge in package["edges"] if edge["to"] == "far")["estimated_duration_s"] = far_travel_s
         package = seal_package(package)
         GraphPackageStore(self.storage, enabled=True).confirm(package, expected_current_digest=None,
             expected_proposed_digest=package["digest"], confirmed=True)
@@ -112,6 +114,22 @@ class HostedClasses(IsolatedAsyncioTestCase):
         instance, = self.runtime.kernel.repo.active(self.owner)
         self.assertEqual(instance.status, m.ActivityStatus.RUNNING)
         return instance
+
+    def record_sleep(self, started, ended=None):
+        record = sleep_record(started, ended)
+        with self.storage.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO staged_role_activities VALUES (?,?,?,?,?,?,?)",
+                (self.owner, "night-sleep", "{}", 2 if ended else 1, record["state"], record["updated_at"], json.dumps(record)))
+
+    def install_sleep_ledger(self):
+        with self.storage.transaction() as db:
+            for statement in DDL:
+                db.execute(statement)
+
+    def wake_decision(self):
+        row = StorageReader(self.storage).one("SELECT record_json FROM life_class_attendance_wakes WHERE session_id=?",
+                                              (self.session()["session_id"],))
+        return json.loads(row[0]) if row else None
 
     async def start_scenario(self, *, attendance=False):
         self.confirm_graph()
@@ -215,7 +233,7 @@ class HostedClasses(IsolatedAsyncioTestCase):
         self.assertEqual(row["arrival_at"], session["start_at"])
         self.assertEqual((row["attendance"]["outcome"], row["attendance"]["minutes_missed"]), ("on_time", 0))
 
-    async def test_origin_change_recomputes_departure_without_redrawing_wake(self):
+    async def test_origin_change_recomputes_departure_without_replacing_wake(self):
         self.confirm_graph()
         await self.bind(attendance=True)
         self.write("term", term())
@@ -223,33 +241,65 @@ class HostedClasses(IsolatedAsyncioTestCase):
         session = self.session()
         start = timestamp(session["start_at"])
         original_departure = start - timedelta(minutes=9)
-        with patch("good_life.academics.attendance._wake_slip", return_value=0) as wake:
-            await self.tick(original_departure - timedelta(minutes=15))
-        wake.assert_called_once()
+        self.install_sleep_ledger()
+        self.record_sleep(start - timedelta(hours=16), original_departure - timedelta(hours=1))
+        await self.tick(original_departure - timedelta(minutes=15))
+        wake = self.wake_decision()
+        self.assertIsNotNone(wake)
         self.campus.locate(self.owner, "near", expected_revision=1, evidence_ref="moved-before-class")
         new_departure = original_departure - timedelta(minutes=3)
-        with patch("good_life.academics.attendance._wake_slip", side_effect=AssertionError("wake re-rolled")):
-            await self.tick(new_departure - timedelta(seconds=1))
-            self.assertFalse(self.runtime.kernel.repo.foreground_busy(self.owner))
-            await self.tick(new_departure)
+        await self.tick(new_departure - timedelta(seconds=1))
+        self.assertFalse(self.runtime.kernel.repo.foreground_busy(self.owner))
+        await self.tick(new_departure)
+        self.assertEqual(self.wake_decision(), wake)
         instance = self.running()
         self.assertEqual(instance.started_at, new_departure)
         self.assertEqual(instance.checkpoint["params"]["route"]["from_place_id"], "near")
         self.assertEqual(instance.checkpoint["location_revision"], 2)
 
     async def test_late_wake_is_reused_after_restart(self):
-        with patch("good_life.academics.attendance._wake_slip", return_value=420) as wake:
-            session, departure = await self.start_scenario(attendance=True)
-        wake.assert_called_once()
-        with patch("good_life.academics.attendance._wake_slip", side_effect=AssertionError("wake re-rolled")):
-            await self.restart(attendance=True)
-            await self.tick(departure + timedelta(seconds=419))
-            self.assertIsNone(self.participation(session))
-            await self.tick(departure + timedelta(seconds=420))
-            self.assertEqual(self.running().started_at, departure + timedelta(seconds=420))
-            await self.tick(timestamp(session["end_at"]))
+        self.install_sleep_ledger()
+        session, departure = await self.start_scenario(attendance=True)
+        start = timestamp(session["start_at"])
+        bedtime, wake = start - timedelta(hours=16), departure - timedelta(minutes=13)
+        self.record_sleep(bedtime, wake)
+        await self.tick(wake)
+        decision = self.wake_decision()
+        ready = wake + timedelta(minutes=20)
+        self.assertEqual(timestamp(decision["ready_at"]), ready)
+        await self.restart(attendance=True)
+        await self.tick(ready - timedelta(seconds=1))
+        self.assertIsNone(self.participation(session))
+        await self.tick(ready)
+        self.assertEqual(self.running().started_at, ready)
+        self.assertEqual(self.wake_decision(), decision)
+        await self.tick(timestamp(session["end_at"]))
         grade = self.participation(session)["attendance"]
         self.assertEqual((grade["outcome"], grade["cause_code"], grade["minutes_missed"]), ("late", "overslept", 2))
+
+    async def test_waits_for_sleep_receipt_at_departure(self):
+        self.install_sleep_ledger()
+        self.confirm_graph()
+        await self.bind(attendance=True)
+        self.write("term", term())
+        self.write("timetable", entry(place_id="far", end_time="17:00"))
+        session = self.session()
+        start = timestamp(session["start_at"])
+        departure = start - timedelta(minutes=4)
+        bedtime = start - timedelta(hours=16)
+        self.record_sleep(bedtime)
+        await self.tick(departure)
+        self.assertIsNone(self.wake_decision())
+        self.assertIsNone(self.participation(session))
+        wake = departure + timedelta(minutes=15)
+        self.record_sleep(bedtime, wake)
+        await self.tick(wake)
+        self.assertIsNone(self.participation(session))
+        await self.tick(wake + timedelta(minutes=20))
+        self.assertEqual(self.running().started_at, wake + timedelta(minutes=20))
+        await self.tick(timestamp(session["end_at"]))
+        grade = self.participation(session)["attendance"]
+        self.assertEqual((grade["outcome"], grade["cause_code"], grade["minutes_missed"]), ("late", "overslept", 35))
 
     async def test_commute_resume_accounts_for_the_delay_without_offline_travel(self):
         session, departure = await self.start_scenario()
@@ -265,9 +315,10 @@ class HostedClasses(IsolatedAsyncioTestCase):
                          ("late", "delayed_en_route", 2))
 
     async def test_absence_waits_for_end_and_is_recorded_once(self):
-        with patch("good_life.academics.attendance._wake_slip", return_value=7200):
-            session, _ = await self.start_scenario(attendance=True)
+        self.install_sleep_ledger()
+        session, _ = await self.start_scenario(attendance=True)
         end = timestamp(session["end_at"])
+        self.record_sleep(end - timedelta(hours=16))
         await self.tick(end - timedelta(seconds=1))
         self.assertIsNone(self.participation(session))
         await self.tick(end)
@@ -403,12 +454,7 @@ class HostedClasses(IsolatedAsyncioTestCase):
         async def start(_context, plan):
             self.bedtimes.append(self.now)
             self.sleep_plans.append(plan)
-            record = sleep_record(wire(self.now))
-            record["work"] = None  # The normal wake receipt clears the sleep work spec.
-            record["scope"] = {"kind": "private"}
-            with self.storage.transaction() as db:
-                db.execute("INSERT INTO staged_role_activities VALUES (?,?,'{}',1,'completed',?,?)",
-                           (self.owner, plan["request_id"], wire(self.now), json.dumps(record)))
+            self.record_sleep(self.now, self.now + timedelta(hours=7))
             return {"state": "committed"}
 
         host.life_host_capabilities = lambda **args: {**base(**args),
@@ -427,8 +473,7 @@ class HostedClasses(IsolatedAsyncioTestCase):
         self.write("timetable", entry(slot_id="tuesday", weekday=2, place_id="near", start_time="08:00", end_time="09:00"))
         session = self.session()
         bedtime = timestamp(session["end_at"])
-        with patch("good_life.academics.attendance._wake_slip", return_value=0):
-            await self.tick(timestamp(session["start_at"]) - timedelta(minutes=9))
+        await self.tick(timestamp(session["start_at"]) - timedelta(minutes=9))
         await self.runtime.scheduler.tick(now=self.now)
         await self.tick(bedtime)
         self.assertTrue(self.running().template_id.startswith("campus_walk_"))
@@ -440,9 +485,78 @@ class HostedClasses(IsolatedAsyncioTestCase):
         await self.runtime.scheduler.tick(now=self.now)
         self.assertEqual(self.bedtimes, [bedtime + timedelta(minutes=4)])
         start = timestamp(self.session()["start_at"])
-        with patch("good_life.academics.attendance._wake_slip", return_value=0) as wake:
-            await self.tick(start - timedelta(minutes=20))
-        self.assertAlmostEqual(wake.call_args.args[4], 4 / 60)
+        await self.tick(start - timedelta(minutes=20))
+        wake = self.bedtimes[0] + timedelta(hours=7)
+        self.assertEqual(timestamp(self.wake_decision()["ready_at"]), wake + timedelta(minutes=20))
+
+    async def test_late_bedtime_leaves_time_for_morning_class_prep_and_commute(self):
+        owner = {"installation_id": "test", "bot_id": "bot", "persona_id": "role"}
+        self.owner = digest(owner)
+        self.scope = self.access.scope = replace(self.scope, owner_key=m.OwnerKey(self.owner))
+        self.access.inventory = (self.scope,)
+        self.confirm_graph(far_travel_s=1116)
+        self.install_sleep_ledger()
+        self.now = bedtime = timestamp("2026-11-23T01:30:00+08:00")
+        await self.bind(attendance=True)
+        self.write("term", term())
+        await self.tick(bedtime)
+        self.assertEqual(self.campus.location(self.owner)[0], "home")
+        scope = {"installation_id": owner["installation_id"], "bot_id": owner["bot_id"], "platform": "test",
+                 "kind": "private", "native_scope_id": "native", "account_id": "account",
+                 "conversation_id": "conversation", "session_id": "session"}
+        sleep_inputs = dict(owner=owner, scope=scope, context_key=self.context,
+            request_id="daily-sleep-2026-11-22", observed_at=wire(bedtime), kind="night",
+            base_need_minutes=480, workload_score=0, sleep_debt_minutes=67)
+        creations = self.runtime.activity_control.creations
+        normal_wake = bedtime + timedelta(minutes=510)
+        self.assertEqual(timestamp(creations.propose_scheduled_sleep(**sleep_inputs)["work"]["due_at"]), normal_wake)
+        self.write("timetable", entry(slot_id="afternoon", place_id="far"))
+        self.assertEqual(timestamp(creations.propose_scheduled_sleep(**sleep_inputs)["work"]["due_at"]), normal_wake)
+        self.write("timetable", entry(place_id="far", start_time="09:55", end_time="11:35"))
+        session = self.session()
+        start = timestamp(session["start_at"])
+
+        activity = creations.propose_scheduled_sleep(**sleep_inputs)
+        wake_at = timestamp(activity["work"]["due_at"])
+        self.assertEqual(wake_at, timestamp("2026-11-23T09:11:24+08:00"))
+        self.assertEqual((activity["sleep"]["base_need_minutes"], activity["sleep"]["target_minutes"]), (480, 461))
+        self.record_sleep(bedtime, wake_at)
+        # Wake settlement and commute scheduling can each land a few seconds after their due time.
+        await self.tick(wake_at + timedelta(seconds=3))
+        decision = self.wake_decision()
+        self.assertEqual(timestamp(decision["ready_at"]), wake_at + timedelta(minutes=20))
+        self.assertEqual(decision["planned_travel_s"], 1116)
+        await self.tick(wake_at + timedelta(minutes=20, seconds=3))
+        self.assertEqual(self.running().target_ref.id, session["session_id"])
+        await self.tick(start)
+        await self.tick(timestamp(session["end_at"]))
+        participation = self.participation(session)
+        self.assertLessEqual(timestamp(participation["arrival_at"]), start)
+        self.assertEqual(participation["attendance"]["outcome"], "on_time")
+
+    async def test_alarm_applies_only_before_a_morning_class_even_without_attendance(self):
+        self.confirm_graph()
+        self.now = NOW + timedelta(hours=7, minutes=30)
+        await self.bind()
+        self.write("term", term())
+        self.write("timetable", entry(slot_id="tuesday", weekday=2, place_id="far", start_time="08:00", end_time="09:00"))
+        self.write("timetable", entry(slot_id="wednesday", weekday=3, place_id="far"))
+        await self.tick(self.now)  # Initialize the configured home through the normal hosted phase.
+        alarm = self.runtime.activity_control.creations.night_sleep_alarm
+        start = timestamp(self.session()["start_at"])
+        self.assertEqual(alarm(self.owner, self.context, self.now), start - timedelta(minutes=29))
+        self.assertIsNone(alarm(self.owner, self.context, self.now + timedelta(days=1)))
+        await self.restart(enabled=False)
+        self.assertIsNone(self.runtime.activity_control.creations.night_sleep_alarm)
+
+    async def test_alarm_falls_back_to_30_minutes_of_travel(self):
+        self.now = NOW + timedelta(hours=7, minutes=30)
+        await self.bind(attendance=True, campus=False, home="")
+        self.write("term", term())
+        self.write("timetable", entry(slot_id="tuesday", weekday=2, place_id="far", start_time="08:00", end_time="09:00"))
+        alarm = self.runtime.activity_control.creations.night_sleep_alarm
+        start = timestamp(self.session()["start_at"])
+        self.assertEqual(alarm(self.owner, self.context, self.now), start - timedelta(minutes=55))
 
     async def test_held_bedtime_survives_restart_during_return_walk(self):
         self.confirm_graph()

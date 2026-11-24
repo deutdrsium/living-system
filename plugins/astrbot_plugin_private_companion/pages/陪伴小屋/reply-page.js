@@ -87,9 +87,6 @@ window.CompanionReplyPage = (() => {
       group_air_guard_enabled: "启用空气护栏",
       group_high_intensity_enabled: "启用高强度硬收口",
       recall_silence_enabled: "启用撤回沉默",
-      private_closing_guard_enabled: "启用私聊收尾沉默",
-      private_closing_guard_window_seconds: "收尾判断窗口（秒）",
-      private_closing_guard_prompt_enabled: "同时提示模型自然收尾",
       private_debounce_enabled: "启用私聊连续输入防抖",
       private_debounce_min_ms: "最短静默（秒）",
       private_debounce_max_ms: "最长静默（秒）",
@@ -247,9 +244,6 @@ window.CompanionReplyPage = (() => {
       group_air_guard_enabled: "开启后将近期连续回复与礼貌收尾次数作为群聊提示参考，不机械截断回复。",
       group_high_intensity_enabled: "达到下方窗口轮数后，未点名、非直接接续的群消息本轮直接旁听；明确 @、直呼角色和有效接续仍可回应。沿用空气护栏的窗口、轮数和冷却，不另设旧版收口期合并队列。",
       recall_silence_enabled: "触发消息被撤回时，取消尚未发出的回复并停止输入状态。关闭后仍记录撤回、仍让来源失效，但不再因撤回取消本轮回复；已经发出的消息无法收回。",
-      private_closing_guard_enabled: "开启后，对方只是道晚安、道别、感谢或简短应声，而角色上一轮已经收尾时，本轮不再调用模型回复，避免互相道晚安。带问题、请求、图片或新内容的消息不静默。",
-      private_closing_guard_window_seconds: "只在这个时间窗口内判断收尾；超过窗口后仍按普通消息回复。范围 60–7200 秒。",
-      private_closing_guard_prompt_enabled: "未触发静默时，把收尾语境作为本轮提示，提醒模型不要另起话题、追问或再补一条同义道别。",
       private_debounce_enabled: "仅纯文本私聊生效：第一条消息立即开始准备，短线补充并入同一轮，只触发一次模型请求。图片、语音、视频、文件、引用和命令立即处理。",
       private_debounce_min_ms: "长消息靠近这个下限；与最长静默相同时使用固定等待。范围 1–1200 秒，默认 1.5 秒。",
       private_debounce_max_ms: "短消息靠近这个上限；范围 1–1200 秒，默认 4 秒。",
@@ -275,7 +269,7 @@ window.CompanionReplyPage = (() => {
       private_image_self_recognition_hint: "最多 1200 字，填写角色的头像、昵称、签名、水印或二创别名等线索；角色外貌优先使用已登记的人格资料。只把线索作为可能匹配，不确认画中人或发送者身份，也不要填写用户资料。",
       private_image_vision_custom_prompt: "最多 4000 字，只补充图像描述角度；自我识别线索请填写上方专用项。",
       private_image_vision_max_chars: "限制加入本轮上下文的转述长度，范围 120–4000 字。",
-      private_image_vision_wait_seconds: "转述最多等待时间，范围 1–30 秒；超时后回复继续使用原图。",
+      private_image_vision_wait_seconds: "转述最多等待时间，范围 1–60 秒；超时后回复继续使用原图。",
       private_image_provider_failure_cooldown_seconds: "相同图片识图失败后暂缓重试，范围 0–3600 秒；0 表示不冷却。",
       video_understanding_enabled: "在当前选中的私聊或群聊窗口启用原生视频理解；主回复与视频模型一致且支持视频输入时，直接读取原视频。",
       video_understanding_private_enabled: "角色级权限，适用于该角色绑定的所有私聊窗口。关闭后不会把私聊视频交给视频理解模型。",
@@ -330,14 +324,11 @@ window.CompanionReplyPage = (() => {
       {id: "private_debounce", title: "私聊节奏 · 连续输入", help: "后续文字会重新开始静默计时；单轮总上限从第一条消息起算。最短静默不能大于最长静默，单轮总上限不能小于最长静默。",
        fields: ["private_debounce_enabled", "private_debounce_min_ms", "private_debounce_max_ms",
                 "private_debounce_total_ms"]},
-      {id: "silence_policy", title: "沉默策略", help: "统一管理哪些情况允许自动沉默；具体窗口与阈值仍在下方各分区调整。忙碌与休息闸门使用下方独立设置，它们只延期、不取消。Laya 的 wait/silent 与未点名群聊旁听仍由决策和群聊参与设置控制。",
-       fields: ["recall_silence_enabled", "private_closing_guard_enabled", "group_air_guard_enabled"]},
+      {id: "silence_policy", title: "沉默策略", help: "统一管理哪些情况允许自动沉默；具体窗口与阈值仍在下方各分区调整。忙碌与休息闸门使用下方独立设置，它们只延期、不取消。Laya 的 wait/silent、私聊自然收住时不回与未点名群聊旁听仍由模型页的 Laya 设置和群聊参与设置控制。",
+       fields: ["recall_silence_enabled", "group_air_guard_enabled"]},
       {id: "group_air_guard", title: "空气护栏 · 细则", help: "",
        fields: ["group_high_intensity_enabled", "group_air_guard_window_seconds", "group_air_guard_max_bot_replies",
                 "group_air_guard_cooldown_seconds", "group_air_guard_polite_loop_limit"]},
-      {id: "private_closing", title: "私聊收尾 · 细则", help: "",
-       fields: ["private_closing_guard_window_seconds",
-                "private_closing_guard_prompt_enabled"]},
       {id: "group_content_safety", title: "内容护栏 · 挡说错话", help: "",
        fields: ["enable_group_injection_guard", "enable_group_privacy_guard",
                 "enable_group_reality_promise_guard"]},
@@ -409,8 +400,6 @@ window.CompanionReplyPage = (() => {
       part_gap_min_ms: {part_gap_mode: "random"},
       part_gap_max_ms: {part_gap_mode: "random"},
       part_gap_log_base: {part_gap_mode: "log"},
-      private_closing_guard_window_seconds: {private_closing_guard_enabled: true},
-      private_closing_guard_prompt_enabled: {private_closing_guard_enabled: true},
       private_debounce_min_ms: {private_debounce_enabled: true},
       private_debounce_max_ms: {private_debounce_enabled: true},
       private_debounce_total_ms: {private_debounce_enabled: true},
@@ -437,11 +426,11 @@ window.CompanionReplyPage = (() => {
   };
   const decisionSectionIds = new Set(["wakeup_direct", "wakeup_interest", "wakeup_members",
     "wakeup_cold_group", "wakeup_fatigue", "group_continuation", "private_debounce",
-    "silence_policy", "group_air_guard", "private_closing", "group_content_safety"]);
+    "silence_policy", "group_air_guard", "group_content_safety"]);
   const decisionViewSections = {
     response: ["wakeup_direct", "wakeup_interest", "wakeup_members"],
     tempo: ["group_continuation", "private_debounce", "wakeup_cold_group", "wakeup_fatigue"],
-    safety: ["silence_policy", "group_air_guard", "private_closing", "group_content_safety"],
+    safety: ["silence_policy", "group_air_guard", "group_content_safety"],
   };
   const decisionSectionViews = Object.fromEntries(Object.entries(decisionViewSections)
     .flatMap(([view, sections]) => sections.map(section => [section, view])));

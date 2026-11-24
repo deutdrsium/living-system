@@ -5277,7 +5277,7 @@ function configSearchLocation(entry){
 function replySearchLocation(entry){
   const decisionView=['wakeup_direct','wakeup_interest','wakeup_members'].includes(entry.section)?'response'
     :['group_continuation','private_debounce','wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
-      :['silence_policy','private_closing','group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
+      :['silence_policy','group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
   if(decisionView)return {next:'manage',tab:'decision',decisionView,root:'#decisionReplyWorkspace'};
   const understandingTab={media_permissions:'overview',context_image:'image',image_narration:'image',
     video_narration:'video',file_understanding:'file',forwards:'forwards'}[entry.section];

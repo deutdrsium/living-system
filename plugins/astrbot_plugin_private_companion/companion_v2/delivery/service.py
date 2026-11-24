@@ -98,6 +98,9 @@ class OutboundDelivery:
             raise ValueError("delivery owners must be explicit and unique")
         self.runtime, self.sender = runtime, sender
         self.owners = MappingProxyType({o.name: o for o in owners})
+        # Host port: request -> reason code or None. A held request fails before
+        # any effect and is settled as cancelled; it is never replayed later.
+        self.hold = None
         self.on_delivered = None
         self.on_receipt = None
         self.tasks = None
@@ -196,6 +199,9 @@ class OutboundDelivery:
             if row["state"] != "pending" or row["operation_id"] is not None:
                 raise TaskError("delivery_already_dispatched", "an original envelope must never be resubmitted")
             request = DeliveryRequest.restore(row["request_json"])
+            reason = self.hold(request) if self.hold is not None else None
+            if reason:
+                raise TaskError(reason, "the host withheld this background delivery for its window")
             content = self._content(request, self.tasks.now())
             text, images = content.text, content.images
             run.begin_effect()

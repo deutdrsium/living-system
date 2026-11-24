@@ -48,23 +48,21 @@ class ConversationStateContext:
             if schedule_mode == SCHEDULE_MODE_CONTINUOUS or calendar.get("items"):
                 schedule_source = self._publish_schedule_projection(
                     context, calendar, at, mode=schedule_mode)
+            recent = (self.calendar.planned_spending(context, at) if self.calendar is not None
+                      and callable(getattr(self.calendar, "planned_spending", None)) else None)
+            spending = {"recent_life_spending": recent} if recent else {}
             state = None
             if settings.get("enabled"):
                 try:
                     state = self.service.read(context, at=at, injection=True)
                 except TaskError:
                     state = None
-            if state is None or state["state"] == "disabled":
+            if (state is None or state["state"] == "disabled"
+                    or state["state"] == "unknown" and "sleep_execution" not in state):
                 if schedule_mode != SCHEDULE_MODE_CONTINUOUS and not calendar.get("items"):
-                    return None
+                    return spending or None
                 return {"projection_version": 4, "captured_at": stamp(at),
-                    "schedule_simulation_mode": schedule_mode, "calendar": calendar,
-                    **({"schedule_source": schedule_source} if schedule_source is not None else {})}
-            if state["state"] == "unknown" and "sleep_execution" not in state:
-                if schedule_mode != SCHEDULE_MODE_CONTINUOUS and not calendar.get("items"):
-                    return None
-                return {"projection_version": 4, "captured_at": stamp(at),
-                    "schedule_simulation_mode": schedule_mode, "calendar": calendar,
+                    "schedule_simulation_mode": schedule_mode, "calendar": calendar, **spending,
                     **({"schedule_source": schedule_source} if schedule_source is not None else {})}
             activities = self.service.activity_context(context)
             return {"revision": state["revision"], "hash": digest(state), "activity_hash": digest(activities),
@@ -75,7 +73,7 @@ class ConversationStateContext:
                 "activity_unavailable": activities.get("state") == "unavailable", "activity_partial": activities["partial"],
                 "schedule_simulation_mode": schedule_mode, "calendar": calendar,
                 **({"schedule_source": schedule_source} if schedule_source is not None else {}),
-                "humanized_intensity": self._intensity(context)}
+                "humanized_intensity": self._intensity(context), **spending}
         except TaskError:
             return None
 
@@ -96,6 +94,18 @@ class ConversationStateContext:
         fields = old_fields | {"captured_at", "activities", "activity_unavailable", "activity_partial"}
         if type(snapshot) is not dict:
             raise TaskError("state_snapshot_invalid", "invalid role state reference")
+        snapshot = dict(snapshot)
+        spending = snapshot.pop("recent_life_spending", None)
+        recent = ()
+        if spending:
+            try:
+                self.service.access.check(context, "role.life.read", at=at)
+                recent = (ContextContribution("recent-life-spending", "role.state", "recent_life", ContributionState.READY,
+                    encode({"simulated_wallet_spending": spending})),)
+            except TaskError:
+                pass
+        if not snapshot:
+            return recent
         schedule_only_fields = {"projection_version", "captured_at", "schedule_simulation_mode", "calendar", "schedule_source"}
         if set(snapshot) == schedule_only_fields:
             self._validate_calendar_snapshot(snapshot)
@@ -105,7 +115,7 @@ class ConversationStateContext:
             if calendar_items:
                 self._authorize_calendar_items(calendar_items, context, at)
             material = self._schedule_contribution(snapshot, context, at, fallback_source=fallback_source)
-            return (material,)
+            return (material,) + recent
         # The expression dial is additive: a batch sealed before it existed simply
         # omits the key, and the replay then injects no state expression at all.
         sealed_fields = set(snapshot)
@@ -171,7 +181,7 @@ class ConversationStateContext:
                                  "schedule_source": snapshot.get("schedule_source")}
             result += (self._schedule_contribution(schedule_snapshot, context, at,
                 fallback_source=fallback_source),)
-        return result
+        return result + recent
 
     @staticmethod
     def _invalid_calendar_snapshot(calendar):
@@ -262,6 +272,9 @@ class ConversationStateContext:
                 simulations.append(json.loads(item.payload))
             elif item.purpose == "role_schedule":
                 schedules.append(json.loads(item.payload))
+            elif item.purpose == "recent_life":
+                blocks.append("recent_life 中的钱包开支是角色自己的模拟记录，金额以分计；charged 表示已扣款，"
+                              "refused 表示未扣款。不把计划或拒付当成已经完成的现实购买。")
             elif item.purpose == "role_state_intensity":
                 try:
                     intensity = json.loads(item.payload)["intensity"]

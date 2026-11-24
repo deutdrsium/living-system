@@ -45,6 +45,25 @@ def operation() -> OperationRef:
 
 
 class StorageRuntimeTests(unittest.TestCase):
+    def test_governance_read_index_is_additive_and_installed_on_existing_roots(self):
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            root = Path(temporary) / "v2-data"
+            with StorageRuntime.open(data_root=root, installation_id=INSTALLATION_ID) as runtime:
+                metadata = [tuple(row) for row in runtime.read_all("SELECT * FROM runtime_metadata ORDER BY key", ())]
+                migrations = [tuple(row) for row in runtime.read_all("SELECT * FROM schema_migrations ORDER BY migration_id", ())]
+                with runtime.transaction() as connection:
+                    connection.execute("DROP INDEX sources_governance_idx")
+            for _ in range(2):
+                with StorageRuntime.open(data_root=root, installation_id=INSTALLATION_ID) as reopened:
+                    self.assertEqual([tuple(row) for row in reopened.read_all("SELECT * FROM runtime_metadata ORDER BY key", ())], metadata)
+                    self.assertEqual([tuple(row) for row in reopened.read_all("SELECT * FROM schema_migrations ORDER BY migration_id", ())], migrations)
+                    columns = [row[2] for row in reopened.read_all("PRAGMA index_info(sources_governance_idx)", ())]
+                    self.assertEqual(columns, ["source_id", "lineage_id", "source_revision", "owner", "state", "issued_at", "expires_at"])
+                    plan = reopened.read_all("""EXPLAIN QUERY PLAN SELECT owner,state,issued_at,expires_at
+                        FROM sources INDEXED BY sources_governance_idx
+                        WHERE source_id=? AND lineage_id=? AND source_revision=?""", ("source", "source", 1))
+                    self.assertTrue(any("COVERING INDEX sources_governance_idx" in row[3] for row in plan))
+
     def test_close_releases_readers_after_worker_threads_are_collected(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)

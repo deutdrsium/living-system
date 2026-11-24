@@ -59,6 +59,10 @@ DEFAULTS = {
     # 0 disables the host-side gate. Values are percentages because the model
     # page exposes a familiar 0-100 control; Laya reports a 0-1 probability.
     "followup_confidence_threshold": 0,
+    # Private chat asks Laya whether the conversation has come to rest. Only a
+    # `silent` at or above this percentage skips the reply; anything else replies.
+    "private_silence_enabled": True,
+    "private_silence_confidence_threshold": 80,
     "decision_fields": DEFAULT_DECISION_FIELDS,
 }
 ALLOWED_CHANGES = frozenset(DEFAULTS)
@@ -270,6 +274,11 @@ class LayaSettingsStore:
         threshold = values["followup_confidence_threshold"]
         if type(threshold) is not int or not 0 <= threshold <= 100:
             raise LayaSettingsError("laya_config_invalid", "followup_confidence_threshold 超出范围")
+        if type(values["private_silence_enabled"]) is not bool:
+            raise LayaSettingsError("laya_config_invalid", "private_silence_enabled 必须是布尔值")
+        threshold = values["private_silence_confidence_threshold"]
+        if type(threshold) is not int or not 0 <= threshold <= 100:
+            raise LayaSettingsError("laya_config_invalid", "private_silence_confidence_threshold 超出范围")
         fields = values["decision_fields"]
         if type(fields) is not dict or set(fields) != set(DEFAULT_DECISION_FIELDS) or any(
                 type(value) is not bool for value in fields.values()):
@@ -299,6 +308,8 @@ class LayaSettingsStore:
             "proxy_set": bool(values["proxy"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],
+            "private_silence_enabled": values["private_silence_enabled"],
+            "private_silence_confidence_threshold": values["private_silence_confidence_threshold"],
             "decision_fields": dict(values["decision_fields"]),
             "package_installed": installed,
             "package_version": version,

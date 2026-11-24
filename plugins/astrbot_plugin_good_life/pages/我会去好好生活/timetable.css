@@ -1,16 +1,17 @@
 /* 课表页
  *
- * 宽屏：上方整行学期；中间左边一周课表格子，打开编辑时右边是编辑面板；下方整行课程列表。
+ * 宽屏：上方整行学期；中间左边一周课表格子，打开编辑时右边是编辑面板；下方整行课程列表，再下面是只读的「学习」。
  * 1180px 以下合成一列，编辑面板排在学期之后、课表之前；720px 以下课表格子改成按天的列表。
  * 颜色、圆角、间距全部取自 state-tokens.css，卡片与胶囊按钮沿用外壳。 */
 
-.gl-tt{display:grid;grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "week" "courses";gap:0 var(--sp-4);align-items:start}
-.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr) var(--gl-side);grid-template-areas:"message message" "term term" "week panel" "courses panel"}
+.gl-tt{display:grid;grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "week" "courses" "study";gap:0 var(--sp-4);align-items:start}
+.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr) var(--gl-side);grid-template-areas:"message message" "term term" "week panel" "courses panel" "study panel"}
 .gl-tt-message{grid-area:message}
 .gl-tt-term{grid-area:term}
 .gl-tt-week{grid-area:week}
 .gl-tt-panel{grid-area:panel;position:sticky;top:var(--sp-4)}
 .gl-tt-courses{grid-area:courses}
+.gl-tt-study{grid-area:study}
 .gl-tt-only{max-width:720px}
 .gl-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
@@ -91,6 +92,63 @@
 .gl-tt-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-risk-quiet);color:var(--t-risk-ink);font-size:var(--fs-micro);line-height:1.6}
 .gl-tt-confirm>span{flex:1 1 14em}
 
+/* === 学习（只读）：每门课一个 <details>，标题行是课名与概况；展开后是成绩、作业与自习记录、大纲。 === */
+.gl-tt-study-list{display:grid}
+.gl-tt-study-course{border-bottom:1px solid var(--t-line)}
+.gl-tt-study-course:last-child{border-bottom:0}
+.gl-tt-study-course>summary{display:flex;align-items:center;gap:var(--sp-2);min-height:48px;padding:var(--sp-2) var(--sp-1);list-style:none;cursor:pointer;border-radius:var(--r-sm)}
+.gl-tt-study-course>summary::-webkit-details-marker{display:none}
+.gl-tt-study-course>summary:hover{background:var(--t-surface-soft)}
+.gl-tt-study-course>summary>.gl-icon{flex:none;width:16px;height:16px;color:var(--t-text-faint);transition:transform var(--dur-fast)}
+.gl-tt-study-course[open]>summary>.gl-icon{transform:rotate(90deg);color:var(--t-accent-ink)}
+.gl-tt-study-name{display:grid;flex:1;min-width:0}
+.gl-tt-study-name strong{font-size:var(--fs-body);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
+.gl-tt-study-name small{font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-study :is(summary,button):focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.gl-tt-study-body{padding:0 var(--sp-1) var(--sp-4)}
+.gl-tt-study-part{margin-top:var(--sp-3)}
+.gl-tt-study-part h3{margin:0 0 var(--sp-2);font-family:var(--gl-heading-font);font-size:var(--fs-tiny);font-weight:600;letter-spacing:.06em;color:var(--t-text-soft)}
+.gl-tt-study-quiet{margin:var(--sp-2) 0 0;font-size:var(--fs-tiny);line-height:1.6;color:var(--t-text-faint)}
+.gl-tt-study-quiet .gl-chip-button{min-height:28px;margin-left:var(--sp-1)}
+.gl-tt-grade{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--sp-2);margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny)}
+.gl-tt-grade strong{font-family:var(--gl-heading-font);font-size:var(--fs-title);font-weight:600;font-variant-numeric:tabular-nums}
+.gl-tt-grade em{font-style:normal;font-weight:600}
+.gl-tt-grade small{margin-left:auto;font-size:var(--fs-micro)}
+.gl-tt-assignments,.gl-tt-artifacts,.gl-tt-units{margin:0;padding:0;list-style:none}
+.gl-tt-assignment{display:grid;gap:4px;margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-left:3px solid var(--t-accent);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.gl-tt-assignment[data-state="done"]{border-left-color:var(--t-ok)}
+.gl-tt-assignment[data-state="late"]{border-left-color:var(--t-warn)}
+.gl-tt-assignment[data-state="todo"]{border-left-color:var(--t-line-firm)}
+.gl-tt-assignment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-2)}
+.gl-tt-assignment-head strong{font-size:var(--fs-tiny);font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
+.gl-tt-assignment .gl-chip.is-warn{border-color:color-mix(in srgb,var(--t-warn) 40%,transparent);background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.gl-tt-assignment-facts,.gl-tt-work{font-size:var(--fs-micro);line-height:1.5;color:var(--t-text-faint);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.gl-tt-progress{height:5px;margin-top:2px;border-radius:var(--r-pill);background:var(--t-surface-sunken);overflow:hidden}
+.gl-tt-progress span{display:block;width:var(--tt-done);height:100%;border-radius:inherit;background:var(--t-accent)}
+.gl-tt-assignment[data-state="done"] .gl-tt-progress span{background:var(--t-ok)}
+.gl-tt-artifacts{display:grid;gap:4px;margin-top:var(--sp-1)}
+.gl-tt-artifact{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:var(--sp-2);width:100%;min-height:40px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised);color:var(--t-text);text-align:left;cursor:pointer}
+.gl-tt-artifact:hover{border-color:var(--t-accent)}
+.gl-tt-artifact strong{font-size:var(--fs-tiny);font-weight:600;overflow-wrap:anywhere}
+.gl-tt-artifact small{grid-column:1;font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-artifact .gl-icon{grid-column:2;grid-row:1/3;width:14px;height:14px;color:var(--t-text-faint);transition:transform var(--dur-fast)}
+.gl-tt-artifact[aria-expanded="true"]{border-color:var(--t-accent);background:var(--t-accent-quiet)}
+.gl-tt-artifact[aria-expanded="true"] .gl-icon{transform:rotate(90deg);color:var(--t-accent-ink)}
+.gl-tt-artifact-open{margin:4px 0 var(--sp-1);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised)}
+.gl-tt-artifact-text{max-height:28em;overflow:auto;font-size:var(--fs-tiny);line-height:1.8;color:var(--t-text);white-space:pre-wrap;overflow-wrap:anywhere}
+.gl-tt-artifact-next{display:flex;gap:var(--sp-2);margin:var(--sp-3) 0 0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-xs);background:var(--t-accent-quiet);font-size:var(--fs-tiny);line-height:1.6;color:var(--t-text)}
+.gl-tt-artifact-next strong{flex:none;color:var(--t-accent-ink)}
+.gl-tt-artifact-open .gl-tt-actions{margin-top:var(--sp-2)}
+.gl-tt-assignment>.gl-chip-button{justify-self:start;min-height:28px;margin-top:4px}
+.gl-tt-syllabus>summary{width:max-content;max-width:100%;min-height:32px;padding:4px 0;color:var(--t-accent-ink);font-size:var(--fs-tiny);font-weight:600;cursor:pointer}
+.gl-tt-units{display:grid;gap:2px;margin-top:var(--sp-1)}
+.gl-tt-units li{display:grid;grid-template-columns:4.5em minmax(0,1fr);gap:var(--sp-2);padding:var(--sp-1) 0;border-bottom:1px dashed var(--t-line)}
+.gl-tt-units li:last-child{border-bottom:0}
+.gl-tt-unit-week{padding-top:2px;font-size:var(--fs-micro);color:var(--t-text-faint);font-variant-numeric:tabular-nums}
+.gl-tt-units div{display:grid;min-width:0}
+.gl-tt-units strong{font-size:var(--fs-tiny);font-weight:500;color:var(--t-text)}
+.gl-tt-units small{font-size:var(--fs-micro);color:var(--t-text-faint);overflow-wrap:anywhere}
+
 /* === 编辑面板与表单 === */
 .gl-tt-panel{border-color:var(--t-line-firm)}
 .gl-tt-form{margin:0}
@@ -124,7 +182,7 @@
 .gl-tt-primary:disabled{opacity:.55;cursor:progress}
 
 @media(max-width:1180px){
-  .gl-tt,.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "panel" "week" "courses"}
+  .gl-tt,.gl-tt[data-panel]{grid-template-columns:minmax(0,1fr);grid-template-areas:"message" "term" "panel" "week" "courses" "study"}
   .gl-tt-panel{position:static}
 }
 @media(max-width:720px){
@@ -148,5 +206,7 @@
   .gl-tt-facts dd{margin:0}
   .gl-tt-row-tools .gl-chip-button,.gl-tt-confirm .gl-chip-button{min-height:38px}
   .gl-tt-primary{min-height:42px}
+  .gl-tt-study-course>summary{min-height:52px}
+  .gl-tt-artifact{min-height:44px}
 }
-@media(prefers-reduced-motion:reduce){.gl-tt-block{transition:none}}
+@media(prefers-reduced-motion:reduce){.gl-tt-block,.gl-tt-study .gl-icon{transition:none}}

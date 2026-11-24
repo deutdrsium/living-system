@@ -84,7 +84,9 @@ class LifePageReadTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
             result = await original(api, **kwargs)
             data = result["data"]
             data.update(next_diary_at="private-marker", journal_unresolved=True,
-                interests=[{"name": "private-marker"}], profile_hobbies="private-marker",
+                interests=[{"interest_id": "i" * 64, "name": "城市散步"}], profile_hobbies="摄影",
+                disliked_items=[{"dislike_id": "d" * 64, "title": "太吵的视频"}],
+                recent_exposures=[{"title": "街角咖啡店"}],
                 future_private_field="private-marker", receipts=[{"operation_id": "private-marker"}],
                 running=["diary:private-marker"])
             data["config"].update(diary_time="private-marker", future_private_field="private-marker")
@@ -97,7 +99,7 @@ class LifePageReadTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
 
         with patch.object(LifeWebAPI, "status", expanded):
             data = self.ok(await self.call(page.life))
-        self.assertEqual(set(data), LIFE_PAGE_FIELDS | {"config", "journals", "receipts", "running"})
+        self.assertEqual(set(data), (LIFE_PAGE_FIELDS - {"next_note_cursor"}) | {"config", "journals", "receipts", "running"})
         self.assertEqual(set(data["config"]), LIFE_FIELDS)
         self.assertEqual(data["receipts"], [])
         self.assertEqual(data["running"], [])
@@ -105,8 +107,41 @@ class LifePageReadTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-marker", json.dumps(data))
         self.assertEqual(captured["next_diary_at"], "private-marker", "projection must not mutate the full host result")
         for name in ("participant", "profile_id", "target_id", "next_diary_at", "journal_unresolved",
-                     "interests", "disliked_items", "recent_exposures", "profile_hobbies", "future_private_field"):
+                     "future_private_field"):
             self.assertNotIn(name, data)
+        # The interests panel renders the role's interests for the owner's dashboard.
+        self.assertEqual(data["interests"], [{"interest_id": "i" * 64, "name": "城市散步"}])
+        self.assertEqual(data["profile_hobbies"], "摄影")
+        self.assertEqual(data["disliked_items"], [{"dislike_id": "d" * 64, "title": "太吵的视频"}])
+        self.assertEqual(data["recent_exposures"], [{"title": "街角咖啡店"}])
+
+    async def test_role_interests_reach_desk_and_life_page_in_multi_target_mode(self):
+        page = await self.setup_page()
+        await self.enable()
+        context = self.context()
+        start = NOW - timedelta(hours=8)
+        activity = self.app.role_life.add_activity(RoleActivity("social-interest", "role-a", context.scope, start,
+            State.ACTIVE, description="浏览", work=RoleWorkSpec("social", context.key, "browse")))
+        completed = self.app.role_life.transition_activity(activity.activity_id, owner=activity.owner,
+            expected_revision=1, state=State.COMPLETED, operation_id="complete-interest",
+            observed_at=start + timedelta(hours=1), checkpoint="完成")
+        self.assertTrue(self.app.role_interests.store.apply(context, completed, [{"name": "城市散步",
+            "reaction": "positive", "wants_to_continue": True, "reason": "喜欢街角的光", "next_question": "去哪条街"}],
+            self.app.now()))
+        desk = await self.status()
+        self.assertEqual([item["name"] for item in desk["interests"]], ["城市散步"])
+        self.assertIn("profile_hobbies", desk)
+        life = self.ok(await self.call(page.life))
+        self.assertEqual([item["name"] for item in life["interests"]], ["城市散步"])
+        self.assertEqual(life["interests"][0]["view_token"], desk["interests"][0]["view_token"])
+        for name in ("profile_hobbies", "disliked_items", "recent_exposures"):
+            self.assertIn(name, life)
+        # The desk's interest actions are accepted by the host command route.
+        item = desk["interests"][0]
+        result = self.ok(await self.request(data={"action": "interest_clear_dislike", "operation_key": "clear-dislike",
+            "view_token": item["view_token"], "expected_revision": item["revision"], "interest_id": item["interest_id"]}))
+        self.assertNotIn(result.get("state"), ("failed", "unknown"), result)
+        self.assertEqual((await self.status())["interests"][0]["revision"], item["revision"] + 1)
 
     async def test_life_note_pages_choose_visible_archive_before_date_pagination(self):
         page = await self.setup_page()
@@ -613,6 +648,46 @@ class LifePageReadTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["status"], "error")
                 self.assertEqual(result["message"], "life_query_invalid")
                 self.assertEqual(result["data"], {"code": "life_query_invalid"})
+
+    async def class_request(self, query, *, username="admin"):
+        path = self.paths[("first", "role-a")] + "/classes"
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+        native = Request({"type": "http", "method": "GET", "path": path,
+            "headers": [], "query_string": query.encode()}, receive=receive)
+        with bind_request_context(PluginRequest(native, username=username)):
+            return await self.routes[path]()
+
+    async def test_cottage_class_read_uses_local_dates_and_fails_closed_without_academics(self):
+        await self.setup_page()
+        self.assertEqual((await self.class_request("start=2026-09-21&end=2026-09-22"))["message"], "missing_dependency")
+        calendar, calls = self.app.calendar, []
+        def sessions(context, start, end):
+            calls.append((context.key, start, end))
+            return [{"course": "马克思主义哲学导论", "date": "2026-09-21", "start": "2026-09-21T09:55:00+08:00",
+                     "end": "2026-09-21T11:35:00+08:00", "place": "示例教学楼", "cancelled": False, "private": "x"},
+                    {"course": "大学英语", "date": "2026-09-21", "start": "2026-09-21T14:00:00+08:00",
+                     "end": "2026-09-21T15:40:00+08:00", "place": None, "cancelled": True},
+                    {"course": "明天的课", "date": "2026-09-22", "start": "2026-09-22T08:00:00+08:00",
+                     "end": "2026-09-22T09:40:00+08:00", "place": None, "cancelled": False}]
+        with patch.object(calendar, "class_sessions", sessions):
+            result = self.ok(await self.class_request("start=2026-09-21&end=2026-09-22"))
+            self.assertEqual((result["start"], result["end"], result["timezone"]), ("2026-09-21", "2026-09-22", "Asia/Shanghai"))
+            self.assertEqual([(item["course"], item["cancelled"]) for item in result["items"]],
+                             [("马克思主义哲学导论", False), ("大学英语", True)])
+            self.assertEqual(set(result["items"][0]), {"course", "date", "start", "end", "place", "cancelled"})
+            self.assertEqual(calls[-1][0], self.context().key)
+            self.assertEqual((calls[-1][1].isoformat(), calls[-1][2].isoformat()),
+                             ("2026-09-20T16:00:00+00:00", "2026-09-21T16:00:00+00:00"), "local midnight, end exclusive")
+            for query in ("", "start=2026-09-21", "start=2026-09-22&end=2026-09-21", "start=2026-09-21&end=2026-09-21",
+                          "start=2026-09-01&end=2026-09-30", "start=20260921&end=2026-09-22",
+                          "start=2026-09-21&end=2026-09-22&owner_key=other", "start=2026-09-21&start=2026-09-21&end=2026-09-22"):
+                with self.subTest(query=query):
+                    self.assertEqual((await self.class_request(query))["message"], "life_query_invalid")
+            for username in (None, ""):
+                self.assertEqual((await self.class_request("start=2026-09-21&end=2026-09-22", username=username))["message"],
+                                 "dashboard_identity_required")
+        self.assertEqual(len(calls), 1, "rejected requests never read classes")
 
 
 class LifePageProjectionTests(unittest.TestCase):

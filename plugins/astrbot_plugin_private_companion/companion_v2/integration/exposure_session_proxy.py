@@ -1,5 +1,7 @@
 """Host adapter for scoped browsing-session reads, without a host DB handle."""
 
+from copy import copy
+
 from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.refs import ReferenceValidationError, RoleOwnerRef
 from companion_v2.role_work.interests import scope_key
@@ -8,6 +10,28 @@ from companion_v2.role_work.interests import scope_key
 class ExposureSessionReadProxy:
     def __init__(self, runtime, registry, *, life=None, visible=None, writable=None):
         self.runtime, self.registry, self.life, self.visible, self.writable = runtime, registry, life, visible, writable
+
+    def for_projection(self):
+        """Reuse immutable scope keys and visibility only within one projection."""
+        reader = copy(self)
+        current_context, current_key = object(), None
+        visibility = {}
+        def projection_key(context):
+            nonlocal current_context, current_key
+            if context is not current_context:
+                key = self._key(context)
+                current_context, current_key = context, key
+                visibility.clear()
+            return current_key
+        reader._key = projection_key
+        if self.visible is not None:
+            def visible(context, activity_id):
+                projection_key(context)
+                if activity_id not in visibility:
+                    visibility[activity_id] = self.visible(context, activity_id)
+                return visibility[activity_id]
+            reader.visible = visible
+        return reader
 
     def active(self):
         return self.life is None or self.life.activity_owner() == "good_life"

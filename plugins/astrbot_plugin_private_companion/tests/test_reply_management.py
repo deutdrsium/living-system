@@ -178,7 +178,7 @@ class ReplyManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
                    "private_image_provider_failure_cooldown_seconds": 90}
         saved = self.manager.configure(self.core, self.request(status, changes, "image-narration")).unwrap()
         self.assertEqual({key: saved["status"]["settings"][key] for key in changes}, changes)
-        invalid = dict(saved["status"]["settings"], private_image_vision_wait_seconds=31)
+        invalid = dict(saved["status"]["settings"], private_image_vision_wait_seconds=61)
         self.assertEqual(self.manager.preview(self.core, invalid, "正文").failure.code,
                          "reply_configuration_invalid")
 

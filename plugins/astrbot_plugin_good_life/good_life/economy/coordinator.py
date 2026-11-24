@@ -6,9 +6,27 @@ reason audit. Executors stay pure; no callback writes kernel tables. Pending
 cancellation decisions survive a crash between audit and lifecycle commit.
 """
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from ..contracts.models import ActivityInstance, ActivityStatus, ReasonCode
+from ..contracts.models import ActivityInstance, ActivityStatus, Money, ReasonCode
 from ..kernel.codec import KernelError, integer, moment, name, require, restore
+
+
+def credit_due_allowances(wallet, access, capabilities, *, now, yuan, day):
+    integer(day, 1)
+    require(day <= 28, "wallet allowance day must be between 1 and 28")
+    snapshot = capabilities.get("reading_snapshot")
+    require(callable(snapshot), "role timezone unavailable", ReasonCode.MISSING_DEPENDENCY)
+    contexts = {item["context_key"]: item["owner_key"] for item in capabilities["contexts"]()}
+    checked_owners = set()
+    for scope in access.scopes():
+        owner = scope.owner_key
+        if owner in checked_owners or contexts.get(scope.context_key) != owner:
+            continue
+        local = now.astimezone(ZoneInfo(snapshot(scope.context_key)["timezone"]))
+        if local.day >= day:
+            wallet.credit_monthly_allowance(owner, local.date().isoformat()[:7], Money(yuan * 100, "CNY"), now=now)
+        checked_owners.add(owner)
 
 
 class WalletActivities:

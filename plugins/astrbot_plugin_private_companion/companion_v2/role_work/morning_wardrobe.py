@@ -17,7 +17,7 @@ from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, Ta
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.references.live_wardrobe import binding
 from companion_v2.references.service import owner_key
 from companion_v2.role_work.models import RoleActivityState
@@ -26,13 +26,14 @@ from companion_v2.storage.repositories import OperationRepository
 
 
 KIND = "role.wardrobe.choose"
+TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 logger = logging.getLogger(__name__)
 
 
 def wardrobe_profile(provider, *, max_output_tokens=8192):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
         "醒来后参考自己的衣物、天气和日程选择一套搭配。",
-        max_output_tokens=max_output_tokens, timeout_seconds=210)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ class MorningWardrobe:
         self.registrations = (TaskRegistration(TaskDefinition(
             KIND, "role.wardrobe", "role.life.run", Lane.BACKGROUND, side_effect=SideEffect.LOCAL,
             binding=ProviderBinding("role.wardrobe", "local", "1", "morning-wardrobe-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, gateway, *, waiting=None):
         self.gateway, self.tasks = gateway, gateway.tasks
@@ -198,7 +199,7 @@ class MorningWardrobe:
             self.pending[task_id] = job
             try:
                 require(self.tasks.submit(TaskSpec(task_id, job.context, KIND, digest(job), task_id,
-                    now, now + timedelta(seconds=480))))
+                    now, now + timedelta(seconds=TASK_TIMEOUT_SECONDS))))
                 result = await self.runner.run(job.context, task_id)
             finally:
                 self.pending.pop(task_id, None)

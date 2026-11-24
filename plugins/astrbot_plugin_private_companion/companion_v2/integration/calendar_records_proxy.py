@@ -36,6 +36,12 @@ class LifeCalendarRecords:
                 raise TaskError("life_calendar_pending", "calendar change awaits host confirmation") from error
             raise TaskError("life_provider_unavailable", "calendar life provider is unavailable") from error
 
+    def planned_spending(self, **request):
+        return self._call("planned_spending", **request)
+
+    def class_sessions(self, **request):
+        return self._call("class_sessions", **request)
+
     @staticmethod
     def _record(record, *, identifier=None):
         if (type(record) is not dict or type(record.get("id")) is not str or not record["id"]

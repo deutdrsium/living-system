@@ -41,8 +41,6 @@ const DEFAULTS = {
   recall_silence_enabled: true,
   group_air_guard_max_bot_replies: 3, group_air_guard_cooldown_seconds: 150,
   group_air_guard_polite_loop_limit: 2,
-  private_closing_guard_enabled: true, private_closing_guard_window_seconds: 1800,
-  private_closing_guard_prompt_enabled: true,
   private_debounce_enabled: true, private_debounce_min_ms: 1500,
   private_debounce_max_ms: 4000, private_debounce_total_ms: 8000,
   group_conversation_followup_enabled: true, group_conversation_followup_seconds: 120,
@@ -98,7 +96,6 @@ const LIMITS = {
   group_air_guard_cooldown_seconds: [0, 1800],
   group_conversation_followup_seconds: [15, 1800], group_conversation_followup_max_turns: [1, 12],
   group_air_guard_polite_loop_limit: [1, 10], context_image_caption_max_items: [0, 8],
-  private_closing_guard_window_seconds: [60, 7200],
   private_debounce_min_ms: [10, 120000], private_debounce_max_ms: [10, 120000],
   private_debounce_total_ms: [10, 120000],
   private_image_vision_cache_max_items: [0, 2000], private_image_vision_max_chars: [120, 4000],
@@ -120,8 +117,7 @@ const FIELDS = Object.fromEntries(Object.entries(DEFAULTS).map(([name, value]) =
     'video_understanding_private_enabled', 'video_understanding_group_enabled',
     'file_understanding_private_enabled', 'file_understanding_group_enabled',
     'prompt_style_mode',
-    'private_closing_guard_enabled', 'private_closing_guard_window_seconds',
-    'private_closing_guard_prompt_enabled', 'recall_silence_enabled',
+    'recall_silence_enabled',
     'private_debounce_enabled', 'private_debounce_min_ms', 'private_debounce_max_ms',
     'private_debounce_total_ms',
     ...Object.keys(DEFAULTS).filter(name => name.startsWith('group_wakeup_') && !GROUP_SCOPE_FIELDS.has(name)),
@@ -171,7 +167,7 @@ function harness() {
   const sectionIds = ['segment', 'style', 'cleanup', 'wakeup_direct', 'wakeup_interest', 'wakeup_members',
     'wakeup_cold_group', 'wakeup_fatigue', 'group_continuation', 'private_debounce',
     'silence_policy', 'group_air_guard',
-    'private_closing', 'group_content_safety',
+    'group_content_safety',
     'context_image', 'image_narration', 'video_narration', 'file_understanding', 'forwards', 'voice',
     'voice_channels', 'components', 'checks'];
   const sectionTabs = sectionIds.map(id => {
@@ -754,7 +750,7 @@ test('reply expression, perception, and decision settings partition every field 
     {full: '完整工具', standard: '常用工具', lean: '精简工具'});
   assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
-      'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
+      'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'group_content_safety']);
   const perceptionHarness = await loaded(harness(), 'perception');
   const perceptionState = live(perceptionHarness).state.container;
   const perception = plain(perceptionState.groups.flatMap(group => group.fields));
@@ -820,30 +816,18 @@ test('decision tempo exposes and saves the follow-up fuse settings', async () =>
   h.page.unmount();
 });
 
-test('decision safety exposes silence policy masters and the private closing detail', async () => {
+test('decision safety exposes silence policy masters without a private closing guard', async () => {
   const h = await loaded(harness(), 'decision');
   assert.equal(h.page.selectSection('silence_policy'), true);
   assert.match(h.slots.settings.innerHTML, /沉默策略/);
-  assert.match(h.slots.settings.innerHTML, /启用私聊收尾沉默/);
   assert.match(h.slots.settings.innerHTML, /启用撤回沉默/);
+  assert.doesNotMatch(h.slots.settings.innerHTML, /私聊收尾/);
   const instance = live(h);
-  for (const name of ['recall_silence_enabled', 'private_closing_guard_enabled',
-    'group_air_guard_enabled']) {
+  for (const name of ['recall_silence_enabled', 'group_air_guard_enabled']) {
     assert.ok(instance.state.container.fields[name], `${name} is available in the decision editor`);
   }
-  assert.deepEqual(plain(instance.state.container.fields.private_closing_guard_enabled.editable),
-    ['role', 'window']);
-  assert.equal(h.page.selectSection('private_closing'), true);
-  assert.match(h.slots.settings.innerHTML, /私聊收尾 · 细则/);
-  assert.equal(instance.state.container.fields.private_closing_guard_window_seconds.minimum, 60);
-  assert.equal(instance.state.container.fields.private_closing_guard_window_seconds.maximum, 7200);
-  instance.state.draft.private_closing_guard_window_seconds = 600;
-  const saving = instance.save(false);
-  await drains();
-  assert.deepEqual(plain(h.requests[1].body.changes), {private_closing_guard_window_seconds: 600});
-  h.requests[1].resolve({result: {operation_id: 'closing-save', replayed: false},
-    status: status({private_closing_guard_window_seconds: 600}, 'f'.repeat(64))});
-  await saving;
+  assert.equal(instance.state.container.fields.private_closing_guard_enabled, undefined);
+  assert.equal(h.page.selectSection('private_closing'), false);
   h.page.unmount();
 });
 

@@ -27,7 +27,7 @@ def _data_root():
     return root
 
 
-@register("astrbot_plugin_good_life", "menglimi", "我会去好好生活", "0.1.1")
+@register("astrbot_plugin_good_life", "menglimi", "我会去好好生活", "0.1.12")
 class GoodLifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context, config)
@@ -41,25 +41,35 @@ class GoodLifePlugin(Star):
         self._class_enabled = bool(config and config.get("class_enabled") is True)
         self._attendance_enabled = bool(config and config.get("attendance_enabled") is True)
         self._study_enabled = bool(config and config.get("study_enabled") is True)
+        self._grades_enabled = self._academics_enabled and bool(config and config.get("grades_enabled") is True)
         self._campus_settings = {key: config[key] for key in (
             "campus_enabled", "academics_graph_id", "home_place_id", "graph_access_credentials", "graph_private_credentials",
             "treat_unparsed_access_as", "treat_unknown_opening_as",
         ) if config is not None and key in config}
         self._city_settings = {key: config[key] for key in (
-            "wallet_enabled", "city_enabled", "amap_navigation_enabled", "amap_poi_search_enabled",
+            "wallet_enabled", "wallet_monthly_allowance", "wallet_allowance_day",
+            "city_enabled", "amap_navigation_enabled", "amap_poi_search_enabled",
             "amap_navigation_key", "amap_navigation_city_code",
         ) if config is not None and key in config}
+        config = config or {}
+        self._planned_spending_config = {
+            "enabled": config.get("planned_spending_enabled") is True and config.get("wallet_enabled") is True,
+            "entry_cap": config.get("planned_spending_entry_cap", 500),
+            "daily_cap": config.get("planned_spending_daily_cap", 1000),
+        }
         self._page_api = LifePageAPI(self)
         self.extension_api = self
 
     async def initialize(self):
         self._storage = LifeStorage.open(_data_root())
         from .good_life.academics import AcademicsConfig, register_class_group
-        academics = AcademicsConfig(enabled=self._academics_enabled, study_enabled=self._study_enabled)
+        academics = AcademicsConfig(enabled=self._academics_enabled, study_enabled=self._study_enabled,
+                                    grades_enabled=self._grades_enabled)
         classes = self._academics_enabled and self._class_enabled
         self._runtime = LifeRuntime(self._storage, self, reading_executor_enabled=self._reading_executor_enabled,
                                     reading_abort_own_enabled=self._reading_abort_own_enabled,
                                     kernel_enabled=self._kernel_enabled,
+                                    planned_spending_config=self._planned_spending_config,
                                     academics_config=None if classes and self._kernel_enabled else academics)
         from .good_life.city.domain import register_city_group
         from .good_life.economy import register_wallet_group
@@ -68,7 +78,9 @@ class GoodLifePlugin(Star):
         register_class_group(self._runtime, enabled=classes, attendance_enabled=self._attendance_enabled,
                              academics_config=academics)
         wallet = self._city_settings.get("wallet_enabled") is True
-        register_wallet_group(self._runtime, enabled=wallet)
+        register_wallet_group(self._runtime, enabled=wallet,
+                              monthly_allowance=self._city_settings.get("wallet_monthly_allowance", 0),
+                              allowance_day=self._city_settings.get("wallet_allowance_day", 1))
         register_city_group(self._runtime, enabled=wallet and self._city_settings.get("city_enabled") is True,
                             config=self._city_settings)
         self._page_api.register()

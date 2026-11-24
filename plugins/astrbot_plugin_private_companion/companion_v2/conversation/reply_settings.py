@@ -13,9 +13,6 @@ from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from .segmentation import SegmentationPolicy
 from .segmentation import PART_GAP_MODES
 from .outbound_plan import component_order
-from .private_closing import DEFAULTS as PRIVATE_CLOSING_DEFAULTS
-from .private_closing import LIMITS as PRIVATE_CLOSING_LIMITS
-from .private_closing import Settings as PrivateClosingSettings
 from .private_debounce import DEFAULTS as PRIVATE_DEBOUNCE_DEFAULTS
 from .private_debounce import LIMITS as PRIVATE_DEBOUNCE_LIMITS
 from .private_debounce import Policy as PrivateDebounceSettings
@@ -132,7 +129,7 @@ CONTEXT_IMAGE_DEFAULTS = {"enable_context_image_captioning": False,
 IMAGE_NARRATION_DEFAULTS = {"enable_private_image_self_recognition": False,
     "enable_private_image_vision_cache": True, "private_image_vision_cache_max_items": 300,
     "private_image_vision_custom_prompt": "", "private_image_vision_max_chars": 1200,
-    "private_image_vision_wait_seconds": 8,
+    "private_image_vision_wait_seconds": 42,
     "private_image_provider_failure_cooldown_seconds": 60,
     "private_image_self_recognition_hint": ""}
 DIAGNOSTIC_DEFAULTS = {"reply_diagnostic_limit": 80}
@@ -140,7 +137,7 @@ ROLE_SHARED_FIELDS = (frozenset(asdict(SegmentationPolicy())) | SPACING_FIELDS
     | frozenset(("streaming", "part_gap_ms", "image_position", "rules_enabled"))
     | frozenset(("voice_enabled", *("voice_" + key for key in VOICE_FIELDS)))
     | frozenset(GROUP_AIR_DEFAULTS)
-    | frozenset(GROUP_CONTINUATION_DEFAULTS) | frozenset(PRIVATE_CLOSING_DEFAULTS)
+    | frozenset(GROUP_CONTINUATION_DEFAULTS)
     | frozenset(PRIVATE_DEBOUNCE_DEFAULTS)
     | (frozenset(GROUP_WAKEUP_DEFAULTS) - GROUP_WAKEUP_GROUP_FIELDS)
     | frozenset(GROUP_SAFETY_DEFAULTS) | frozenset(SILENCE_DEFAULTS) | frozenset(OUTBOUND_DEFAULTS) | frozenset(TEXT_DEFAULTS)
@@ -295,7 +292,6 @@ def validate(values):
     voice = set(voice_settings())
     air = set(GROUP_AIR_DEFAULTS)
     continuation = set(GROUP_CONTINUATION_DEFAULTS)
-    private_closing = set(PRIVATE_CLOSING_DEFAULTS)
     private_debounce = set(PRIVATE_DEBOUNCE_DEFAULTS)
     wakeup = set(GROUP_WAKEUP_DEFAULTS)
     safety = set(GROUP_SAFETY_DEFAULTS)
@@ -312,9 +308,9 @@ def validate(values):
     optional = set(values) - expected - {"image_position"}
     provided = set(values)
     if (not legacy_required <= provided
-            or optional - voice - air - continuation - private_closing - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - tool
+            or optional - voice - air - continuation - private_debounce - wakeup - safety - silence - presentation - outbound - forward - captions - image_narration - understanding - spacing - diagnostics - tool
             or (optional & voice and not (voice - {"voice_conversion_scope"}) <= optional)
-            or any(optional & block and not block <= optional for block in (air, continuation, private_closing, private_debounce, presentation))
+            or any(optional & block and not block <= optional for block in (air, continuation, private_debounce, presentation))
             or optional & spacing not in (set(), spacing)
             or optional & forward not in (set(), forward)
             or optional & wakeup not in (set(), set(GROUP_WAKEUP_LEGACY_FIELDS),
@@ -346,7 +342,6 @@ def validate(values):
             voice_policy(values)
         group_air_settings(values)
         group_continuation_settings(values)
-        PrivateClosingSettings.from_values(values)
         private_debounce_settings(values)
         group_wakeup_settings(values)
         group_safety_settings(values)
@@ -372,7 +367,7 @@ def validate(values):
                 or type(narration["private_image_vision_max_chars"]) is not int
                 or not 120 <= narration["private_image_vision_max_chars"] <= 4000
                 or type(narration["private_image_vision_wait_seconds"]) is not int
-                or not 1 <= narration["private_image_vision_wait_seconds"] <= 30
+                or not 1 <= narration["private_image_vision_wait_seconds"] <= 60
                 or type(narration["private_image_provider_failure_cooldown_seconds"]) is not int
                 or not 0 <= narration["private_image_provider_failure_cooldown_seconds"] <= 3600
                 or type(narration["private_image_self_recognition_hint"]) is not str
@@ -396,7 +391,7 @@ def expression_prompt_sections():
 def configuration_fields(segmentation, streaming, gap, voice=None):
     defaults = {**asdict(segmentation), "streaming": streaming, "part_gap_ms": round(gap * 1000),
               **SPACING_DEFAULTS, "image_position": "after_text", **voice_settings(voice), **GROUP_AIR_DEFAULTS,
-              **GROUP_CONTINUATION_DEFAULTS, **PRIVATE_CLOSING_DEFAULTS,
+              **GROUP_CONTINUATION_DEFAULTS,
               **PRIVATE_DEBOUNCE_DEFAULTS, **GROUP_WAKEUP_DEFAULTS,
               **GROUP_SAFETY_DEFAULTS, **SILENCE_DEFAULTS, **OUTBOUND_DEFAULTS, **TEXT_DEFAULTS}
     # The field remains in the backend contract so older snapshots can still
@@ -416,13 +411,13 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
               "part_gap_log_base": (1.1, 5.0),
               "voice_max_speech_chars": (1, 10000), "voice_timeout_seconds": (1, 120),
               "reply_diagnostic_limit": (10, 300),
-              **GROUP_AIR_LIMITS, **GROUP_CONTINUATION_LIMITS, **PRIVATE_CLOSING_LIMITS,
+              **GROUP_AIR_LIMITS, **GROUP_CONTINUATION_LIMITS,
               **PRIVATE_DEBOUNCE_LIMITS, **GROUP_WAKEUP_LIMITS, **OUTBOUND_LIMITS}
     limits["context_image_caption_max_items"] = (0, 8)
     limits.update(UNDERSTANDING_LIMITS)
     limits.update({"private_image_vision_cache_max_items": (0, 2000),
                    "private_image_vision_max_chars": (120, 4000),
-                   "private_image_vision_wait_seconds": (1, 30),
+                   "private_image_vision_wait_seconds": (1, 60),
                    "private_image_provider_failure_cooldown_seconds": (0, 3600)})
     return tuple(FieldDefinition(GROUP + "." + name, GROUP, GROUP,
         ValueKind.WEIGHT if name == "part_gap_log_base" else
@@ -600,6 +595,29 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
             self._clear_legacy_group_values(target, reset)
             validate({key.removeprefix(GROUP + "."): item.value for key, item in self.read(target, fields).fields.items()})
             return result
+
+
+# The word-list private closing guard was replaced by Laya's private silence.
+# Reads only ever ask for declared fields, so old rows are already ignored; this
+# drops them so saved snapshots and exports stop carrying the dead keys.
+RETIRED_FIELDS = tuple(GROUP + "." + name for name in (
+    "private_closing_guard_enabled", "private_closing_guard_window_seconds",
+    "private_closing_guard_prompt_enabled"))
+
+
+def retire_private_closing_values(runtime):
+    """Delete stored values of the retired closing guard; returns the rows removed."""
+    store = runtime.configuration_store
+    placeholders = ",".join("?" for _ in RETIRED_FIELDS)
+    with store.transaction() as connection:
+        targets = [row[0] for row in connection.execute(
+            f"SELECT DISTINCT target_key FROM configuration_values WHERE field_id IN ({placeholders})",
+            RETIRED_FIELDS)]
+        removed = connection.execute(
+            f"DELETE FROM configuration_values WHERE field_id IN ({placeholders})", RETIRED_FIELDS).rowcount
+        connection.executemany("UPDATE configuration_targets SET revision = revision + 1 WHERE target_key = ?",
+                               ((key,) for key in targets))
+    return removed
 
 
 class ReplySettings:

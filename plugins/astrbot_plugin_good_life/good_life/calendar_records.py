@@ -12,10 +12,16 @@ class CalendarTransitionPending(Exception):
 
 
 class StagedCalendarRecords:
-    def __init__(self, source):
+    def __init__(self, source, *, spending=None, classes=None):
         self._reader = StorageReader(source)
+        self.spending = spending
+        self.classes = classes
 
     def dispatch(self, operation, **request):
+        if operation == "planned_spending":
+            return self.spending.read(**request) if self.spending is not None else None
+        if operation == "class_sessions":
+            return self.classes(**request) if self.classes is not None else None
         if operation not in {"get", "get_raw", "list", "version", "receipt", "by_reminder", "memory_snapshot"}:
             raise ValueError("unknown calendar read operation")
         keys = request.get("owner_keys", ()) if operation == "by_reminder" else (request.get("owner_key"),)

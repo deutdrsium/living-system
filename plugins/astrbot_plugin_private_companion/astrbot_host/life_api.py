@@ -22,7 +22,13 @@ class LifeWebAPI:
 
     def routes(self):
         return [(PREFIX, self.status, ["GET"], "Read private journals and role routines"),
-                (PREFIX + "/command", self.command, ["POST"], "Manage private journals and role routines")]
+                (PREFIX + "/command", self.command, ["POST"], "Manage private journals and role routines"),
+                (PREFIX + "/classes", self.classes, ["GET"], "Read the role's class sessions by local date")]
+
+    async def classes(self):
+        # Read-only agenda input for the cottage sidebar; same authorization as the life page reads.
+        from .life_page_reads import LifePageReads
+        return await LifePageReads(self.controller).class_sessions()
 
     def manager(self):
         controller = self.controller
@@ -41,7 +47,7 @@ class LifeWebAPI:
         from .web_api import outcome_response
         try:
             query = request.query
-            allowed = {"before", "after_activity", "archive_kind"}
+            allowed = {"before", "after_activity", "archive_kind", "compact", "limit", "view", "note_cursor", "interest_id"}
             if notes_only:
                 allowed.add("overview")
             if set(query.keys()) - allowed or any(len(query.getlist(k)) != 1 for k in query.keys()):
@@ -49,22 +55,50 @@ class LifeWebAPI:
             overview = query.get("overview")
             if overview is not None and (overview != "1" or query.get("before") or query.get("after_activity")):
                 raise ValueError("invalid overview query")
+            options = {}
+            if "compact" in query or "limit" in query or "view" in query or "note_cursor" in query or "interest_id" in query or overview:
+                if query.get("compact") not in (None, "1"):
+                    raise ValueError("invalid compact flag")
+                size = int(query.get("limit", "20"))
+                view = "overview" if overview else query.get("view")
+                if not 1 <= size <= 50 or view not in (None, "overview", "archive", "reading", "interests", "settings"):
+                    raise ValueError("invalid life page query")
+                cursor = None
+                if "note_cursor" in query:
+                    raw = query["note_cursor"]
+                    if len(raw) > 2048:
+                        raise ValueError("invalid note cursor")
+                    cursor = json.loads(raw)
+                    if (type(cursor) is not list or len(cursor) != 2 or any(type(x) is not str for x in cursor)
+                            or len(cursor[0]) > 64 or not 0 < len(cursor[1]) <= 512):
+                        raise ValueError("invalid note cursor")
+                    from datetime import datetime
+                    if datetime.fromisoformat(cursor[0]).tzinfo is None:
+                        raise ValueError("invalid note timestamp")
+                interest = query.get("interest_id")
+                if interest is not None and (len(interest) != 64 or any(c not in "0123456789abcdef" for c in interest)):
+                    raise ValueError("invalid interest id")
+                options = {"page_size": size, "compact": query.get("compact") == "1" or bool(overview),
+                           "view": view, "note_cursor": cursor, "interest_id": interest}
             async with self.controller._control_lock:
                 manager, operator = self.manager()
+                manager.authorize(operator)
                 archive_kind = query.get("archive_kind") or None
                 # The life page owns notes. Choose their pagination source before
                 # the host manager applies its 50-date archive limit.
                 if notes_only and archive_kind in (None, "diary"):
                     archive_kind = "reading_note"
-                result = manager.status(operator, before=query.get("before") or None,
-                                        after_activity=query.get("after_activity") or None,
-                                        archive_kind=archive_kind)
-                result["profile_id"] = getattr(self.controller.settings, "profile_id", None)
-                if getattr(self.controller, "target_id", None) is not None:
-                    result["target_id"] = self.controller.target_id
-                if overview:
-                    scope = {"owner_key": digest(manager.owner), "context_key": manager.context.key,
-                             "now": manager.app.now()}
+                profile_id = getattr(self.controller.settings, "profile_id", None)
+                target_id = getattr(self.controller, "target_id", None)
+                scope = {"owner_key": digest(manager.owner), "context_key": manager.context.key, "now": manager.app.now()}
+            # StorageRuntime has thread-local WAL readers; RoleLifeManagement pins
+            # the provider before its host read snapshot. No async control lock or
+            # write transaction crosses this await, so wallet/commands stay usable.
+            result = await asyncio.to_thread(manager.status, operator, before=query.get("before") or None,
+                after_activity=query.get("after_activity") or None, archive_kind=archive_kind, **options)
+            result["profile_id"] = profile_id
+            if target_id is not None:
+                result["target_id"] = target_id
             if overview:
                 from .life_overview import overview_activities
                 snapshot = {"items": [], "partial": False}
@@ -77,7 +111,9 @@ class LifeWebAPI:
             return outcome_response(Outcome.success(result))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
-        except (ValueError, TypeError):
+        except sqlite3.Error:
+            return outcome_response(Outcome.failed("life_storage_unavailable", "life storage is unavailable"))
+        except (ValueError, TypeError, RecursionError):
             return outcome_response(Outcome.failed("life_query_invalid", "invalid archive query"))
 
     async def command(self):
@@ -105,6 +141,7 @@ class LifeWebAPI:
                 "interest_pause": {"interest_id"}, "interest_resume": {"interest_id"},
                 "interest_edit": {"interest_id", "name"},
                 "interest_merge": {"interest_id", "target_id", "target_revision"},
+                "interest_clear_dislike": {"interest_id"}, "interest_item_clear": {"dislike_id"},
                 "diary": {"local_date", "retry_of"}, "dream": {"activity_id", "retry_of"},
                 "edit": {"kind", "local_date", "body", "afterglow", "timezone"},
                 "delete": {"kind", "local_date", "timezone"},

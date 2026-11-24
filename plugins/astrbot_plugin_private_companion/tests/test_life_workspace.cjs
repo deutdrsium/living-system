@@ -16,7 +16,10 @@ class Element {
     this.checked = false;
     this.open = false;
   }
-  addEventListener(name, callback) { this.listeners.set(name, callback); }
+  addEventListener(name, callback) {
+    const previous = this.listeners.get(name);
+    this.listeners.set(name, previous ? event => { previous(event); return callback(event); } : callback);
+  }
   replaceChildren(...children) { this.children = children; }
   append(...children) { this.children.push(...children); }
   querySelectorAll() { return this.children; }
@@ -27,6 +30,39 @@ class Element {
   click() { this.listeners.get("click")?.({preventDefault() {}}); }
   submit() { this.listeners.get("submit")?.({preventDefault() {}}); }
 }
+
+test("life polls only active work and requests the visible compact page", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "pages", "日记与生活", "app.js"), "utf8");
+  const elements = new Map(), byId = id => {
+    if (!elements.has(id)) elements.set(id, new Element());
+    return elements.get(id);
+  };
+  const interestTab = new Element(); interestTab.dataset.tab = "interests";
+  const readingArchive = new Element(); readingArchive.dataset.archiveKind = "reading_note";
+  const document = {hidden:false, getElementById:byId, createElement:() => new Element(), addEventListener() {},
+    querySelectorAll: selector => selector === "[data-tab]" ? [interestTab] : selector === "[data-archive-kind]" ? [readingArchive] : []};
+  const requests = [], timers = new Map(); let timerId = 0;
+  let status = {role_id:"role", host_state:"running", config:{enabled:true, reading_enabled:true},
+    journals:[], activities:[], running:[], receipts:[], interests:[], next_note_cursor:"cursor"};
+  const bridge = {ready:async () => {}, getContext:() => ({}), apiGet:async (_path, query) => {
+    requests.push(JSON.parse(JSON.stringify(query))); return status;
+  }};
+  vm.runInNewContext(source, {window:{AstrBotPluginPage:bridge}, document, Option:class extends Element {},
+    setTimeout(fn, ms) { timers.set(++timerId, {fn, ms}); return timerId; }, clearTimeout(id) { timers.delete(id); }});
+  await new Promise(setImmediate);
+  assert.deepEqual(requests[0], {compact:"1", limit:20, view:"archive", archive_kind:"diary"});
+  assert.equal(timers.size, 0, "enabled automatic reading is not active work");
+  status = {...status, refresh_active:true};
+  byId("refresh").click(); await new Promise(setImmediate);
+  assert.equal([...timers.values()][0].ms, 3000);
+  status = {...status, refresh_active:false};
+  readingArchive.click(); await new Promise(setImmediate);
+  byId("older").click(); await new Promise(setImmediate);
+  assert.equal(requests.at(-1).note_cursor, "cursor");
+  interestTab.click(); await new Promise(setImmediate);
+  assert.equal(requests.at(-1).view, "interests");
+  assert.equal(timers.size, 0);
+});
 
 test("interest controls send scoped revision and view token", async () => {
   const sourcePath = path.join(__dirname, "..", "pages", "日记与生活", "app.js");
@@ -46,12 +82,53 @@ test("interest controls send scoped revision and view token", async () => {
     document, Option:class extends Element {}, setTimeout, clearTimeout}, {filename:sourcePath});
   await new Promise(setImmediate); await new Promise(setImmediate);
   const card = elements.get("interest-list").children[1];
-  const actions = card.children[card.children.length - 1];
+  // Collapsed: a <details> whose summary carries the name, stage and one line.
+  assert.equal(card.className, "activity fold");
+  assert.equal(card.open, false);
+  const [summary, body] = card.children;
+  const head = summary.children[0];
+  assert.equal(head.children[0].textContent, "鸟鸣");
+  assert.equal(head.children[1].textContent, "正在探索");
+  assert.equal(summary.children[1].textContent, "感兴趣");
+  // Expanded body keeps the full details and the actions.
+  const actions = body.children[body.children.length - 1];
   actions.children[0].click();
   await new Promise(setImmediate);
   assert.equal(requests[0].action, "interest_pause");
   assert.equal(requests[0].view_token, "interest-token");
   assert.equal(requests[0].expected_revision, 3);
+});
+
+test("compact interests fetch trails on expansion and unchanged polls preserve the card and input", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "pages", "日记与生活", "app.js"), "utf8");
+  const elements = new Map(), byId = id => {
+    if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id);
+  };
+  const tab = new Element(); tab.dataset.tab = "interests";
+  const document = {hidden:false, getElementById:byId, createElement:() => new Element(), addEventListener() {},
+    querySelectorAll: selector => selector === "[data-tab]" ? [tab] : []};
+  const interest = {interest_id:"a".repeat(64), revision:3, view_token:"token", name:"鸟鸣", status:"curious", compact:true};
+  const status = {role_id:"role", host_state:"running", config:{}, journals:[], activities:[], receipts:[], running:[], interests:[interest]};
+  const reads = [];
+  const bridge = {ready:async () => {}, getContext:() => ({}), apiGet:async (_path, query) => {
+    reads.push(JSON.parse(JSON.stringify(query)));
+    return query.interest_id ? {...status, interests:[{...interest, compact:false, evidence:[{reason:"实际感受", occurred_at:"2026-11-22T00:00:00Z"}]}]} : status;
+  }};
+  vm.runInNewContext(source, {window:{AstrBotPluginPage:bridge}, document, Option:class extends Element {}, setTimeout() {}, clearTimeout() {}});
+  await new Promise(setImmediate);
+  tab.click(); await new Promise(setImmediate);
+  const card = byId("interest-list").children[1];
+  assert.equal(reads.filter(query => query.interest_id).length, 0);
+  card.open = true;
+  await card.listeners.get("toggle")();
+  assert.equal(reads.at(-1).interest_id, interest.interest_id);
+  const body = card.children[1], actions = body.children.find(child => child.className === "actions");
+  actions.children[1].click(); actions.children[2].value = "未保存的名称";
+  byId("refresh").click(); await new Promise(setImmediate);
+  assert.equal(byId("interest-list").children[1], card);
+  assert.equal(card.open, true);
+  assert.equal(actions.children[2].value, "未保存的名称");
+  assert.equal(reads.filter(query => query.interest_id).length, 1);
 });
 
 test("life workspace sends with getRandomValues and localizes command errors", async () => {
@@ -118,7 +195,7 @@ test("life workspace sends with getRandomValues and localizes command errors", a
   assert.equal(elements.get("notice").textContent, "生活记录或操作信息已变化，请刷新后重新尝试。");
 });
 
-test("reading pace settings are submitted as numbers", async () => {
+test("diary settings do not submit retired reading pace fields", async () => {
   const sourcePath = path.join(__dirname, "..", "pages", "日记与生活", "app.js");
   const source = fs.readFileSync(sourcePath, "utf8");
   const ids = new Set([...source.matchAll(/\$\("([^"]+)"\)/g)].map(match => match[1]));
@@ -140,11 +217,18 @@ test("reading pace settings are submitted as numbers", async () => {
     document, Option:class extends Element {}, setTimeout, clearTimeout}, {filename:sourcePath});
   await new Promise(setImmediate);
   await new Promise(setImmediate);
+  elements.get("diary_time").value = "21:30";
   elements.get("reading_chunk_chars").value = "1200";
   elements.get("config-form").submit();
   await new Promise(setImmediate);
-  assert.equal(requests[0].changes.reading_chunk_chars, 1200);
-  assert.equal("reading_daily_segments" in requests[0].changes, false);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].changes.diary_time, "21:30");
+  assert.equal(requests[0].changes.enabled, true);
+  assert.equal(requests[0].changes.diary_enabled, true);
+  assert.equal(requests[0].changes.derive_enabled, true);
+  assert.equal(requests[0].changes.timezone, "UTC");
+  assert.deepEqual(Object.keys(requests[0].changes).sort(),
+    ["enabled", "diary_enabled", "derive_enabled", "timezone", "diary_time"].sort());
 });
 
 test("EPUB selection uses the role-scoped life command and reports the queued segments", async () => {

@@ -30,6 +30,7 @@ class LifePageAPI:
                    (PREFIX + "/targets/<target>/<role>/academics/occurrences", self.academics_occurrences, ["GET"], "Read academic class instances"),
                    (PREFIX + "/targets/<target>/<role>/academics/syllabus", self.academics_syllabus, ["GET"], "Read manual syllabus units"),
                    (PREFIX + "/targets/<target>/<role>/academics/assignments", self.academics_assignments, ["GET"], "Read manual assignments"),
+                   (PREFIX + "/targets/<target>/<role>/academics/grades", self.academics_grades, ["GET"], "Read released term grades"),
                    (PREFIX + "/targets/<target>/<role>/academics/study_progress", self.academics_study_progress, ["GET"], "Read study chunk progress"),
                    (PREFIX + "/targets/<target>/<role>/academics/command", self.academics_command, ["POST"], "Manage manual terms and timetables"),
                    (PREFIX + "/targets/<target>/<role>/academics/places", self.academics_places, ["GET"], "Read class place options"),
@@ -107,6 +108,9 @@ class LifePageAPI:
 
     async def academics_assignments(self, target, role):
         return await self._dispatch("academics.assignments", target, role)
+
+    async def academics_grades(self, target, role):
+        return await self._dispatch("academics.grades", target, role)
 
     async def academics_study_progress(self, target, role):
         return await self._dispatch("academics.study_progress", target, role)

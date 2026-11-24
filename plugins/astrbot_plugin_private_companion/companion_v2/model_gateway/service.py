@@ -423,10 +423,11 @@ class LocalModelGateway:
             for reference in references:
                 require(sources.validate_reference(reference, observed_at=self.tasks.now()))
 
-        contract_fallback_used = False
+        contract_fallback_used = upstream_timeout = False
         for provider_position, provider in providers:
+            # A fallback equal to the primary retries the same route, model override included.
             provider_envelope = replace(envelope,
-                model_override=envelope.model_override if provider_position == 0 else "",
+                model_override=envelope.model_override if provider is plan.providers[0] else "",
                 provider_capabilities=provider.capabilities,
                 reasoning_rounds=tuple(item for item in envelope.reasoning_rounds
                                        if item[0] == provider.binding.provider))
@@ -497,17 +498,20 @@ class LocalModelGateway:
                     logger.debug("[CompanionV2] proactive prompt snapshot failed task=%s call=%s error_type=%s",
                                  run.task.task_id, call_id, type(error).__name__, exc_info=True)
 
+            wait_seconds = plan.audit["timeout_seconds"] if timeout_seconds is None else timeout_seconds
+            transport_read_timeout = (None if run.task.spec.kind in ("conversation.reply", "conversation.video_narration")
+                                      else wait_seconds)
             started = perf_counter()
             try:
                 response = await asyncio.wait_for(
                     provider.generate(replace(provider_envelope, before_dispatch=before_dispatch,
-                                              diagnostic_call_id=call_id,
+                                              diagnostic_call_id=call_id, transport_read_timeout=transport_read_timeout,
                                               record_cache_signature=record_cache_signature,
                                               record_prompt_snapshot=(record_prompt_snapshot
                                                   if envelope.original.output_format == "proactive_contact" else None),
                                               on_reply_prefix=publish_prefix if on_reply_prefix is not None else None,
                                               reply_prefix_ready=reply_prefix_ready)),
-                    timeout=(plan.audit["timeout_seconds"] if timeout_seconds is None else timeout_seconds))
+                    timeout=wait_seconds)
                 if not isinstance(response, ProviderResponse):
                     raise TypeError("provider returned no trusted outcome")
                 logger.debug("[CompanionV2][开发者追踪] 模型网关回合结果 task=%s round=%d provider=%s status=%s failure=%s draft=%r claims=%r tool_calls=%r diagnostics=%r",
@@ -623,7 +627,7 @@ class LocalModelGateway:
                     self.ledger.discard(call_id, failure=ModelFailure.WIRE_DECODE, observed_at=self.tasks.now())
                     raise TaskError("model_output_truncated",
                                     "the raised ceiling produced a tool round; the retry cannot continue")
-                if response.tool_calls and not envelope.tools:
+                if response.tool_calls and (not envelope.tools or not envelope.allow_tool_calls):
                     self.ledger.discard(call_id)
                     raise TaskError("model_tools_unavailable", "no tool dispatch is allowed for this model round")
                 if prefix_committed and response.tool_calls:
@@ -641,6 +645,12 @@ class LocalModelGateway:
                     and response.diagnostics is not None
                     and response.diagnostics.error_type in {"APITimeoutError", "ReadTimeout", "ConnectTimeout", "TimeoutError"}):
                 raise _TransientModelRetry(provider, provider_position, "timeout")
+            if (not prefix_committed and response.status == "not_started" and response.diagnostics is not None
+                    and response.diagnostics.error_code == "upstream_timeout"):
+                upstream_timeout = True
+                logger.warning("[CompanionV2] 上游超时 task=%s kind=%s provider=%s round=%d position=%d status_code=%s",
+                               run.task.task_id, plan.audit["profile"]["kind"], provider.binding.provider,
+                               round_no, position, response.diagnostics.status_code or "unavailable")
             if prefix_committed or response.status != "not_started":
                 diagnostics = response.diagnostics
                 failure = response.failure or (diagnostics.failure if diagnostics is not None else None)
@@ -680,6 +690,8 @@ class LocalModelGateway:
                         diagnostics.parse_state if diagnostics is not None else "unavailable")
                     continue
                 raise TaskError("model_usage_unknown", "provider processing is unknown; no fallback was dispatched")
+        if upstream_timeout:
+            raise TaskError("model_not_started", "upstream_timeout: the relay timed out and generated no result")
         raise TaskError("model_not_started", "configured providers confirmed they did not process the request")
 
     def _ceiling_retry_plan(self, run, plan, envelope, round_no, provider, provider_position, captured,
@@ -819,7 +831,7 @@ class ModelSession:
         self.plan = plan
         self.independent_plans = independent_plans
         self.tools = tools
-        self.round_limit = None if run.task.spec.kind == "role.social.browse" else 8
+        self.round_limit = 8
         self.round_no = 0
         self.history = ()
         self.pending = ()
@@ -889,7 +901,10 @@ class ModelSession:
         self.busy = True
         try:
             offer_tools = self.round_limit is None or self.round_no < self.round_limit
-            envelope = replace(self.plan.envelope, original=request, tools=self.tools if offer_tools else (),
+            social_final = self.run.task.spec.kind == "role.social.browse" and not offer_tools
+            envelope = replace(self.plan.envelope, original=request,
+                               tools=self.tools if offer_tools or social_final else (),
+                               allow_tool_calls=not social_final,
                                tool_history=history, reasoning_rounds=self.reasoning_rounds)
             with self.gateway.runtime.transaction() as connection:
                 self.run.validate()

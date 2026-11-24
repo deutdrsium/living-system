@@ -33,15 +33,15 @@ from tests.test_execution import ExecutionFixture
 class PokeWaitBudgetConfigTests(unittest.TestCase):
     """The declared numbers, read from the same objects the host assembles."""
 
-    def test_the_poke_model_round_waits_forty_five_seconds(self):
+    def test_the_poke_model_round_waits_seventy_five_seconds(self):
         profile = poke_reply_profile("provider-a", max_output_tokens=128)
         self.assertEqual((profile.kind, profile.lane), (MODEL_REPLY_KIND, Lane.BACKGROUND))
-        self.assertEqual(profile.timeout_seconds, 45)
+        self.assertEqual(profile.timeout_seconds, 75)
         # One short answer; the wait is what changed, not the output budget.
         self.assertEqual(profile.max_output_tokens, 128)
 
-    def test_the_task_budget_is_sixty_seconds_and_the_round_is_derived_from_it(self):
-        self.assertEqual(POKE_BUDGET_SECONDS, 60)
+    def test_the_task_budget_is_ninety_seconds_and_the_round_is_derived_from_it(self):
+        self.assertEqual(POKE_BUDGET_SECONDS, 90)
         self.assertEqual(POKE_MARGIN_SECONDS, 15)
         self.assertEqual(POKE_PROVIDER_TIMEOUT_SECONDS, POKE_BUDGET_SECONDS - POKE_MARGIN_SECONDS)
         self.assertGreater(POKE_MARGIN_SECONDS, 0)
@@ -66,7 +66,7 @@ class PokeWaitBudgetConfigTests(unittest.TestCase):
                   for field in configuration_fields((poke_reply_profile("provider-a"),))}
         field = fields["model.conversation.poke_reply.timeout_seconds"]
         self.assertEqual(field.default, POKE_PROVIDER_TIMEOUT_SECONDS)
-        self.assertEqual((field.minimum, field.maximum), (1, 600))
+        self.assertEqual((field.minimum, field.maximum), (1, 900))
 
     def test_raising_the_poke_wait_leaves_another_task_wait_alone(self):
         reply = ModelTaskProfile("conversation.reply", Lane.FOREGROUND, "provider-a", "fixture reply")
@@ -127,7 +127,7 @@ class PokeDeadlineTests(ExecutionFixture, unittest.IsolatedAsyncioTestCase):
                       (datetime.fromisoformat(row["lease_until"])
                        - datetime.fromisoformat(row["next_run_at"])).total_seconds()) for row in rows)
 
-    async def test_both_poke_streams_submit_a_sixty_second_deadline(self):
+    async def test_both_poke_streams_submit_a_ninety_second_deadline(self):
         for mode in ("reply", "context"):
             self.assertEqual(
                 await self.model.reply(self.context, "角色扮演指令", "event-" + mode, mode=mode),

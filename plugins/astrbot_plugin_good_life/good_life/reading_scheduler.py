@@ -3,19 +3,22 @@
 import asyncio
 from datetime import datetime, timedelta
 import json
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from .reading_choices import _digest, candidates, choice_slot, reading_window
 
 
 class ReadingScheduler:
-    def __init__(self, storage, capabilities, *, executor=None):
+    def __init__(self, storage, capabilities, *, executor=None, monotonic_clock=None):
         self.storage, self.capabilities = storage, capabilities
+        self.monotonic_clock = monotonic_clock or monotonic
         from .reading_execution import ReadingExecutionStore
         self.store = ReadingExecutionStore(storage)
         self.execute_executor = self.recovery_executor = executor
         self.coordination_ports = getattr(executor, "coordination_ports", None)
         self.workers, self.slots, self.next_check, self.activity_ids = {}, {}, {}, {}
+        self._next_snapshot_check = {}
         self.life_workers = set()
 
     @property
@@ -63,6 +66,69 @@ class ReadingScheduler:
         state["retry"] += 1
         state["next_retry"] = None
         return True
+
+    def _choice_due(self, context_key, now):
+        state = self.slots.get(context_key)
+        if state is None:
+            return False
+        retry_at = state["next_retry"]
+        if retry_at is not None:
+            due = now >= retry_at
+            check = (state["retry"], retry_at)
+        elif self.recovery_executor is not None:
+            # A pre-due snapshot after restart identifies the current slot,
+            # but must not move its result check to the next periodic scan.
+            from .reading_selection import choice_key, result_check_due
+            choice = self.store.get(context_key, choice_key(state["base"] + ":" + str(state["retry"])))
+            if choice is None or choice["phase"] not in ("submitted", "unknown"):
+                return False
+            due = result_check_due(choice, now)
+            check = (state["retry"], choice["phase"], choice.get("result_check_after"))
+        else:
+            return False
+        # If the early snapshot still finds the context busy, resume polling
+        # on the usual cadence instead of taking another snapshot next tick.
+        if not due or state.get("early_check") == check:
+            return False
+        state["early_check"] = check
+        return True
+
+    def _choice_slot_decision(self, context_key, state, now):
+        from .reading_selection import choice_key, result_check_due, MAX_RESULT_CHECKS, fail_result
+        while True:
+            slot = state["base"] + ":" + str(state["retry"])
+            decision = self._choice(context_key, slot)
+            if decision is None:
+                own_choice = self.store.get(context_key, choice_key(slot))
+                value = self._completed_choice_value(own_choice)
+                if value is not None:
+                    evidence = {"state": "committed", "value": value}
+                elif own_choice is not None:
+                    executor = self.recovery_executor
+                    if executor is None and own_choice["phase"] != "failed":
+                        return None
+                    if own_choice["phase"] == "unknown":
+                        if own_choice.get("result_check_attempts", 0) >= MAX_RESULT_CHECKS:
+                            fail_result(executor, own_choice, "result_check_exhausted")
+                        elif not result_check_due(own_choice, now):
+                            return None
+                    evidence = {"state": "failed" if own_choice["phase"] == "failed" else "absent"}
+                else:
+                    evidence = self.capabilities["reading_choice_result"](context_key, slot)
+                if evidence["state"] == "committed":
+                    self._save_choice(context_key, slot, evidence["value"])
+                    decision = evidence["value"]
+                elif evidence["state"] == "failed":
+                    if self._retry(state, now):
+                        continue
+                    return None
+                elif evidence["state"] != "absent":
+                    return None
+            if decision is not None and not decision.get("source_id"):
+                if self._retry(state, now):
+                    continue
+                return None
+            return slot, decision
 
     async def _choose(self, context_key, identifiers, slot, schedule, next_sleep):
         from .reading_selection import choice_key, choose
@@ -186,6 +252,11 @@ class ReadingScheduler:
                 if not worker.cancelled():
                     error = worker.exception()
                     result = None if error else worker.result()
+                    if (context_key not in self.activity_ids and type(result) is dict
+                            and result.get("state") == "committed"):
+                        # A choice has finished; hand off using a fresh snapshot
+                        # rather than waiting for the next background scan.
+                        self._next_snapshot_check.pop(context_key, None)
                     if (error or type(result) is dict and (result.get("state") in ("absent", "failed", "paused")
                             or result.get("state") in ("unknown", "pending", "running", "commit_unresolved") and context_key in self.life_workers)):
                         self.next_check[context_key] = now + timedelta(seconds=30)
@@ -241,6 +312,10 @@ class ReadingScheduler:
                     self.workers[context_key] = asyncio.create_task(
                         self._manual(context_key, pending[context_key]), name="good-life:manual-reading")
                     continue
+                if (self.monotonic_clock() < self._next_snapshot_check.get(context_key, 0)
+                        and not self._choice_due(context_key, now)):
+                    continue
+                self._next_snapshot_check[context_key] = self.monotonic_clock() + 30
                 snapshot = self.capabilities["reading_snapshot"](context_key)
                 observed = datetime.fromisoformat(snapshot["observed_at"])
                 if not snapshot["reading_enabled"] or snapshot["busy"]:
@@ -254,7 +329,6 @@ class ReadingScheduler:
                 next_sleep = window["next_sleep"] if window else None
                 schedule = reading_window(snapshot["calendar"], observed, local, next_sleep)
                 if not schedule:
-                    self.next_check[context_key] = now + timedelta(seconds=30)
                     continue
                 next_sleep_raw = next_sleep.isoformat() if next_sleep else None
                 approved = set(snapshot["approved_paused"])
@@ -271,44 +345,16 @@ class ReadingScheduler:
                 if state is None or state["base"] != base:
                     state = {"base": base, "retry": 0, "no_choice": 0, "next_retry": None}
                     self.slots[context_key] = state
-                slot = base + ":" + str(state["retry"])
-                decision = self._choice(context_key, slot)
-                if decision is None:
-                    from .reading_selection import choice_key, result_check_due, MAX_RESULT_CHECKS, fail_result
-                    own_choice = self.store.get(context_key, choice_key(slot))
-                    value = self._completed_choice_value(own_choice)
-                    if value is not None:
-                        evidence = {"state": "committed", "value": value}
-                    elif own_choice is not None:
-                        if executor is None and own_choice.get("phase") != "failed":
-                            continue
-                        if own_choice.get("phase") == "unknown":
-                            if own_choice.get("result_check_attempts", 0) >= MAX_RESULT_CHECKS:
-                                fail_result(executor, own_choice, "result_check_exhausted")
-                            elif not result_check_due(own_choice, now):
-                                continue
-                        evidence = {"state": "failed" if own_choice.get("phase") == "failed" else "absent"}
-                    else:
-                        evidence = self.capabilities["reading_choice_result"](context_key, slot)
-                    if evidence["state"] == "committed":
-                        self._save_choice(context_key, slot, evidence["value"])
-                        decision = evidence["value"]
-                    elif evidence["state"] == "failed":
-                        self._retry(state, now)
-                        continue
-                    elif evidence["state"] != "absent":
-                        continue
-                if decision is not None and not decision.get("source_id"):
-                    self._retry(state, now)
+                slot_decision = self._choice_slot_decision(context_key, state, now)
+                if slot_decision is None:
                     continue
+                slot, decision = slot_decision
                 allowed = set(snapshot["authorized_sources"])
                 choices = candidates(records, day, selected_source=decision.get("source_id") if decision else None,
                                      authorize_source=lambda source: source["source_id"] in allowed)
                 if not choices:
                     if decision is not None:
                         state["retry"] += 1
-                    else:
-                        self.next_check[context_key] = now + timedelta(seconds=30)
                     continue
                 if decision is None:
                     operation = self._choose(context_key, [item["activity_id"] for item in choices], slot, schedule, next_sleep_raw)

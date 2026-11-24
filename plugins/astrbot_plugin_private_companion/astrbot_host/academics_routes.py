@@ -54,6 +54,10 @@ READS = {
             "start_at", "end_at", "local_date", "place_id", "revision", "cancelled", "source"))]},
     "syllabus": {**METADATA, "term_id": None, "course_id": None, "units": [{**SYLLABUS, **METADATA}]},
     "assignments": {**METADATA, "term_id": None, "course_id": None, "assignments": [{**ASSIGNMENT, **METADATA}]},
+    "grades": {**METADATA, "term_id": None, "grades": [{**dict.fromkeys(("term_id", "course_id", "course_name",
+        "assignment_id", "assessment_at", "release_at", "score", "letter", "rule_version", "provenance")),
+        "components": dict.fromkeys(("attendance", "review", "luck")),
+        "weights": dict.fromkeys(("attendance", "review", "luck"))}]},
     "study_progress": {**METADATA, "term_id": None, "course_id": None,
         "items": [{**dict.fromkeys(("assignment_id", "chunk_id", "chunk_index", "due_at", "required_work_s",
             "completed_work_s", "remaining_work_s", "status", "revision", "provenance")), "evaluation": str}]},
@@ -95,7 +99,7 @@ def _invalid_constant(_value):
 def _query(kind, artifact_id=None):
     fields = {"term": set(), "timetable": {"term_id"}, "occurrences": {"term_id", "start", "end"},
         "syllabus": {"term_id", "course_id"}, "assignments": {"term_id", "course_id"},
-        "study_progress": {"term_id", "course_id"}, "study_artifacts": {"assignment_id"},
+        "grades": {"term_id"}, "study_progress": {"term_id", "course_id"}, "study_artifacts": {"assignment_id"},
         "study_artifact": set()}[kind]
     query = request.query
     optional = {"limit", "before"} if kind == "study_artifacts" else set()

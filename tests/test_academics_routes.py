@@ -765,7 +765,7 @@ class AcademicsRouteTests(unittest.IsolatedAsyncioTestCase):
         actual = {path: methods for path, _handler, methods, _description in registered if path.startswith(prefix)}
         self.assertEqual(actual, {prefix + "term": ["GET"], prefix + "timetable": ["GET"],
                                   prefix + "occurrences": ["GET"], prefix + "syllabus": ["GET"],
-                                  prefix + "assignments": ["GET"], prefix + "study_progress": ["GET"],
+                                  prefix + "assignments": ["GET"], prefix + "grades": ["GET"], prefix + "study_progress": ["GET"],
                                   prefix + "command": ["POST"], prefix + "places": ["GET"]})
         page.unregister()
         self.assertEqual([item[0] for item in registered], ["/unrelated"])

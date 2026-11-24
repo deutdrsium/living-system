@@ -126,6 +126,15 @@ class PromptSection:
         return bool(self.field)
 
 
+# The LiteLLM relay owns per-hop limits and failover, and its background chains
+# finish well inside 600 seconds. Background tasks keep one generous backstop
+# only to release the slot and locks when a connection hangs without erroring.
+MAX_MODEL_TIMEOUT_SECONDS = 900
+BACKGROUND_MODEL_WAIT_SECONDS = MAX_MODEL_TIMEOUT_SECONDS
+BACKGROUND_LEASE_MARGIN_SECONDS = 60
+BACKGROUND_TASK_TIMEOUT_SECONDS = BACKGROUND_MODEL_WAIT_SECONDS + BACKGROUND_LEASE_MARGIN_SECONDS
+
+
 @dataclass(frozen=True)
 class ModelTaskProfile:
     kind: str
@@ -164,8 +173,8 @@ class ModelTaskProfile:
         if type(self.fallback_on_refusal) is not bool:
             raise ValueError("refusal replacement must be an explicit boolean")
         parse_refusal_terms(self.refusal_terms)
-        if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 600:
-            raise ValueError("model timeout must be between 1 and 600 seconds")
+        if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= MAX_MODEL_TIMEOUT_SECONDS:
+            raise ValueError("model timeout must be between 1 and 900 seconds")
         if self.replacement_scope not in ("all", "plugin", "conversation"):
             raise ValueError("replacement scope must name a supported task class")
         if (any(not isinstance(section, PromptSection) for section in self.prompt_sections)
@@ -186,7 +195,10 @@ class ToolCall:
     arguments_json: str
 
     def __post_init__(self):
-        _opaque(self.call_id, field="tool call ID")
+        # Provider IDs can carry a Gemini thought signature and must round-trip unchanged.
+        if (not isinstance(self.call_id, str) or not self.call_id or self.call_id != self.call_id.strip()
+                or len(self.call_id) > 4096 or not self.call_id.isascii() or not self.call_id.isprintable()):
+            raise ValueError("tool call ID must be bounded printable ASCII (1..4096 characters)")
         _opaque(self.action, field="tool action")
         if not isinstance(self.arguments_json, str) or len(self.arguments_json) > 16384:
             raise ValueError("tool arguments must be bounded JSON")
@@ -409,6 +421,9 @@ class ModelEnvelope:
     # Only the original provider receives its tool-round reasoning; never persist it.
     reasoning_rounds: tuple = field(default=(), compare=False, repr=False, metadata={"encode": False})
     diagnostic_call_id: str = field(default="", compare=False, repr=False, metadata={"encode": False})
+    transport_read_timeout: float | None = field(default=None, compare=False, repr=False, metadata={"encode": False})
+    # A final turn retains declarations for native parsing, but cannot dispatch tools.
+    allow_tool_calls: bool = True
 
 
 @dataclass(frozen=True)

@@ -89,14 +89,19 @@ class ScheduledSleepHandoff:
                 or (at < due + timedelta(minutes=settings["sleep_window_minutes"]) and not night_sleep_ready(profile))):
             raise TaskError("life_sleep_invalid", "night sleep is no longer due")
 
-    def _expected(self, plan, snapshot, at):
+    def _expected(self, plan, snapshot, at, proposed_wake):
         settings, profile = snapshot["settings"], snapshot["profile"]
         base = settings["sleep_minutes"]
         target = 25 if plan["kind"] == "nap" else recommended_sleep_minutes(base, profile["sleep_debt_minutes"], profile["workload_score"])
+        due = at + timedelta(minutes=target)
+        if plan["kind"] == "night" and at < proposed_wake < due:
+            # Life may shorten a night episode to fit a class alarm. The base need still accrues debt.
+            due = proposed_wake
+            target = max(1, (due - at) // timedelta(minutes=1))
         receipt = sleep_receipt(kind=plan["kind"], base_need_minutes=base, target_minutes=target,
                                 workload_score=profile["workload_score"], sleep_debt_minutes=profile["sleep_debt_minutes"])
         context = self.routine.context
-        work = RoleWorkSpec("sleep", context.key, plan["request_id"], due_at=at + timedelta(minutes=target))
+        work = RoleWorkSpec("sleep", context.key, plan["request_id"], due_at=due)
         return RoleActivity("sleep-" + digest([context.key, plan["request_id"]]), self.routine.owner.persona_id,
             context.scope, at, RoleActivityState.ACTIVE,
             description="角色短暂午休" if plan["kind"] == "nap" else "角色开始一段睡眠", work=work, sleep=receipt)
@@ -105,11 +110,12 @@ class ScheduledSleepHandoff:
         snapshot = self.snapshot(at=observed_at)
         self._validate_plan(plan, snapshot, at=observed_at)
         profile = snapshot["profile"]
-        expected = self._expected(plan, snapshot, observed_at)
         proposal = self.provider.propose_scheduled_sleep(owner=snapshot["owner"], scope=json.loads(encode(self.routine.context.scope)),
             context_key=self.routine.context.key, request_id=plan["request_id"], observed_at=stamp(observed_at), kind=plan["kind"],
             base_need_minutes=snapshot["settings"]["sleep_minutes"], workload_score=profile["workload_score"],
             sleep_debt_minutes=profile["sleep_debt_minutes"])
+        proposed_wake = datetime.fromisoformat(proposal["work"]["due_at"])
+        expected = self._expected(plan, snapshot, observed_at, proposed_wake)
         if proposal != json.loads(encode(expected)):
             raise TaskError("life_activity_creation_invalid", "scheduled sleep proposal changed")
         request = {"command_id": "activity-scheduled-" + digest([self.routine.context.key, plan["request_id"], observed_at]),
@@ -129,7 +135,7 @@ class ScheduledSleepHandoff:
                 "minutes": 25 if schedule["kind"] == "nap" else snapshot["settings"]["sleep_minutes"],
                 "scheduled_at": schedule["planned_at"], "context_key": self.routine.context.key}
         self._validate_plan(plan, snapshot, at=activity.started_at)
-        if (schedule["config_hash"] != snapshot["config_revision"] or activity != self._expected(plan, snapshot, activity.started_at)
+        if (schedule["config_hash"] != snapshot["config_revision"] or activity != self._expected(plan, snapshot, activity.started_at, activity.work.due_at)
                 or request["command_id"] != "activity-scheduled-" + digest([self.routine.context.key, plan["request_id"], activity.started_at])):
             raise TaskError("life_activity_creation_invalid", "scheduled sleep inputs changed")
         return Outcome.success(True)

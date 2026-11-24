@@ -4,6 +4,7 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "plugins" / "astrbot_plugin_private_companion"),
@@ -90,6 +91,26 @@ class ExposureSessionProxyTests(unittest.TestCase):
         self.assertIsNone(limited.exposure(self.context, "one", "zhihu", "article"))
         self.assertEqual([row["title"] for row in limited.recent(self.context)], ["Second"])
         self.assertFalse(limited.attempted(self.context, "zhihu", "article"))
+
+    def test_projection_reuses_only_one_context_and_rechecks_on_new_projection(self):
+        allowed, calls = True, []
+        def visible(context, activity_id):
+            calls.append((context, activity_id))
+            return allowed
+        self.proxy.visible = visible
+        projection = self.proxy.for_projection()
+        with patch.object(self.proxy, "_key", wraps=self.proxy._key) as keys:
+            self.assertIsNotNone(projection.exposure(self.context, "one", "zhihu", "article"))
+            self.assertIsNotNone(projection.exposure(self.context, "one", "zhihu", "article"))
+            self.assertEqual(keys.call_count, 1)
+            self.assertEqual(len(calls), 1)
+            allowed = False
+            self.assertIsNone(self.proxy.for_projection().exposure(self.context, "one", "zhihu", "article"))
+            other = SimpleNamespace(scope=replace(self.context.scope, session_id="other"),
+                                    role_binding=self.context.role_binding, actor=self.context.actor)
+            self.assertIsNone(projection.exposure(other, "one", "zhihu", "article"))
+            self.assertIsNone(projection.exposure(self.context, "one", "zhihu", "article"))
+        self.assertEqual(len(calls), 3)
 
     def test_receipt_from_another_scope_is_rejected(self):
         foreign = dict(self.records.recent(scope_key="foreign")[0])

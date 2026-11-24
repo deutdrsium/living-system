@@ -1,4 +1,6 @@
 """Default-off manual timetable and simulated campus class activities."""
+from functools import partial
+
 from ..kernel.codec import encode
 from .models import AcademicsConfig
 from .service import Academics, CLASS_CUTOVER, SPEC
@@ -92,8 +94,7 @@ def register_class_group(runtime, *, enabled, attendance_enabled=False, academic
 
             return OptionalGroupBinding(value=classes, settle=settle_disabled)
 
-        attendance = ClassAttendance(academics, config=(AttendanceConfig(enabled=True) if attendance_enabled
-                                                         else AttendanceConfig(enabled=True, base_rate=0)))
+        attendance = ClassAttendance(academics, config=AttendanceConfig(enabled=True, use_sleep_records=attendance_enabled))
         with context.storage.transaction() as db:
             db.execute("INSERT OR IGNORE INTO life_metadata VALUES (?, ?)", (CLASS_CUTOVER, wire(runtime.wall_clock())))
             since = timestamp(db.execute("SELECT value FROM life_metadata WHERE key=?", (CLASS_CUTOVER,)).fetchone()[0])
@@ -113,6 +114,8 @@ def register_class_group(runtime, *, enabled, attendance_enabled=False, academic
 
         scheduler = runtime.scheduler
         scheduler.hold_night_sleep = classes.hold_night_sleep
+        creations = runtime.activity_control.creations
+        creations.night_sleep_alarm = partial(classes.night_sleep_alarm, prep_s=attendance.config.prep_s)
 
         expose_academics = runtime.academics is None
         if expose_academics:
@@ -120,19 +123,29 @@ def register_class_group(runtime, *, enabled, attendance_enabled=False, academic
 
         def close():
             scheduler.hold_night_sleep = None
+            creations.night_sleep_alarm = None
             if expose_academics:
                 runtime.academics = None
 
         update_campus()
         return OptionalGroupBinding(value=classes, settle=settle, close=close,
-            commitments=lambda *, now: classes.hosted_commitments(now=now, attendance=attendance,
-                                                                   shadow=runtime.state_model),
+            commitments=lambda *, now: classes.hosted_commitments(now=now, attendance=attendance),
             deliver=deliver if artifacts is not None else None)
+
+    def bind_grades(context):
+        def deliver(*, now):
+            grades = getattr(runtime.academics, "term_grades", None)
+            if grades is not None:
+                grades.tick(now=now, get_access=lambda: context.access)
+
+        return OptionalGroupBinding(deliver=deliver)
 
     runtime.register_optional_group("academics", bind_academics, phase="pre_kernel", enabled=enabled,
                                     has_history=_has_class_history)
     runtime.register_optional_group("classes", bind_classes, requires=("academics",), enabled=enabled,
                                     has_history=_has_class_history)
+    if academics_config and academics_config.enabled and academics_config.grades_enabled:
+        runtime.register_optional_group("term_grades", bind_grades)
 
 
 __all__ = ("Academics", "AcademicsConfig", "AcademicsAccess", "AttendanceConfig", "ClassAttendance",

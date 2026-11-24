@@ -5,6 +5,38 @@
     "default": false,
     "hint": "需要 kernel_enabled。余额来自已记录的模拟收入。"
   },
+  "wallet_monthly_allowance": {
+    "description": "每月模拟生活费（人民币元）",
+    "type": "int",
+    "default": 0,
+    "minimum": 0,
+    "hint": "需要 wallet_enabled。0 表示关闭。启用后只发放当前月份及之后的生活费。"
+  },
+  "wallet_allowance_day": {
+    "description": "每月生活费发放日",
+    "type": "int",
+    "default": 1,
+    "minimum": 1,
+    "maximum": 28,
+    "hint": "按角色本地时区计算。当月到达发放日后发放一次。"
+  },
+  "planned_spending_enabled": {
+    "description": "启用日程计划开支（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要 wallet_enabled。日程模型估算开支，由模拟钱包到时扣款。"
+  },
+  "planned_spending_entry_cap": {
+    "description": "计划开支单笔上限（元）",
+    "type": "int",
+    "default": 500,
+    "hint": "正整数，不得超过每日上限。"
+  },
+  "planned_spending_daily_cap": {
+    "description": "计划开支每日上限（元）",
+    "type": "int",
+    "default": 1000
+  },
   "city_enabled": {
     "description": "启用城市出行（默认关闭）",
     "type": "bool",
@@ -98,10 +130,10 @@
     "hint": "需要 academics_enabled 和 kernel_enabled。启用共享校园步行后可前往教室。"
   },
   "attendance_enabled": {
-    "description": "启用早课晚醒模拟（默认关闭）",
+    "description": "按实际睡眠结算出勤并设置早课闹钟（默认关闭）",
     "type": "bool",
     "default": false,
-    "hint": "启用课次执行后，晚醒按课次固定判定，并使用前一晚的实际入睡时间。"
+    "hint": "启用课次执行后，醒来加 20 分钟就绪。次日有早课时，夜间睡眠会为准备和路程预留时间。"
   },
   "home_place_id": {
     "description": "角色住处的校园地点 ID",
@@ -114,6 +146,12 @@
     "type": "bool",
     "default": false,
     "hint": "需要启用学业功能。开放学习产物只读接口，地点导航和学习调度接线另行启用。"
+  },
+  "grades_enabled": {
+    "description": "启用模拟期末成绩与教务通知（默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "需要启用 academics_enabled。按课程生成期末成绩，发布后仅提供给角色作为私聊上下文。"
   },
   "reading_abort_own_enabled": {
     "description": "启用阅读原命令中止与协调（契约 v2，默认关闭）",

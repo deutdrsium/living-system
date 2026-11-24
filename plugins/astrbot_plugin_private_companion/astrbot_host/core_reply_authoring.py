@@ -5,6 +5,7 @@ from datetime import timedelta
 import json
 
 from companion_v2.conversation.content.authoring_execution import AuthoringParent
+from companion_v2.conversation.content.authoring_tasks import AUTHORING_BUDGET_SECONDS
 from companion_v2.conversation.content.authoring_workflow import CREATE_ACTION, INSTRUCTION
 from companion_v2.conversation.foreground import ForegroundContextAssembler, PromptRequest
 from companion_v2.conversation.native_tool_results import PREFIX
@@ -104,7 +105,8 @@ async def execute_core_authoring(session, wrapper, call_id, action, arguments):
     request = PromptRequest(event, native_input.instruction, ForegroundContextAssembler().seal(primary=record),
                             INSTRUCTION, context.role_binding)
     call = ToolCall(call_id, action, encode(arguments))
-    parent = AuthoringParent(context, session.turn_id, app.tasks.now() + timedelta(seconds=180), revalidate)
+    parent = AuthoringParent(context, session.turn_id,
+                            app.tasks.now() + timedelta(seconds=AUTHORING_BUDGET_SECONDS), revalidate)
     operations = NativeAuthoringOperations(session, wrapper, call, revalidate)
 
     async def execute():

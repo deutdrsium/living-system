@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import date
+from functools import cache
 import json
 from zoneinfo import ZoneInfo
 
@@ -12,6 +13,7 @@ from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, 
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.sources.models import SourceRecord
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from companion_v2.role_work.models import (RoleActivityState as State, RoleArtifact,
@@ -72,11 +74,12 @@ class RoleLifeManagement:
                 return
             cursor = page[-1].activity_id
 
-    def _project_activity(self, a, operator, access, settings):
+    def _project_activity(self, a, operator, access, settings, source_check=None):
         unavailable = None
         if a.work.source:
-            check = self.app.role_journal.sources.validate_reference_for_audience(a.work.source,
-                recipient=self.context.actor.subject, observed_at=self.app.now())
+            check = (source_check(a.work.source) if source_check else
+                self.app.role_journal.sources.validate_reference_for_audience(a.work.source,
+                    recipient=self.context.actor.subject, observed_at=self.app.now()))
             unavailable = check.failure.code if check.failure else None
         task = None
         title, end_offset = a.description, a.work.end_offset
@@ -146,7 +149,7 @@ class RoleLifeManagement:
                 data["unavailable_reason"] = error.code
         return data
 
-    def _reading_note(self, activity, timezone, source_cache):
+    def _reading_note(self, activity, timezone, source_cache, source_check=None):
         receipt = activity.reading
         data = {"kind": "reading_note", "activity_id": activity.activity_id,
                 "local_date": receipt.completed_at.astimezone(ZoneInfo(timezone)).date().isoformat(),
@@ -154,9 +157,10 @@ class RoleLifeManagement:
                 "book_title": activity.description.rsplit(" · ", 1)[0],
                 "start_offset": receipt.start_offset, "end_offset": receipt.end_offset,
                 "body": None, "excerpt": None, "unavailable_reason": None}
-        check = self.app.role_journal.sources.validate_reference_for_audience(receipt.source,
-            recipient=self.context.actor.subject, observed_at=self.app.now(),
-            expected_content_hash=receipt.content_hash)
+        check = (source_check(receipt.source, receipt.content_hash) if source_check else
+            self.app.role_journal.sources.validate_reference_for_audience(receipt.source,
+                recipient=self.context.actor.subject, observed_at=self.app.now(),
+                expected_content_hash=receipt.content_hash))
         if check.failure:
             data["unavailable_reason"] = check.failure.code
             return data
@@ -205,8 +209,26 @@ class RoleLifeManagement:
             return {"state": "empty"}
         return {"state": "waiting"}
 
-    def status(self, operator, *, before=None, after_activity=None, archive_kind=None):
+    def status(self, operator, *, before=None, after_activity=None, archive_kind=None,
+               page_size=None, compact=False, view=None, note_cursor=None, interest_id=None):
+        # Caches below are local to this joint read snapshot, never reused after
+        # a revocation, audience change, source expiry or provider replacement.
+        with self.app.role_life.consistent_snapshot():
+            now = self.app.now()
+            with validation_batch(self.runtime, now):
+                return self._status(operator, before=before, after_activity=after_activity, archive_kind=archive_kind,
+                    page_size=page_size, compact=compact, view=view, note_cursor=note_cursor, interest_id=interest_id, now=now)
+
+    def _status(self, operator, *, before, after_activity, archive_kind, page_size, compact, view,
+                note_cursor, interest_id, now):
         access = self.authorize(operator)
+        @cache
+        def source_check(source, content_hash=None):
+            return self.app.role_journal.sources.validate_reference_for_audience(source,
+                recipient=self.context.actor.subject, observed_at=now, expected_content_hash=content_hash)
+        archive_visible = view in (None, "archive")
+        interests_visible = view in (None, "interests") or interest_id is not None
+        date_limit = page_size or 50
         config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
                                                       observed_at=self.app.now()))
         # Cursor pages include unavailable/deleted records; a damaged source never hides the rest of the archive.
@@ -217,11 +239,11 @@ class RoleLifeManagement:
         if archive_kind not in (None, "diary", "reading_note", "social_note"):
             raise ValueError("invalid archive kind")
         rows = []
-        if archive_kind in (None, "diary"):
+        if archive_visible and archive_kind in (None, "diary"):
             rows = self.runtime.read_all("""SELECT context_json FROM role_journals WHERE owner_key = ?
                 AND local_date IN (SELECT DISTINCT local_date FROM role_journals WHERE owner_key = ?
-                    AND (? IS NULL OR local_date < ?) ORDER BY local_date DESC LIMIT 50)
-                ORDER BY local_date DESC, kind""", (digest(self.owner), digest(self.owner), before, before))
+                    AND (? IS NULL OR local_date < ?) ORDER BY local_date DESC LIMIT ?)
+                ORDER BY local_date DESC, kind""", (digest(self.owner), digest(self.owner), before, before, date_limit))
         journals = []
         for row in rows:
             target = codec.context(json.loads(row["context_json"]))
@@ -230,11 +252,12 @@ class RoleLifeManagement:
         settings = values(config)
         timezone = settings["timezone"]
         zone = ZoneInfo(timezone)
-        all_activities = [a for a in self._activities() if a.work.context_key == self.context.key]
-        notes = [a for a in all_activities if archive_kind in (None, "reading_note") and a.reading
+        context_key = self.context.key
+        all_activities = [a for a in self._activities() if a.work.context_key == context_key]
+        notes = [a for a in all_activities if archive_visible and archive_kind in (None, "reading_note") and a.reading
                  and (before is None or a.reading.completed_at.astimezone(zone).date().isoformat() < before)]
         social_notes = []
-        if archive_kind == "social_note":
+        if archive_visible and archive_kind == "social_note":
             for activity in all_activities:
                 if activity.work.kind != "social" or activity.state is not State.COMPLETED:
                     continue
@@ -250,12 +273,25 @@ class RoleLifeManagement:
                     social_notes.append({"kind": "social_note", "activity_id": activity.activity_id,
                         "local_date": local_date, "completed_at": activity.updated_at.isoformat(),
                         "state": "active", "body": reflection})
+        next_note = None
+        if page_size and archive_kind in ("reading_note", "social_note"):
+            key = (lambda a: (a.reading.completed_at.isoformat(), a.activity_id)) if archive_kind == "reading_note" else (
+                lambda a: (a["completed_at"], a["activity_id"]))
+            entries = sorted(notes if archive_kind == "reading_note" else social_notes, key=key, reverse=True)
+            if note_cursor:
+                entries = [item for item in entries if key(item) < tuple(note_cursor)]
+            if len(entries) > page_size:
+                next_note = json.dumps(key(entries[page_size - 1]), separators=(",", ":"))
+            if archive_kind == "reading_note":
+                notes = entries[:page_size]
+            else:
+                social_notes = entries[:page_size]
         days = sorted({item["local_date"] for item in journals if item is not None} |
             {a.reading.completed_at.astimezone(zone).date().isoformat() for a in notes} |
-            {item["local_date"] for item in social_notes}, reverse=True)[:50]
+            {item["local_date"] for item in social_notes}, reverse=True)[:date_limit]
         included = set(days)
         source_cache = {}
-        notes = [self._reading_note(a, timezone, source_cache) for a in sorted(notes,
+        notes = [self._reading_note(a, timezone, source_cache, source_check) for a in sorted(notes,
                  key=lambda a: a.reading.completed_at, reverse=True)
                  if a.reading.completed_at.astimezone(zone).date().isoformat() in included]
         journals = [item for item in journals if item is not None] + notes + sorted(
@@ -271,7 +307,7 @@ class RoleLifeManagement:
                 break
             cursor = page[-1].activity_id
         receipts = []
-        for key, result in self.life.results.items():
+        for key, result in tuple(self.life.results.items()):
             if result is None:
                 continue
             if result.failure:
@@ -301,22 +337,30 @@ class RoleLifeManagement:
             for item in receipts)
         daily = self.app.journal_schedule._schedules.get(self.life.schedule_id)
         sleep_schedule = self.app.life_runtime.sleep_schedule_status(self.life, config)
-        interests = visible_interests(self.app, self.context, self.app.now())
-        profile = ConversationRoleProfileContext(self.runtime).capture(self.context, self.app.now())
+        interests = (visible_interests(self.app, self.context, now,
+            activities={a.activity_id: a for a in all_activities}, source_check=source_check,
+            compact=compact and interest_id is None, interest_id=interest_id) if interests_visible else [])
+        profile = ConversationRoleProfileContext(self.runtime).capture(self.context, now) if interests_visible else None
         for item in interests:
             item["view_token"] = self.token(operator, access, item["interest_id"], item["revision"])
+        reading_plan = self._reading_plan(settings, all_activities)
         return {"role_id": self.owner.persona_id, "participant": self.context.scope.native_scope_id,
-            "interests": interests, "disliked_items": self._disliked_items(operator, access),
-            "recent_exposures": self._recent_exposures(), "profile_hobbies": profile["fields"].get("hobbies", "") if profile else "",
+            "interests": interests, "disliked_items": self._disliked_items(operator, access) if interests_visible else [],
+            "recent_exposures": self._recent_exposures() if interests_visible else [], "profile_hobbies": profile["fields"].get("hobbies", "") if profile else "",
             "host_state": self.app.state, "config": settings, "edit_token": config.edit_token,
             "view_token": self.token(operator, access), "failure_code": self.life.failure_code,
             "next_diary_at": daily.next_at.isoformat() if daily else None,
             "next_sleep_at": sleep_schedule["next_sleep_at"], "sleep_schedule": sleep_schedule,
             "body_sleep": self.app.role_state.body_clock.read(self.context),
-            "reading_plan": self._reading_plan(settings, all_activities),
-            "activities": [self._project_activity(a, operator, access, settings) for a in activities],
+            "reading_plan": reading_plan,
+            "activities": [self._project_activity(a, operator, access, settings, source_check) for a in activities],
             "next_activity": cursor, "journals": journals,
-            "next_date": days[-1] if len(days) == 50 else None,
+            "next_date": days[-1] if len(days) == date_limit and not (page_size and archive_kind in ("reading_note", "social_note")) else None,
+            **({"next_note_cursor": next_note} if page_size else {}),
+            "refresh_active": (any(a.state is State.ACTIVE for a in all_activities)
+                or any(key.startswith(("reading", "sleep", "social", "book-choice")) for key in tuple(self.life._workers))
+                or reading_plan["state"] == "paced"
+                or archive_kind in (None, "diary") and bool(self.life._workers)),
             "receipts": receipts[-60:], "running": list(self.life._workers),
             "journal_unresolved": journal_unresolved}
 
@@ -460,9 +504,13 @@ class RoleLifeManagement:
     def _recent_exposures(self):
         if self.app.role_life.activity_owner() == "good_life":
             rows = []
-            for item in self.app.role_social.exposure.recent(self.context):
+            exposure = self.app.role_social.exposure
+            reader = exposure.life_reader()
+            recent = reader.for_projection().recent(self.context) if reader is not None else exposure.recent(self.context)
+            key = scope_key(self.context)
+            for item in recent:
                 feedback = self.runtime.read_one("""SELECT 1 FROM role_exposure_feedback WHERE scope_key=? AND activity_id=?
-                    AND platform=? AND content_id=? LIMIT 1""", (scope_key(self.context), item["activity_id"], item["platform"], item["content_id"]))
+                    AND platform=? AND content_id=? LIMIT 1""", (key, item["activity_id"], item["platform"], item["content_id"]))
                 rows.append({**item, "has_feedback": bool(feedback)})
         else:
             rows = self.runtime.read_all("""SELECT e.*, EXISTS(SELECT 1 FROM role_exposure_feedback f

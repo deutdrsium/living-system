@@ -16,6 +16,7 @@ const status = items => ({settings:{enabled:true,planning_timezone:"Asia/Shangha
   occurrences:{items,partial:false}, sleep_schedule:{enabled:false}});
 const life = activities => ({activities,config:{diary_enabled:false}});
 const event = (id,start,end,extra={}) => ({id,sequence:0,kind:"role_plan",state:"accepted",title:id,start,end,...extra});
+const noClasses = {start:"2026-09-30",end:"2026-10-01",timezone:"Asia/Shanghai",items:[]};
 
 test("未指定时间的书架待读不会占据今日日程", () => {
   const items = [
@@ -106,7 +107,7 @@ test("今日时间线随当前时间前移，近期安排置顶，已过时段�
 test("滚动时间线标出空档长度，并在数据不完整时停止推断", () => {
   const now=Date.parse("2026-09-30T04:00:00Z");
   const state=status([event("傍晚安排","2026-09-30T10:00:00Z","2026-09-30T11:00:00Z")]);
-  const html=renderSchedule({now,state,life:life([])});
+  const html=renderSchedule({now,state,life:life([]),classes:noClasses});
   assert.match(html,/class="home-agenda-overview"/);
   assert.match(html,/class="home-agenda-scroll" tabindex="0"/);
   assert.match(homeCss,/\.home-agenda-scroll\{[^}]*overflow-y:auto/);
@@ -263,4 +264,45 @@ test("四项图标用不同状态呈现，无法归类的自由描述原样保�
   const noSymptoms=renderState({now,state,life:life([])});
   assert.match(noSymptoms,/data-visual="well"[^>]*title="健康 · 身体状态正常，暂无明显不适"/);
   assert.match(noSymptoms,/data-visual="well"/);assert.doesNotMatch(noSymptoms,/data-visual="strained"/);
+});
+
+/* 课次：2026-11-23 10:30（Asia/Shanghai），马克思主义哲学导论 09:55–11:35 正在上。 */
+const classNow = Date.parse("2026-11-23T02:30:00Z");
+const lecture = {course:"马克思主义哲学导论", date:"2026-11-23", start:"2026-11-23T09:55:00+08:00",
+  end:"2026-11-23T11:35:00+08:00", place:"示例教学楼", cancelled:false};
+const classDay = items => ({now:classNow, life:life([]),
+  state:status([event("午饭","2026-11-23T04:00:00Z","2026-11-23T05:00:00Z")]),
+  classes:items === null ? null : {start:"2026-11-23", end:"2026-11-24", timezone:"Asia/Shanghai", items}});
+
+test("正在上的课占住当前时段，不显示为当前未安排", () => {
+  const html = renderSchedule(classDay([lecture]));
+  assert.match(html, /data-tone="current" data-current="true" aria-current="time"[\s\S]*09:55 – 11:35<\/time><strong>马克思主义哲学导论<\/strong><small>课程 · 上课中<\/small>[\s\S]*示例教学楼/);
+  assert.doesNotMatch(html, /当前未安排|class="home-agenda-gap" data-current="true"|课表：暂未读取|不完整/);
+  assert.match(html, /13:00 – 24:00[\s\S]*未安排时段/, "合并课次之后仍计算空档");
+  const before = renderSchedule({...classDay([lecture]), now:Date.parse("2026-11-23T01:00:00Z")});
+  assert.match(before, /09:00 – 09:55[\s\S]*当前未安排[\s\S]*下一项 09:55/);
+  assert.match(before, /马克思主义哲学导论<\/strong><small>课程 · 课表安排/);
+});
+
+test("停上的课不算安排", () => {
+  const html = renderSchedule(classDay([{...lecture, cancelled:true}]));
+  assert.match(html, /10:30 – 12:00[\s\S]*当前未安排/);
+  assert.doesNotMatch(html, /马克思主义哲学导论/);
+});
+
+test("课表读不到时不把空白判断为未安排", () => {
+  for (const input of [classDay(null), {...classDay([]), classes:undefined},
+    {...classDay([lecture]), classes:{start:"2026-11-22", end:"2026-11-23", items:[lecture]}}]) {
+    const html = renderSchedule(input);
+    assert.match(html, /日程数据不完整，空白暂不能判断为未安排/);
+    assert.match(html, /课表：暂未读取/);
+    assert.doesNotMatch(html, /class="home-agenda-gap"/);
+  }
+  assert.match(renderSchedule(classDay([])), /当前未安排/, "当天没有课也是完整的读取");
+});
+
+test("课次读取范围是角色当地今天，end 不含", () => {
+  const {classRange} = window.CompanionHomeSidebar;
+  assert.deepEqual({...classRange({state:status([])}, Date.parse("2026-11-23T16:30:00Z"))}, {start:"2026-11-24", end:"2026-11-25"});
+  assert.deepEqual({...classRange({state:{settings:{planning_timezone:"UTC"}}}, Date.parse("2026-11-23T16:30:00Z"))}, {start:"2026-11-23", end:"2026-11-24"});
 });

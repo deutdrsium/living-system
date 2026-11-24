@@ -281,10 +281,11 @@ class ExposureStore:
                         con.execute("UPDATE role_interests SET revision=revision+1 WHERE scope_key=? AND interest_id=?", (key, identifier))
 
     def topic_rows(self, context, interest_id):
-        if self.life_reader() is not None:
+        reader = self.life_reader()
+        if reader is not None:
             references = self.runtime.read_all("""SELECT activity_id,platform,content_id FROM role_exposure_topics
                 WHERE scope_key=? AND interest_id=?""", (scope_key(context), interest_id))
-            rows = [self.life_reader().exposure(context, row["activity_id"], row["platform"], row["content_id"])
+            rows = [reader.exposure(context, row["activity_id"], row["platform"], row["content_id"])
                     for row in references]
             return sorted((row for row in rows if row and row["exposed_at"] and self.visible(context, row["activity_id"])),
                           key=lambda row: row["exposed_at"])

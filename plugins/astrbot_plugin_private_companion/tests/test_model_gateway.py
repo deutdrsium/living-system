@@ -23,6 +23,7 @@ from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
     LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile, ProviderResponse, ToolCall, ToolExchange, ToolSpec, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
+from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
 from companion_v2.sources.models import SourceRecord
@@ -106,6 +107,26 @@ class ModelFixture(ExecutionFixture):
 
 
 class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_final_tool_policy_rejects_a_noncompliant_model_without_dispatch(self):
+        ceiling = Amount(100_000, 1_000_000)
+        self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
+        primary, fallback = (replace(provider, capabilities=("text", "tools")) for provider in self.providers)
+        self.gateway_with(primary, fallback)
+        tool = ToolSpec("social_browse", "browse", '{"type":"object"}')
+        call = ToolCall("unexpected-final-call", "social_browse", "{}")
+        self.responses["primary"] = ProviderResponse("generated", tool_calls=(call,), usage=Amount(15, 40),
+                                                     receipt_ref="final-tool")
+        run = self.model_run()
+        session = self.gateway.open_session(run, self.request(), tools=(tool,))
+        envelope = replace(session.plan.envelope, tools=session.tools, allow_tool_calls=False)
+        self.gateway._begin_round(run, session.plan, envelope, 0)
+        with self.assertRaises(TaskError) as error:
+            await self.gateway._generate(run, session.plan, envelope, 0)
+        self.assertEqual(error.exception.code, "model_tools_unavailable")
+        self.assertEqual(len(self.called), 1)
+        self.assertEqual(self.call_rows()[0]["state"], "discarded")
+        self.assertEqual(self.call_rows()[0]["actual_tokens"], 15)
+
     async def test_tool_reasoning_stays_in_original_session_and_provider(self):
         ceiling = Amount(100_000, 1_000_000)
         self.ledger = BudgetLedger(self.runtime, BudgetPolicy(ceiling, ceiling, ceiling, ceiling, ceiling))
@@ -667,16 +688,41 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.call_rows(), ())
         self.assertEqual(self.called, [])
 
-    async def test_duplicate_fallback_and_excessive_output_are_not_silently_normalized(self):
+    async def test_excessive_output_is_not_silently_normalized(self):
         run = self.model_run()
-        for changes, expected in (({"fallback": "primary"}, "model_fallback_duplicate"),
-                                  ({"fallback": "", "max_output_tokens": 101}, "model_output_limit")):
-            self.patch_model(**changes)
-            with self.assertRaises(TaskError) as error:
-                await self.gateway.generate(run, self.request())
-            self.assertEqual(error.exception.code, expected)
+        self.patch_model(fallback="", max_output_tokens=101)
+        with self.assertRaises(TaskError) as error:
+            await self.gateway.generate(run, self.request())
+        self.assertEqual(error.exception.code, "model_output_limit")
         self.assertEqual(self.call_rows(), ())
         self.assertEqual(self.called, [])
+
+    @staticmethod
+    def relay_timeout():
+        return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref="relay:timeout",
+            failure=ModelFailure.TRANSPORT, diagnostics=ResponseDiagnostics(
+                failure=ModelFailure.TRANSPORT, error_code="upstream_timeout", status_code=408))
+
+    async def test_fallback_equal_to_primary_retries_the_same_route_exactly_once(self):
+        self.patch_model(fallback="primary")
+        self.responses["primary"] = self.relay_timeout()
+        with self.assertRaises(TaskError) as error:
+            await self.gateway.generate(self.model_run(), self.request())
+        self.assertEqual(error.exception.code, "model_not_started")
+        self.assertIn("upstream_timeout", str(error.exception))
+        self.assertEqual([name for name, _ in self.called], ["primary", "primary"])
+        self.assertEqual([row["position"] for row in self.call_rows()], [0, 1])
+
+    async def test_same_route_retry_can_succeed_after_a_relay_timeout(self):
+        self.patch_model(fallback="primary")
+        answers = iter((self.relay_timeout(),
+                        ProviderResponse("generated", ModelDraft("second try", ()), Amount(15, 40), "ok")))
+        async def once_then_answer(envelope):
+            return next(answers)
+        self.responses["primary"] = once_then_answer
+        result = await self.gateway.generate(self.model_run(), self.request())
+        self.assertEqual(result.draft.text, "second try")
+        self.assertEqual([name for name, _ in self.called], ["primary", "primary"])
 
     async def test_unknown_provider_and_incompatible_capability_fail_before_reservation(self):
         self.patch_model(provider="not-registered")

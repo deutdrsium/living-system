@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 class LiveHostEvents:
     def __init__(self, runtime, current):
         self.runtime, self.current = runtime, current
+        self.desktop_inputs = lambda: ()
 
-    def _schedule(self, method, *args, bucket, **kwargs):
+    def _schedule(self, method, *args, bucket, avatar=False, **kwargs):
         async def run():
             try:
-                if not self.current():
+                if not self.current() or (avatar and self.desktop_inputs()):
                     return
                 await method(*args, **kwargs)
             except Exception as error:
@@ -77,12 +78,19 @@ class LiveHostEvents:
     def response(self, event, response):
         if getattr(response, "role", None) != "assistant":
             return
+        runtime = self.runtime
+        wardrobe = getattr(runtime, "_wardrobe", None)
+        if event.get_extra("_companion_desktop_lines"):
+            # Whole looks were captured by the desktop bridge. Older nine-layer
+            # choices still update the native wardrobe's desired state.
+            choice = event.get_extra("_companion_desktop_wardrobe")
+            if wardrobe is not None and choice is not None:
+                self._schedule(wardrobe.select, choice, bucket="_l2d_tasks")
+            return
         text = getattr(response, "completion_text", None)
         if not isinstance(text, str) or not text.strip():
             return
         original = text
-        runtime = self.runtime
-        wardrobe = getattr(runtime, "_wardrobe", None)
         if wardrobe is not None and "<wardrobe" in text.lower():
             choice, text = extract_wardrobe(text)
             if choice is not None:
@@ -94,20 +102,22 @@ class LiveHostEvents:
             engine = getattr(runtime, "_soullink_runtime", None)
             if engine is not None and engine.running:
                 if intent:
-                    self._schedule(engine.trigger, intent, bucket="_soullink_tasks")
+                    self._schedule(engine.trigger, intent, bucket="_soullink_tasks", avatar=True)
                 elif runtime._soullink_mode() == "full" or runtime.config.get("soullink_local_fallback_enabled", False):
-                    self._schedule(engine.react_to_text, text, bucket="_soullink_tasks")
+                    self._schedule(engine.react_to_text, text, bucket="_soullink_tasks", avatar=True)
         if runtime.config.get("autonomous_l2d_enabled", True) and "<l2d" in text.lower():
             tags, text = runtime._parse_l2d_tags(text)
             tags = [tag for tag in tags if tag.lower() not in {"none", "无", "null", "no"}]
             if tags:
                 maximum = max(1, runtime._safe_parse_int(runtime.config.get("l2d_max_tags_per_reply"), 1))
-                self._schedule(runtime._trigger_l2d_tags, tags[:maximum], bucket="_l2d_tasks")
+                self._schedule(runtime._trigger_l2d_tags, tags[:maximum], bucket="_l2d_tasks", avatar=True)
         if text != original:
             response.completion_text = text
 
     def decorating(self, event):
         runtime = self.runtime
+        if event.get_extra("_companion_desktop_lines"):
+            return
         if not runtime._is_subtitle_enabled() and not runtime._is_mouth_sync_enabled():
             return
         result = event.get_result()

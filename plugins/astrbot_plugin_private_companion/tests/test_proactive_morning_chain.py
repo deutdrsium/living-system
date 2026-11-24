@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace as NS
 from zoneinfo import ZoneInfo
 
+from companion_v2.execution.models import TaskError
 from companion_v2.proactive.wake_events import WakeContactEvents
 
 
@@ -17,6 +18,7 @@ ROLE_WOKE = AT - timedelta(minutes=5)
 
 class FakeOutcome:
     is_success = True
+    failure = None
 
     def __init__(self, value):
         self.value = value
@@ -74,12 +76,19 @@ class FakeRuntime:
 
 
 class FakeRoleState:
-    def __init__(self, wake_at):
+    def __init__(self, wake_at=None, *, state="awake", has_sleep=True):
         self.wake_at = wake_at
+        self.state = state
+        self.has_sleep = has_sleep
 
     def read(self, context, at=None):
-        return {"body_sleep": {"state": "awake",
-                               "last_completed": {"completed_at": self.wake_at.isoformat()}}}
+        if not self.has_sleep:
+            return {"state": "unknown", "values": {"conditions": []}}
+        return {"sleep_execution": {
+            "state": self.state,
+            "ended_at": self.wake_at.isoformat() if self.wake_at is not None else None,
+            "slept_minutes": 420,
+        }}
 
 
 def morning_record(sent_at, *, action="role_morning", episode="morning-role:" + DAY):
@@ -92,14 +101,15 @@ def morning_record(sent_at, *, action="role_morning", episode="morning-role:" + 
 
 
 class MorningChainTests(unittest.TestCase):
-    def make_events(self, *, settings=None, interaction=None, port=None, morning_rows=()):
+    def make_events(self, *, settings=None, interaction=None, port=None, morning_rows=(), role_state=None):
         self.preferences = FakePreferences(settings or values())
         runtime = FakeRuntime(morning_rows)
         contacts = NS(runtime=runtime,
             task_id=lambda context, opportunity: "task-" + opportunity.opportunity_id,
             preferences=NS(read=lambda context, observed_at: FakeOutcome(self.preferences)),
             history=NS(interaction=lambda context, at, action: interaction))
-        events = WakeContactEvents(contacts, FakeRoleState(ROLE_WOKE), port or (lambda context: {}))
+        events = WakeContactEvents(contacts, role_state if role_state is not None else FakeRoleState(ROLE_WOKE),
+                                   port or (lambda context: {}))
         context = NS(key="ctx", scope=NS(key="scope"),
                      actor=NS(principal=NS(native_account_id="200")))
         return events, context
@@ -159,6 +169,29 @@ class MorningChainTests(unittest.TestCase):
         events, context = self.make_events(settings=values(_reason="proactive_quiet_hours"))
         self.assertIsNone(events.select(context, self.preferences, AT))
         self.assertEqual(events.last_diagnostic["reason"], "proactive_quiet_hours")
+
+    def test_sleeping_or_interrupted_role_holds_without_window_fallback(self):
+        for state in ("sleeping", "interrupted"):
+            events, context = self.make_events(role_state=FakeRoleState(None, state=state))
+            self.assertIsNone(events.select(context, self.preferences, AT))
+            self.assertEqual(events.last_diagnostic["reason"], "role_not_awake")
+
+    def test_missing_body_clock_falls_back_to_learned_window(self):
+        events, context = self.make_events(role_state=FakeRoleState(has_sleep=False))
+        candidate = events.select(context, self.preferences, AT)
+        self.assertIsNotNone(candidate, events.last_diagnostic)
+        self.assertEqual(candidate[2]["action"], "role_morning")
+
+    def test_validate_rejects_role_morning_if_role_is_no_longer_awake(self):
+        role_state = FakeRoleState(ROLE_WOKE)
+        events, context = self.make_events(role_state=role_state)
+        candidate = events.select(context, self.preferences, AT)
+        self.assertIsNotNone(candidate, events.last_diagnostic)
+        role_state.state = "sleeping"
+        role_state.wake_at = None
+        with self.assertRaises(TaskError) as caught:
+            events.validate(context, candidate[2], AT)
+        self.assertEqual(caught.exception.code, "contact_morning_changed")
 
 
 if __name__ == "__main__":

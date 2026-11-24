@@ -333,7 +333,9 @@ class MultiHostWebAPI:
             (PREFIX + "/performance", self.api_performance, ["GET"], "Companion V2 page performance mode"),
         ]
         from .desktop_api import DesktopAPI
-        self.controller.desktop_api = DesktopAPI(self.controller)
+        previous_desktop = getattr(self.controller, "desktop_api", None)
+        session_state = previous_desktop._session_state if previous_desktop is not None else None
+        self.controller.desktop_api = DesktopAPI(self.controller, session_state=session_state)
         routes += self.controller.desktop_api.routes()
         routes += LogWebAPI(self.controller).routes()
         lite_mode = performance_enabled(getattr(self.controller, "config", {}))

@@ -1,9 +1,11 @@
 from datetime import timedelta
 import unittest
+from unittest.mock import patch
 
 import test_manual_sleep_handoff as manual
 from companion_v2.execution.models import TaskError
-from companion_v2.integration.life_activity_control_proxy import LifeActivityCreationProxy
+from companion_v2.integration.life_activity_control_proxy import LifeActivityCreationProxy, LifeActivityTransitionProxy
+from companion_v2.integration.natural_wake_handoff import NaturalWakeHandoff
 from companion_v2.integration.scheduled_sleep_handoff import ScheduledSleepHandoff
 from companion_v2.role_work.models import RoleActivityState
 from good_life.sleep_planner import SleepPlanner
@@ -78,6 +80,31 @@ class ScheduledSleepHandoffTests(StateFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(finished.state, RoleActivityState.COMPLETED)
         self.assertEqual(len(life.pending_events("dream")), 1)
         self.assertEqual(len(self.sent), 0)
+
+    async def test_night_alarm_caps_committed_wake_and_preserves_sleep_debt(self):
+        manager, _, _, lease = await self.configured()
+        handoff = ScheduledSleepHandoff(manager.app, manager.life, LifeActivityCreationProxy(lease))
+        plan = self.plan_at_next_minute(handoff)
+        duration = timedelta(hours=6, seconds=45)
+        alarm = self.clock.now() + duration
+        lease.control.creations.night_sleep_alarm = lambda *_: alarm
+        self.assertEqual((await handoff.execute(plan))["state"], "committed")
+        activity, = manager.app.role_state.body_clock.active(manager.context, "sleep")
+        self.assertEqual(activity.work.due_at, alarm)
+        self.assertEqual((activity.sleep.base_need_minutes, activity.sleep.target_minutes), (480, 360))
+
+        self.clock.advance(duration)
+        wake = NaturalWakeHandoff(manager.app, manager.life, LifeActivityTransitionProxy(lease))
+        with (patch("good_life.staged_activity_commands.oversleep_extension", return_value=15),
+              patch("companion_v2.integration.natural_wake_handoff.oversleep_extension", return_value=15)):
+            await wake.execute(activity.activity_id, expected_revision=activity.revision)
+        extended = manager.app.role_life.activity(activity.activity_id, owner=manager.owner)
+        self.assertEqual((extended.state, extended.work.due_at), (RoleActivityState.ACTIVE, alarm + timedelta(minutes=15)))
+        self.clock.advance(timedelta(minutes=15))
+        await wake.execute(extended.activity_id, expected_revision=extended.revision)
+        body = manager.app.role_state.body_clock.read(manager.context, now=self.clock.now())
+        self.assertEqual(body["state"], "awake")
+        self.assertEqual(body["sleep_debt_minutes"], 104)
 
     async def test_disabling_sleep_aborts_prepared_sleep(self):
         manager, _, life, lease = await self.configured()

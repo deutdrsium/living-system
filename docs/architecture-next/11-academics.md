@@ -177,6 +177,12 @@ A6 精力子模型关闭时固定效率 1、负荷 0.5，评价版本 `fixed_rul
 
 条目包含 `schema_version, generator_version, artifact_id, assignment_id, chunk_id, chunk_index, kind, title, revision, updated_at, source, availability`。宿主先核验 Dashboard 登录、配对和目标角色，再以可信 owner/context 查询学业 workspace。详情对缺失与跨 workspace 返回相同的 `unauthorized` 响应。
 
+### 模拟期末成绩
+
+`grades_enabled` 默认 `false`，依赖 `academics_enabled`。取每门课最后一次课的结束时间与最晚作业截止时间中的较晚者，在此后 7–21 天的学期本地白天确定性发布。到课（含迟到）占 30%，最晚作业已完成的工作量占 50%，固定哈希抽样占 20%。无参与记录时到课按满分计，无作业时按比例重分其余权重。分数映射到 50–100，并按复旦等级换算。
+
+启用时安装 `academics_term_grades_schema_version=1`。成绩以 `simulated` 来源、`term_grade_rule_v1` 规则写入 `life_term_grades`，与教务通知一起提交。同一角色、学期、课程只发布一次。陪伴侧通过生活事件收件箱将通知提供给角色的私聊上下文，相关对话可自然提及。`GET /grades?term_id=…` 在既有授权下只读已发布成绩。
+
 ### A4 装配与活动边界
 
 插件配置 `academics_enabled` 默认 `false`。关闭时不安装学业/校园 schema，不创建候选、不注册活动钩子，现有生活处理器与调度行为不变。启用安装生活侧独立的 `academics_schema_version=1` 和 `academics_study_schema_version=1`；已有 schema 必须完整匹配，未知版本拒绝打开，不修改旧库版本、冻结契约、执行归属或生产开关。管理页读写通过 `LifeRuntime.academics` 的本地端口，读取不推进状态。一个 owner 的 workspace 固定首次写入的私有 context，另一个 context 不能读取或修改。
@@ -199,14 +205,10 @@ A6 精力子模型关闭时固定效率 1、负荷 0.5，评价版本 `fixed_rul
 
 重启后的在途模板从持久实例读取；没有持久实例且内存模板已丢失的旧候选由通用候选隔离逻辑明确 rejected/expired，不能堵住其他合法候选。学业 workspace 的私有 context 限制只约束学业投影，不阻止同 owner 其他 context 的无关领域活动。未知位置不反复生成失败候选，已拒绝课次不遮蔽后续到期课次。动态模板按 owner/context 索引后才投影，各 owner 使用相同课次 ID 也不会互相覆盖门控资源。因 `missing_dependency` 被拒绝的候选和出发时间过期的图包报价允许以关联原记录的新机会号重新提出；其余拒绝与过期仍阻止相同课次版本重提。每轮协调结束后回收没有 pending 候选或非终态实例引用的动态模板和 owner/context 索引；持久实例的模板快照及重放回执保留。
 
-### A4 出勤模拟（默认关闭）
+### A4 出勤与早课闹钟
 
-可信运行时可在既有 A4 装配后显式构造 `ClassAttendance(academics, config=AttendanceConfig(enabled=True))`。`enabled` 默认为 `false`，只有启用才安装独立的 `class_attendance_schema_version=1`。课表仍是日历的高优先级承诺，出勤判定发生在执行阶段。线上运行时和 `ClassActivities.tick` 的接线由后续改动完成。
+启用 `attendance_enabled` 后，前一晚夜间睡眠的实际结束时间加 20 分钟准备时间，就是角色可出发的时间。到出发时还没醒，就等睡眠结束。确认醒来后，或即使立刻醒来也赶不上下课时，按课次持久化一次判定。出发时没有当晚睡眠记录，或关闭该开关，按计划出发时间就绪。
 
-1. 在计划出发前 30 分钟内、最迟开课时，调用 `check_wake(kernel, scope, session_id, now=..., planned_departure_at=..., sleep_records=...)`。`sleep_records` 传已授权角色的近期 `StagedActivityRecords.work_activities(kind="sleep", ...)` 记录（JSON 或已解码记录）。取昨晚 18:00 到今早 09:00 之间、截至观测和开课时已开始的首个夜间睡眠，忽略午睡及短时手动睡眠。缺少记录时晚睡加成取零。仅当 A6 和 sleep 子模型都启用时接受该角色当次 `StateSnapshot` 的有效或估计 `sleep.sleepiness`。可信调用方可传 A6 的 `unwell` 判定，A6 关闭时忽略。既有睡眠执行链已经确定可出发时间时，可将其作为 `known_ready_at` 传入，避免再叠加一次模拟延后。若计划出发带有额外余量，传入无延误路线的 `planned_travel_s`，以开课时间减去该时长作为最迟准时出发时刻。未传时，同版本课次沿用 `planned_departure_at` 作为该时刻。原始睡眠记录和 A6 快照不写入出勤账本。
-2. 到出发时调用 `propose(kernel, scope, session_id, now=..., route=..., delay_s=0)`。小幅睡过头会延后出发并返回空候选，调用方在 `ready_at` 用当时有效的路线报价继续。醒来已过下课或 A6 判定身体不适时可不带路线提交 `skip`。路线沿用 A4 的 `travel_s` 和在线到达结算，若现有路线已计入延迟则直接使用它。手工路线没有延误结果时可用额外的 `delay_s`。定时图包路线须自行计入延误并重新验证通行窗口。缺少有效报价时可在下课前继续等待。路由已确认无法在下课前到达时，传 `no_viable_route=True` 提交缺席候选。到下课时也可无路线提交缺席候选。迟到归因使用已保存的无延误出发基准，因此报价内延误和额外 `delay_s` 的结算一致。重报价沿用既有 `retry_key` 入口，调用方按正常内核流程 prepare/start/advance 或 recovery。
-3. 最早一次醒来判定按 `(owner_key, session_id)` 持久化，稳定种子不含时钟、版本或重试号。课次修改保留已发生的醒来时刻，跨日改期不继承原日的身体不适。同一课次仍由既有内核参与认领保护。结算在 `Academics.participation(...)` 的同一行增加可选 `attendance` 对象。`outcome` 为 `on_time`、`late` 或 `absent`。`minutes_missed` 是开课至到达、或整节缺席的分钟数，向上取整。`cause_code` / `cause_label` 为 `overslept` / 睡过头、`delayed_en_route` / 路上耽搁、`unwell` / 身体不适，准时均为空。出勤等级记录到达情况，实际参与时长仍来自在线区间。开课前取消，或开课过程中尚未到达便取消，均不分级。
-4. 迟到或缺席与参与记录同事务写入 `academics.class.catch_up` 待办，专用消费者为 `academics.study.attendance.v1`，按课次稳定 `item_id` 去重。迟到产生 `catch_up_notes`，缺席产生 `borrow_notes`。有同课同教学周且尚未到期的作业时，关联最早截止的一个并建议额外 600 秒工时。A5 消费、写入学习负荷与概览原因表注册由后续装配处理。
+课程和出勤都启用且学业服务已接入时，计划夜间睡眠会检查本地次日最早的上午课。在午夜后才就寝时，检查当天上午。闹钟最晚设在开课时间减去预计路程和 20 分钟准备时间。优先沿用课程协调器的路程估算，缺少估算时按 30 分钟。没有早课时沿用常规睡眠时长。闹钟后仍可按既有睡眠生理规则延睡，缩短的睡眠照常计入睡眠债。
 
-默认睡过头率为 `0.10 × 时段因子 × (1 + 晚睡小时数 × 1.0 + 连续早课天数 × 0.15 + A6 睡意 × 0.5)`，上限为 1。时段因子为 08:30 及以前 `1.0`、08:30 后至中午前 `0.15`、中午起 `0.001`。晚睡相对本地 23:30 计算，连续早课天数最多计前四天。常规睡过头延后 5–30 分钟，其中 20% 延后两小时。这些参数均可通过 `AttendanceConfig` 配置。以每周四次早八、两组连续上课日、无出发余量的日常课表为基准，正常就寝的期望为每周 0.43 次迟到或缺席，即约每 2.3 周一次。晚睡两小时的早八概率约为平时三倍。下午的模拟睡过头概率接近零，已知路程延误和身体不适仍可影响下午课。固定种子的 16 周模拟测试验证频率区间。
-
+就绪时间晚于最迟准时出发时间而导致迟到，或加上预计路程后无法在下课前到达，归因为睡过头。身体不适和路上耽搁沿用原有判定。迟到和缺席的出勤结果与 `academics.class.catch_up` 待办同事务提交，分别生成补笔记或借笔记待办。课次改期保留已持久化的起床判定，跨日改期不沿用原日的身体不适。

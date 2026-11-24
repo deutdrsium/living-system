@@ -50,7 +50,6 @@ from .astrbot_host.core_reply import (
 from .astrbot_host.core_reply_tools import inject_core_reply_tools, inject_core_turn_notes
 from .astrbot_host.core_reply_preparation import measure_core_preparation
 from .astrbot_host.core_reply_decision import prepare_core_reply_decision
-from .astrbot_host.core_reply_closing import prepare_private_closing_decision
 from .astrbot_host.native import warm_session_settings
 from .astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
 from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_core_reply_turn
@@ -94,7 +93,7 @@ from .astrbot_host.event_routing import (
 from .astrbot_host.shared_host_migration import migrate_single_target_config
 from .astrbot_host.storage_location import prepare_storage_root, resolve_data_root
 from companion_v2.product import PRODUCT_VERSION
-from companion_v2.diagnostics.inbound import InboundNoReplyLedger, SUPPRESSED, UNMET
+from companion_v2.diagnostics.inbound import InboundNoReplyLedger, SUPPRESSED, UNMET, turn_token
 from companion_v2.conversation.private_reply_context import merged_input_sequence
 from .astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
 from .astrbot_host.recalls import is_notice_event
@@ -1213,15 +1212,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             prepared["group_admission"] = dict(group_admission)
         application = getattr(getattr(self.staging, "session", None), "application", None)
         decision = await prepare_core_reply_decision(event, prepared, application=application, now=self.staging.now)
-        closing = {"suppress_reply": False, "action": "reply", "reason": "not_private"}
-        if channel == "private":
-            try:
-                closing = prepare_private_closing_decision(
-                    event, prepared, application=application, now=self.staging.now)
-            except Exception as error:
-                logger.warning("[CompanionV2] 私聊收尾判断暂不可用，继续核心回复 event_ref=%s error_type=%s",
-                               event_ref, type(error).__name__)
-        suppress_reply = bool(decision.get("suppress_reply") or closing.get("suppress_reply"))
+        suppress_reply = bool(decision.get("suppress_reply"))
 
         if (channel == "group" and group_admission is not None and group_admission.get("reason") == "repeat"
                 and not suppress_reply):
@@ -1268,29 +1259,25 @@ class PrivateCompanionV2StagingPlugin(Star):
         self._observe_session(event)
         if suppress_reply:
             suppress_default_reply(event)
-            if decision.get("suppress_reply"):
-                action = decision["applied_decision"]["action"]
-                observe_core_group_participation(event, {
-                    "mode": "skip", "reason": "Laya 判断本轮行动为 " + action,
-                    "act": "", "signature": "", "source": "laya", "decision_action": action})
-                reason_code, stage = "laya_" + action, "decision"
-            else:
-                action = str(closing.get("action") or "silent")
-                reason_code = "private_closing_" + str(closing.get("reason") or "closing")
-                stage = "closing"
+            action = decision["applied_decision"]["action"]
+            observe_core_group_participation(event, {
+                "mode": "skip", "reason": "Laya 判断本轮行动为 " + action,
+                "act": "", "signature": "", "source": "laya", "decision_action": action})
+            reason_code = "laya_private_silent" if channel == "private" else "laya_" + action
             finish_core_reply_tracking(event)
             observe_core_reply_suppressed(event, prepared, application=application,
                 submit=getattr(observer, "submit", None), now=self.staging.now)
             self._observe_core_phase(prepared, "completed")
-            self._record_no_reply(event, reason_code, origin_key=origin_key,
-                channel=channel, event_ref=event_ref, stage=stage, turn=prepared.get("turn_id"), expected=False)
+            # A private silence is keyed by the conversation window and carries its
+            # turn, so proactive contact can find it and tell whether the user has
+            # spoken since (see ContactRhythm.private_silence_at).
+            silence_key = getattr(prepared.get("context"), "key", None) if channel == "private" else None
+            self._record_no_reply(event, reason_code, origin_key=silence_key or origin_key,
+                channel=channel, event_ref=event_ref, stage="decision", turn=prepared.get("turn_id"), expected=False,
+                code=turn_token(prepared.get("turn_id")) if channel == "private" else None)
             restore_core_reply_event(event)
-            if decision.get("suppress_reply"):
-                logger.info("[CompanionV2] Laya 决策跳过主模型 event_ref=%s turn_id=%s action=%s",
-                            event_ref, prepared.get("turn_id"), action)
-            else:
-                logger.info("[CompanionV2] 私聊收尾判断跳过主模型 event_ref=%s turn_id=%s action=%s reason=%s",
-                            event_ref, prepared.get("turn_id"), action, closing.get("reason"))
+            logger.info("[CompanionV2] Laya 决策跳过主模型 event_ref=%s turn_id=%s channel=%s action=%s",
+                        event_ref, prepared.get("turn_id"), channel, action)
             return
         prepare_core_reply_streaming_boundary(event)
         event.is_wake = True

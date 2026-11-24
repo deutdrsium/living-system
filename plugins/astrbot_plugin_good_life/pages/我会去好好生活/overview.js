@@ -1,10 +1,12 @@
 /* 生活总览：此刻活动、作息、状态网格与今日安排。
  *
- * 只投影 app.js 已经读到的两份数据：`state`（状态与日历，/state）与
- * `life`（活动与作息，/life）。今日安排与状态网格的判定沿用陪伴小屋右栏
+ * 只投影 app.js 已经读到的数据：`state`（状态与日历，/state）、
+ * `life`（活动与作息，/life）与 `classes`（当天课次，academics/occurrences；读不到时为 null）。
+ * 今日安排与状态网格的判定沿用陪伴小屋右栏
  * （pages/陪伴小屋/home-sidebar.js）的规则，两边对同一份数据给出同一种读法：
- *   - 日历期次、生活活动、自动睡眠与日记计划合成当天时间线；已结束的活动在落幕区保留结果；
- *   - 只有日历与活动都完整读到时才计算「未安排时段」，否则不把空白说成空闲；
+ *   - 日历期次、课次、生活活动、自动睡眠与日记计划合成当天时间线；已结束的活动在落幕区保留结果；
+ *   - 停上的课次不算安排；
+ *   - 只有日历、课次与活动都完整读到时才计算「未安排时段」，否则不把空白说成空闲；
  *   - 自由文字状态不能可靠归类时保留原文，不推断成正常或异常。
  * 本文件只生成标记，不发请求、不持有状态。 */
 "use strict";
@@ -90,6 +92,10 @@ window.GoodLifeOverview = (() => {
     ...(Array.isArray(life?.activities) ? life.activities : []),
     ...(Array.isArray(life?.overview_activities?.items) ? life.overview_activities.items : []),
   ];
+  /* 课次：app.js 读到的当天 {start, end, items:[{id, title, start, end, place, cancelled}]}；
+     读不到时为 null。只有覆盖角色当地今天的结果才算读到。 */
+  const classesRead = (input, now) => Array.isArray(input.classes?.items) && input.classes.start === calendarRequest(input, now).start;
+  const classesOf = input => Array.isArray(input.classes?.items) ? input.classes.items : [];
   const outcomes = {cancelled:"已取消", skipped:"已跳过", failed:"失败", unknown:"结果待确认"};
   const outcomeSource = item => item.outcome?.source === "simulated" ? "模拟" : "";
   const lifePartialOf = life => !!(life?.next_activity || life?.overview_activities?.partial);
@@ -204,7 +210,25 @@ window.GoodLifeOverview = (() => {
       add({key:`calendar:${item.id}:${item.sequence}`, title:text(item.title) || "未命名安排", start, end,
         detail:text(item.detail), label:`${kind} · ${phase}`, tone, order:1});
     }
+    // 课次按课表时段占位。课次投影（class:<课次>）只在课次结束后用来保留出勤结果；
+    // 正在执行的上课活动已经占住此刻，同名的当前课次不再重复。
+    const projected = new Map(activities(life).filter(item => typeof item.activity_id === "string"
+      && item.activity_id.startsWith("class:")).map(item => [item.activity_id, item]));
+    const replaced = new Set();
+    for (const item of classesOf(input)) {
+      const start = stamp(item.start), end = stamp(item.end), title = text(item.title) || "课程";
+      if (item.cancelled === true || !overlapsToday(start, end, now, zone)) continue;
+      const projection = projected.get(`class:${item.id}`);
+      if (projection && projection.state !== "planned" && end <= now) continue;
+      if (start <= now && now < end && activities(life).some(activity => activity.kind === "class"
+        && activity.state === "active" && text(activity.title) === title)) continue;
+      if (projection) replaced.add(projection.activity_id);
+      const phase = end <= now ? "时段已过" : start <= now ? "上课中" : "课表安排";
+      add({key:`class:${item.id}`, title, start, end, detail:text(item.place),
+        label:`课程 · ${phase}`, tone:end <= now ? "elapsed" : start <= now ? "current" : "planned", order:1});
+    }
     for (const item of activities(life)) {
+      if (replaced.has(item.activity_id)) continue;
       const started = stamp(item.started_at), updated = stamp(item.updated_at), due = stamp(item.due_at), ends = stamp(item.ends_at);
       const key = `activity:${item.activity_id}`, title = text(item.title) || kinds[item.kind] || "个人活动";
       const outcome = activityOutcome(item);
@@ -265,7 +289,7 @@ window.GoodLifeOverview = (() => {
     const {state, life, loading=false} = input, now = input.now ?? Date.now(), zone = zoneOf(input);
     const items = agenda(input), notes = [];
     const calendarRead = Array.isArray(state?.occurrences?.items), lifeRead = Array.isArray(life?.activities);
-    const lifePartial = lifePartialOf(life), calendarStale = staleCalendar(input, now, zone);
+    const lifePartial = lifePartialOf(life), calendarStale = staleCalendar(input, now, zone), classesKnown = classesRead(input, now);
     const coverage = state?.occurrences || {}, planning = state?.planning, result = planning?.daily_result;
     const planningIncomplete = planning?.enabled && planning.calendar_enabled
       && (planning.running || ["failed","expired","dead_letter","cancelled","uncertain","blocked","deferred"].includes(result?.state));
@@ -274,12 +298,13 @@ window.GoodLifeOverview = (() => {
       else if (calendarStale) notes.push("日历快照尚未覆盖今天");
       if (!lifeRead) notes.push("生活活动暂未读取");
       else if (lifePartial) notes.push("部分生活活动未读取");
+      if (!classesKnown) notes.push("课表暂未读取");
       if (coverage.skipped) notes.push(`${coverage.skipped} 条日历记录来源不可用，已跳过`);
       if (coverage.scan_truncated || coverage.occurrences_truncated) notes.push("日历记录超过读取上限，部分未显示");
       else if (coverage.partial && !coverage.skipped) notes.push("部分日历安排未完整读取");
       if (planningIncomplete) notes.push(planning.running ? "今日规划正在生成" : "今日规划尚未生成");
     }
-    const complete = calendarRead && !calendarStale && lifeRead && !lifePartial && !coverage.partial && !coverage.skipped
+    const complete = calendarRead && !calendarStale && lifeRead && !lifePartial && classesKnown && !coverage.partial && !coverage.skipped
       && !coverage.scan_truncated && !coverage.occurrences_truncated && !planningIncomplete;
     const elapsed = items.filter(item => item.tone === "elapsed" || item.tone === "completed" || item.end != null && item.end <= now && item.order !== 0)
       .sort((a, b) => (b.end ?? b.start ?? -Infinity) - (a.end ?? a.start ?? -Infinity));
@@ -343,6 +368,11 @@ window.GoodLifeOverview = (() => {
     const latest = items.filter(item => item.outcome && item.tone === "elapsed" && !currentKeys.has(item.key)
       && item.outcomeAt != null && item.outcomeAt <= at)
       .sort((a, b) => b.outcomeAt - a.outcomeAt)[0];
+    const lesson = items.find(item => item.key.startsWith("class:") && item.tone === "current");
+    if (!cards.length && lesson) {
+      cards.push(`<div class="gl-now-item" data-state="active"><span class="gl-now-glyph">${icon("book")}</span><div>
+        <strong>${e(lesson.title)}</strong><small>${e(["课程 · 上课中", windowText(lesson, at, zone), lesson.detail].filter(Boolean).join(" · "))}</small></div></div>`);
+    }
     if (!cards.length) {
       const next = items.find(item => item.start != null && item.start > at && item.tone !== "elapsed");
       const lifePartial = lifePartialOf(life), schedulePartial = lifePartial || staleCalendar(input, at, zone);

@@ -2,7 +2,7 @@ name: astrbot_plugin_good_life
 display_name: 我会去好好生活
 author: menglimi
 license: AGPL-3.0-only
-version: 0.1.1
+version: 0.1.12
 description: 角色生活、日程、阅读、浏览和作息插件。
 desc: 管理角色日程与生活活动。
 astrbot_version: ">=4.27.2"

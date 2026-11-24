@@ -62,7 +62,7 @@ class WakeContactEvents:
             state = self.role_state.read(context, at=at)
         except (TaskError, ValueError, TypeError, KeyError, AttributeError):
             return {}
-        body = state.get("body_sleep") if isinstance(state, Mapping) else None
+        body = state.get("sleep_execution") if isinstance(state, Mapping) else None
         return body if isinstance(body, Mapping) else {}
 
     def _role_woke_at(self, context, at, profile, zone, confidence_floor=0.2):
@@ -72,9 +72,9 @@ class WakeContactEvents:
         still gets the old daily morning rhythm: the learned wake window opens,
         the role may greet first.  This never uses user silence as evidence.
         """
-        woke = role_wake_at(self._body_sleep(context, at))
-        if woke is not None:
-            return woke
+        body = self._body_sleep(context, at)
+        if body:
+            return role_wake_at(body)
         window = predict_wake_window(profile, at=at, zone=zone.key,
                                      confidence_floor=confidence_floor)
         return window.start_at - timedelta(minutes=15)
@@ -364,6 +364,8 @@ class WakeContactEvents:
                 raise TaskError("contact_morning_disabled", "role morning greeting was disabled")
             role_woke = self._role_woke_at(context, at, profile, zone,
                                        preferences.values["morning_wake_confidence_floor"])
+            if role_woke is None:
+                raise TaskError("contact_morning_changed", "the role is not awake for this morning greeting")
             if at - role_woke > timedelta(minutes=180):
                 raise TaskError("contact_morning_expired", "the role woke too long ago for this morning greeting")
             if at > window.end_at + timedelta(minutes=60):

@@ -55,7 +55,16 @@ class _Batch:
     connection: object
     rows: dict = field(default_factory=dict)
     edges: dict = field(default_factory=dict)
+    owners: dict = field(default_factory=dict)
+    full: dict = field(default_factory=dict)
     active: bool = True
+
+    def requirement(self, owner):
+        if owner not in self.owners:
+            from .governance import owner_requirement
+            self.owners[owner] = owner_requirement(
+                lambda query, parameters: self.connection.execute(query, parameters).fetchone(), owner)
+        return self.owners[owner]
 
 
 @contextmanager
@@ -78,6 +87,8 @@ def validation_batch(runtime, at):
             batch.active = False
             batch.rows.clear()
             batch.edges.clear()
+            batch.owners.clear()
+            batch.full.clear()
             _BATCH.reset(token)
 
 
@@ -90,22 +101,36 @@ def _batch_for(state):
 
 
 def _prefetch(batch, root):
-    rows = batch.connection.execute(_REACHABLE + """SELECT r.id AS reach_id,
-        r.lineage AS reach_lineage, r.revision AS reach_revision,
-        s.source_id, s.owner, s.state, s.issued_at, s.expires_at
-        FROM reachable r LEFT JOIN sources s ON s.source_id = r.id
-          AND s.lineage_id = r.lineage AND s.source_revision = r.revision""", root)
-    for row in rows:
-        current = (row["reach_id"], row["reach_lineage"], row["reach_revision"])
-        batch.rows[current] = row if row["source_id"] is not None else None
-        batch.edges[current] = []
     edges = batch.connection.execute(_REACHABLE + """SELECT d.dependent_id, d.dependent_lineage,
         d.dependent_revision, d.input_id, d.input_lineage, d.input_revision
         FROM source_dependencies d JOIN reachable r ON d.dependent_id = r.id
-          AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision""", root)
+          AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision""", root).fetchall()
+    reachable, new_edges = {root}, {}
     for edge in edges:
-        current = (edge["dependent_id"], edge["dependent_lineage"], edge["dependent_revision"])
-        batch.edges[current].append((edge["input_id"], edge["input_lineage"], edge["input_revision"]))
+        current, original = tuple(edge[:3]), tuple(edge[3:])
+        reachable.update((current, original))
+        if current not in batch.edges:
+            new_edges.setdefault(current, []).append(original)
+    for current in reachable:
+        batch.edges.setdefault(current, new_edges.get(current, []))
+    # Overlapping roots share their original inputs. Do not fetch those large
+    # source-table rows again merely to read their governance columns. Chunked
+    # VALUES lookups keep each query below SQLite's historical parameter limit.
+    # SQLite otherwise prefers the unique primary-key index and visits payload
+    # overflow pages to reach state, which follows payload_json in the table.
+    missing = sorted(reachable.difference(batch.rows))
+    for offset in range(0, len(missing), 250):
+        keys = missing[offset:offset + 250]
+        slots = ",".join("(?,?,?)" for _ in keys)
+        rows = batch.connection.execute(f"""WITH requested(id, lineage, revision) AS (VALUES {slots})
+            SELECT r.id AS reach_id, r.lineage AS reach_lineage, r.revision AS reach_revision,
+                s.source_id, s.owner, s.state, s.issued_at, s.expires_at
+            FROM requested r LEFT JOIN sources s INDEXED BY sources_governance_idx ON s.source_id=r.id
+                AND s.lineage_id=r.lineage AND s.source_revision=r.revision""",
+            tuple(value for item in keys for value in item))
+        for row in rows:
+            current = (row["reach_id"], row["reach_lineage"], row["reach_revision"])
+            batch.rows[current] = row if row["source_id"] is not None else None
 
 
 def key(reference):
@@ -160,12 +185,17 @@ def _walk(state, reference_key):
                 # Postorder keeps owner reads of declared inputs out of recursion.
                 def load_record():
                     query = "SELECT * FROM sources WHERE source_id = ? AND lineage_id = ? AND source_revision = ?"
-                    full = (batch.connection.execute(query, current).fetchone() if batch is not None
-                            else runtime.read_one(query, current))
+                    if batch is None:
+                        full = runtime.read_one(query, current)
+                    elif current in batch.full:
+                        full = batch.full[current]
+                    else:
+                        full = batch.full[current] = batch.connection.execute(query, current).fetchone()
                     if full is None or full["state"] != "active":
                         raise TaskError("source_dependency_unavailable", "an original source dependency is unavailable")
                     return _source_from_row(full)
-                validate_with_loader(runtime, row["owner"], at, load_record)
+                validate_with_loader(runtime, row["owner"], at, load_record,
+                                     requirement=batch.requirement if batch is not None else None)
                 state.checked.add(current)
                 state.visiting.remove(current)
                 entered.remove(current)

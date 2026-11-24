@@ -102,4 +102,41 @@ dialog::backdrop { animation: fade .3s both; }
 #settings label:has(#social_interval_minutes),#settings label:has(#social_recommendation_enabled),
 #settings label:has(#social_random_read_percent),#settings label:has(#social_existing_percent),
 #settings label:has(#social_related_percent),#settings label:has(#social_new_percent),
-.tabs [data-tab]:not([data-tab="archive"]),[data-archive-kind]:not([data-archive-kind="diary"]) {display:none!important}
+.tabs [data-tab]:not([data-tab="archive"]):not([data-tab="interests"]),[data-archive-kind]:not([data-archive-kind="diary"]) {display:none!important}
+/* === 兴趣与爱好：紧凑卡片 ===
+   收起时只显示名称、阶段与一行要点；展开后才显示全部线索与操作。 */
+#interests .group-head { margin: 22px 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .04em; }
+#interests .group-head small { margin-left: 8px; font-weight: 400; color: var(--ink-soft); }
+#interests .fold { padding: 0; margin: 0 0 8px; box-shadow: none; }
+#interests .fold[open] { box-shadow: var(--shadow); border-color: var(--line-strong); }
+#interests .fold[open]:hover { transform: none; }
+#interests .fold > summary { position: relative; display: block; padding: 12px 44px 12px 16px; font-weight: 400; list-style: none; border-radius: inherit; }
+#interests .fold > summary::-webkit-details-marker { display: none; }
+#interests .fold > summary::after { content: ""; position: absolute; right: 20px; top: 50%; width: 7px; height: 7px; border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft); transform: translateY(-70%) rotate(45deg); transition: transform .2s; }
+#interests .fold[open] > summary::after { transform: translateY(-25%) rotate(-135deg); }
+#interests .fold > summary:hover .fold-title { color: var(--accent); }
+#interests .fold summary span { display: inline-block; margin: 0; }
+#interests .fold-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#interests .fold-title { font-size: 15px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .2s; }
+#interests .fold .badge { flex-shrink: 0; line-height: 1.6; }
+#interests .badge.tone-accent { color: var(--accent); background: var(--accent-soft); }
+#interests .badge.tone-danger { color: var(--danger); background: var(--danger-soft); }
+#interests .badge.tone-quiet { color: var(--muted); background: var(--surface-muted); border: 1px solid var(--line); }
+#interests .fold summary .fold-line { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#interests .fold-body { padding: 2px 16px 16px; border-top: 1px solid var(--line); }
+#interests .fold-body .prose { margin-top: 12px; line-height: 1.85; }
+#interests .fold-body > .muted { margin-top: 8px; }
+#interests .fold-body h4 { margin: 14px 0 4px; font-size: 13px; font-weight: 600; }
+#interests .trail { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+#interests .trail li + li { margin-top: 2px; }
+#interests .fold-body .actions { margin-top: 14px; }
+#interests .more { min-height: 34px; margin: 0 0 8px; padding: 4px 12px; font-size: 13px; }
+#interests .fold-group { margin: 22px 0 0; }
+#interests .mini-list, #recent-exposure-list { padding: 0 20px 10px; }
+#interests .mini-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+#interests .mini-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#interests .mini-text strong { display: block; font-weight: 600; }
+#interests .mini-text .muted { display: block; }
+#interests .mini-list .more, #recent-exposure-list .more { margin: 6px 0 0; }
+#interests button.small { min-height: 34px; padding: 4px 12px; font-size: 13px; }
+@media (max-width:430px) { #interests .mini-row { flex-wrap: wrap; } #interests .fold > summary { padding: 12px 40px 12px 14px; } #interests .fold-body { padding: 2px 14px 14px; } }

@@ -211,7 +211,7 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
                 f"必须调用本轮工具 {action}（{operation}）且参数 proposal_id 必须逐字等于该编号；不要改用其他编号、推断用户同意或使用自然语言确认。"
                 "只按工具回执说明结果；建议过期、版本变化、权限不足或状态冲突时不得声称成功。")
     if intent == "calendar":
-        return ("用户请求查看或维护日程、重要日期。查看时调用本轮授权的 companion_v2_calendar_query；"
+        return ("用户请求查看或维护日程、重要日期。查看时调用本轮授权的 companion_v2_calendar_query，其结果的 classes 是课表固定课程，只读；"
                 "新增、修改或删除时先查询当前日历，再按用户明确要求调用 companion_v2_calendar_command，"
                 "使用本轮证据句柄并遵从人类确认边界；没有工具或结果时如实说明。")
     if intent == "timeline":

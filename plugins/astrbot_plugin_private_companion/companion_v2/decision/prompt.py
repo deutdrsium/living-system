@@ -86,6 +86,23 @@ DECISION_QUESTIONS = {
     },
 }
 
+# Private turns ask whether a real person would still answer, judged from the
+# timed dialogue and `current_at`. It replaces the shared action question whole,
+# shared prefix included.
+PRIVATE_ACTION_QUESTION = {
+    "type": "choice",
+    "instructions": ("当前消息是唯一待判断发言。这是私聊。结合按时间排列的对话和每条时间戳（current_at 是当前消息时间），"
+                     "判断一个真人此刻是否还会回这条消息。双方都已道别、晚安，或对方只是应声、确认、致谢而角色上一句已收尾，"
+                     "且没有新问题、请求、情绪或话题时，对话已自然停住，选 silent。隔了很久重新开口、角色还没回应对方的道别、"
+                     "或回答了角色的问题，都选 reply。拿不准选 reply。"),
+    "criteria": {
+        "reply": "还有要接住的：问题、请求、新话题、情绪，或角色还没回应对方。",
+        "silent": "对话已自然停住，再回只是重复道别或客套。",
+        "wait": "用户明确还没说完，等补充。",
+        "clarify": "用户提出请求但关键对象缺失。",
+    },
+}
+
 INTERVENTION_QUESTION = {
     "intervention_need": {
         "type": "choice",
@@ -170,6 +187,10 @@ def decision_questions(facts, enabled_fields):
         return questions
     if facts.get("scope_kind") != "group":
         action["criteria"].pop("interject", None)
+        if facts.get("scope_kind") == "private":
+            # Verbatim from the production Jev toy evaluation (17/18 gated at 0.8);
+            # rewording changed which goodnights Laya silenced, so keep it exact.
+            questions["action"] = deepcopy(PRIVATE_ACTION_QUESTION)
         return questions
     # Laya has a small question budget and caps each option at 48 tokens.
     # Keep the actual distinction at the start of each short option.
@@ -301,12 +322,24 @@ def render_model_state(state: str) -> str:
             model["past_group_context"] = [
                 {"speaker": speaker, "message": text[:320]}
                 for _, speaker, text in history[-4:] if text.strip()]
-    elif facts.get("recent_private_messages"):
-        model["past_private_context"] = [
-            {"speaker": "用户" if item.get("role") == "user" else "机器人",
-             "message": str(item.get("text", ""))[:360]}
-            for item in facts["recent_private_messages"][-4:]
-            if isinstance(item, dict) and str(item.get("text", "")).strip()]
+    elif facts.get("scope_kind") == "private" and "conversation" not in model:
+        model["address_context"] = "这是用户与角色的私聊；判断对话是否已自然收住，真人此时是否还会回复。"
+        conversation = []
+        for item in facts.get("recent_private_messages") or []:
+            if not isinstance(item, dict) or item.get("role") not in ("user", "assistant"):
+                continue
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            entry = {"speaker": item["role"], "at": str(item.get("at", ""))[:64], "message": text[:600]}
+            if item.get("proactive") is True:
+                entry["proactive"] = True
+            conversation.append(entry)
+        model["conversation"] = conversation[-8:]
+        if facts.get("current_at"):
+            model["current_at"] = str(facts["current_at"])[:64]
+        model["conversation_basis"] = "validated_private_native_dialogue"
+        model["assistant_reply_returned"] = any(entry["speaker"] == "assistant" for entry in conversation)
     media = [label for name, label in (("has_image", "图片"), ("has_audio", "语音"), ("has_video", "视频"))
              if facts.get(name)]
     if media:

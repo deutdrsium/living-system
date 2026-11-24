@@ -267,7 +267,8 @@ class ReadingLifeExecutionTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         api = UnifiedCompanionExtensionAPI(controller)
         self.addCleanup(api.close_life_providers)
         self.addCleanup(api.close_memory_providers)
-        provider = LifeRuntime(life, plugin)
+        provider = LifeRuntime(life, plugin, wall_clock=self.clock.now,
+                               monotonic_clock=lambda: (self.clock.now() - NOW).total_seconds())
         original_control = provider.handlers["activity_control"]
         interrupt_manual_ack = [False]
         def activity_control(operation, *args, **kwargs):

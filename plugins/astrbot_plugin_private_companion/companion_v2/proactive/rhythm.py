@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 import json
 from zoneinfo import ZoneInfo
 
+from companion_v2.diagnostics.inbound import turn_token
 from companion_v2.execution.models import digest, stamp
 
 from .configuration import CURVE_CEILING, CURVE_FLOOR, INTENSITY_PRESETS, hour_activity_curve, intensity_preset
@@ -253,6 +254,45 @@ class ContactRhythm:
             return None
         hold = last_contact["created_at"] + timedelta(minutes=grace)
         return hold if at < hold else None
+
+    # ---- Laya private silence -------------------------------------------
+    def private_silence_hold(self, preferences, at, context, interaction):
+        """The instant a Laya private silence stops closing the conversation.
+
+        When Laya judged the private conversation had come to rest
+        (``laya_private_silent``), the role does not open it again on its own for
+        the closing grace period. The user speaking again releases it at once.
+        """
+        grace = preferences.values["proactive_closing_grace_minutes"]
+        silenced = self.private_silence_at(context, interaction) if grace > 0 else None
+        if silenced is None:
+            return None
+        hold = silenced + timedelta(minutes=grace)
+        return hold if at < hold else None
+
+    def private_silence_at(self, context, interaction):
+        """When Laya last let this conversation rest, while that input is still the latest.
+
+        The ledger row carries the silenced turn's token, and the hold lasts only
+        while the window's latest input belongs to that same turn. Comparing the
+        turn instead of timestamps keeps a platform message time that runs ahead
+        of the host clock from releasing the hold at once.
+        """
+        row = self.runtime.read_one("""SELECT observed_at, code FROM inbound_no_replies
+            WHERE origin_key = ? AND reason_code = 'laya_private_silent'
+            ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context.key,))
+        latest = (interaction or {}).get("latest_input") or {}
+        if row is None or not row["code"] or not latest.get("event_key"):
+            return None
+        from companion_v2.conversation.native_observations import observations_available
+        if not observations_available(self.runtime):
+            return None
+        observation = self.runtime.read_one("""SELECT turn_id FROM conversation_native_observations
+            WHERE observation_id = ? AND context_key = ? AND kind = 'input'""",
+            (latest["event_key"], context.key))
+        if observation is None or turn_token(observation["turn_id"]) != row["code"]:
+            return None
+        return datetime.fromisoformat(row["observed_at"])
 
     # ---- share probability ----------------------------------------------
     def share_allowed(self, context, preferences, opportunity_id, *, purpose):

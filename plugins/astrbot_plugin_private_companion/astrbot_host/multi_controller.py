@@ -82,6 +82,8 @@ class AstrBotMultiController:
         self.last_failure = None
         self._termination_task = None
         self.poke_policy = PokePolicy()
+        from .desktop_presence import DesktopPresence
+        self.desktop_presence = DesktopPresence()
         try:
             self.settings, self._storage_profile_root, self._adopting_legacy_profile = self._resolve_settings(config)
             self.poke_policy = PokePolicy.parse(config.get("poke"))
@@ -748,6 +750,8 @@ class AstrBotMultiController:
         try:
             from companion_v2.expression.configuration import migrate_legacy_policy_values
             from companion_v2.expression.reaction_configuration import migrate_window_values
+            from companion_v2.conversation.reply_settings import retire_private_closing_values
+            retire_private_closing_values(runtime)
             migrate_legacy_policy_values(runtime)
             migrate_window_values(runtime)
         except BaseException:
@@ -805,6 +809,7 @@ class AstrBotMultiController:
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
             solar_term_port=configured_solar_term_port(
                 self.config.get("solar_terms") if isinstance(self.config, dict) else None))
+        self.session.attach_desktop_presence(self.desktop_presence)
         from .life_ledger_binding import refresh_session_binding
         refresh_session_binding(self)
         from .worker_lifecycle import AstrBotWorkerLifecycle

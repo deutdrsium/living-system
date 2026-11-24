@@ -8,7 +8,7 @@
   const announceSection=()=>{
     const section=context?.section||"reading";
     const tab=context?.tab||(section==="notes"?"archive":section==="browsing"?"social":section==="settings"?"sleep":"reading");
-    document.dispatchEvent(new CustomEvent("companion-section-change",{detail:{section,tab,readGeneration:context?.readGeneration}}));
+    document.dispatchEvent(new CustomEvent("companion-section-change",{detail:{section,tab,readGeneration:context?.readGeneration,active:context?.active}}));
   };
   const send=payload=>parent.postMessage({channel:"companion-workspace",...payload},"*");
   /* 外观维度：主题沿用原有通道，另外四项按 name/value 应用。

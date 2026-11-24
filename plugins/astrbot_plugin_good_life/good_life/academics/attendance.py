@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta
 import json
 import math
 
-from ..contracts.models import ReasonCode, StateQuality
+from ..contracts.models import ReasonCode
 from ..kernel.codec import digest, encode, freeze, integer, moment, name, require, wire
 from .models import day, zone
 from .service import timestamp
@@ -21,45 +21,24 @@ DDL = """CREATE TABLE life_class_attendance_wakes (
 @dataclass(frozen=True)
 class AttendanceConfig:
     enabled: bool = False
-    base_rate: float = 0.10
-    morning_factor: float = 0.15
-    afternoon_factor: float = 0.001
-    bedtime: time = time(23, 30)
-    late_night_bonus_per_hour: float = 1.0
-    consecutive_day_bonus: float = 0.15
-    consecutive_day_cap: int = 4
-    a6_sleepiness_bonus: float = 0.5
+    use_sleep_records: bool = True
     wake_check_lead_s: int = 1800
-    min_slip_s: int = 300
-    max_slip_s: int = 1800
-    severe_slip_rate: float = 0.20
-    severe_slip_s: int = 7200
+    prep_s: int = 1200
     catch_up_work_s: int = 600
 
     def __post_init__(self):
-        require(type(self.enabled) is bool, "attendance.enabled must be boolean")
-        for value in (self.base_rate, self.morning_factor, self.afternoon_factor, self.severe_slip_rate):
-            require(type(value) in (int, float) and 0 <= value <= 1, "attendance rate outside [0, 1]")
-        for value in (self.late_night_bonus_per_hour, self.consecutive_day_bonus, self.a6_sleepiness_bonus):
-            require(type(value) in (int, float) and 0 <= value <= 10, "attendance bonus outside [0, 10]")
-        require(type(self.bedtime) is time and self.bedtime.tzinfo is None, "local attendance bedtime required")
-        require(integer(self.consecutive_day_cap) <= 30 and integer(self.wake_check_lead_s) <= 3600,
-                "attendance wake window or streak cap too large")
-        require(0 < integer(self.min_slip_s) <= integer(self.max_slip_s) <= integer(self.severe_slip_s) <= 86400,
-                "invalid attendance wake slip range")
+        require(type(self.enabled) is bool and type(self.use_sleep_records) is bool,
+                "attendance switches must be boolean")
+        require(integer(self.wake_check_lead_s) <= 3600, "attendance wake window too large")
+        integer(self.prep_s)
         require(integer(self.catch_up_work_s) <= 3600, "attendance catch-up load too large")
 
 
-def _draw(owner_key, session_id, purpose):
-    # 52 hash bits fit exactly in a float. Neither Python hash seeds nor the
-    # order of calls or timetable revisions enter the draw.
-    return int(digest(("a4.attendance.v1", owner_key, session_id, purpose))[:13], 16) / (1 << 52)
-
-
-def _night_bedtime(records, local_start, tz, now):
+def _night_sleep(records, local_start, now):
+    tz = local_start.tzinfo
     night = datetime.combine(local_start.date() - timedelta(days=1), time(18), tz)
-    cutoff = min(local_start, datetime.combine(local_start.date(), time(9), tz), now.astimezone(tz))
-    starts = []
+    cutoff = min(local_start, datetime.combine(local_start.date(), time(12), tz), now.astimezone(tz))
+    latest = None
     for value in records:
         item = json.loads(value) if isinstance(value, str) else value
         sleep = item.get("sleep") or {}
@@ -68,37 +47,9 @@ def _night_bedtime(records, local_start, tz, now):
                 or sleep.get("kind") == "nap" or (sleep.get("kind") == "manual" and sleep.get("target_minutes", 0) <= 60)):
             continue
         start = timestamp(item["started_at"]).astimezone(tz)
-        if night <= start <= cutoff:
-            starts.append(start)
-    # The first night episode is bedtime, even when sleep is interrupted.
-    return min(starts, default=None)
-
-
-def _wake_slip(config, owner_key, session_id, local_start, hours_late, streak, sleepiness):
-    start = local_start.time()
-    time_factor = (1.0 if start <= time(8, 30) else config.morning_factor if start < time(12)
-                   else config.afternoon_factor)
-    rate = min(1.0, config.base_rate * time_factor * (1 + hours_late * config.late_night_bonus_per_hour
-        + min(streak, config.consecutive_day_cap) * config.consecutive_day_bonus
-        + sleepiness * config.a6_sleepiness_bonus))
-    if rate == 0 or _draw(owner_key, session_id, "slip") >= rate:
-        return 0
-    severity = _draw(owner_key, session_id, "severity")
-    if severity < config.severe_slip_rate:
-        return config.severe_slip_s
-    fraction = (severity - config.severe_slip_rate) / (1 - config.severe_slip_rate)
-    return config.min_slip_s + int(fraction * (config.max_slip_s - config.min_slip_s + 1))
-
-
-def _sleepiness(state, owner_key, now):
-    if state is None:
-        return 0
-    require(state.owner_key == owner_key, "attendance state owner mismatch", ReasonCode.UNAUTHORIZED)
-    value = state.values.get("sleep.sleepiness")
-    if (value and value.quality in (StateQuality.VALID, StateQuality.ESTIMATED)
-            and moment(value.updated_at) == now and type(value.value) in (int, float) and 0 <= value.value <= 1):
-        return value.value
-    return 0
+        if night <= start <= cutoff and (latest is None or start > latest[0]):
+            latest = (start, item)
+    return latest[1] if latest else None
 
 
 class ClassAttendance:
@@ -131,9 +82,8 @@ class ClassAttendance:
         return freeze(json.loads(row[0])) if row else None
 
     def check_wake(self, kernel, scope, session_id, *, now, planned_departure_at, planned_travel_s=None,
-                   origin_revision=None, sleep_records=(), known_ready_at=None, a6_enabled=False, a6_sleep_enabled=False,
-                   a6_state=None, unwell=False):
-        """Persist the first wake decision before an executor moves or misses class."""
+                   origin_revision=None, sleep_records=(), a6_enabled=False, unwell=False):
+        """Persist readiness once the night ends or class is no longer reachable."""
         if not self.config.enabled:
             return None
         scope, now = self._scope(kernel, scope), moment(now)
@@ -145,40 +95,36 @@ class ClassAttendance:
             require(not session["cancelled"] and self.academics.participation(scope.owner_key, scope.context_key, session_id) is None,
                     "class is cancelled or already claimed", ReasonCode.STALE_VERSION)
             departure, start = moment(planned_departure_at), timestamp(session["start_at"])
-            # A late bind can record known readiness while class is still running.
-            cutoff = timestamp(session["end_at"]) if known_ready_at is not None else start
             require(start - timedelta(days=1) <= departure <= start and
-                    departure - timedelta(seconds=self.config.wake_check_lead_s) <= now <= cutoff,
+                    departure - timedelta(seconds=self.config.wake_check_lead_s) <= now,
                     "class wake check is outside the execution window", ReasonCode.NO_TIME_WINDOW)
             if planned_travel_s is not None:
                 require(integer(planned_travel_s) <= 86400, "planned class travel exceeds one day")
-            require(all(type(flag) is bool for flag in (a6_enabled, a6_sleep_enabled, unwell)), "attendance state switches must be booleans")
-            term = self.academics._records(db, scope.owner_key, "term").get(session["term_id"])
-            require(term is not None, "term is unavailable", ReasonCode.MISSING_DEPENDENCY)
-            tz = zone(term["timezone"])
-            local = start.astimezone(tz)
-            previous_day = local.date() - timedelta(days=1)
-            bedtime = _night_bedtime(sleep_records, local, tz, now)
-            reference = datetime.combine(previous_day, self.config.bedtime, tz)
-            hours_late = max(0, (bedtime - reference).total_seconds() / 3600) if bedtime else 0
-            prior_early_days = {item["local_date"] for item in self.academics._session_rows(db, scope.owner_key).values()
-                if not item["cancelled"] and item["term_id"] == session["term_id"]
-                and timestamp(item["start_at"]).astimezone(tz).time() <= time(8, 30)}
-            streak = 0
-            while streak < self.config.consecutive_day_cap and previous_day.isoformat() in prior_early_days:
-                streak += 1
-                previous_day -= timedelta(days=1)
-            sleepiness = _sleepiness(a6_state, scope.owner_key, now) if a6_enabled and a6_sleep_enabled else 0
+            require(type(a6_enabled) is bool and type(unwell) is bool, "attendance state switches must be booleans")
             sick = a6_enabled and unwell
-            if sick:
-                ready = departure
-            elif known_ready_at is not None:
-                ready = max(departure, moment(known_ready_at))
-                require(ready - departure <= timedelta(days=1), "known wake delay exceeds one day")
-            else:
-                slip = _wake_slip(self.config, scope.owner_key, session_id, local, hours_late, streak, sleepiness)
-                ready = departure + timedelta(seconds=slip)
-            slip = math.ceil((ready - departure).total_seconds())
+            ready = departure
+            if self.config.use_sleep_records and not sick:
+                term = self.academics._records(db, scope.owner_key, "term").get(session["term_id"])
+                require(term is not None, "term is unavailable", ReasonCode.MISSING_DEPENDENCY)
+                night = _night_sleep(sleep_records, start.astimezone(zone(term["timezone"])), now)
+                if night is None:
+                    if now < departure:
+                        return None
+                else:
+                    prep = timedelta(seconds=self.config.prep_s)
+                    # Staged activity rows store the terminal receipt's ended_at as updated_at.
+                    ended = None
+                    if night["state"] in ("completed", "cancelled"):
+                        ended = timestamp(night.get("ended_at") or night["updated_at"])
+                    if ended is not None and ended <= now:
+                        ready = ended + prep
+                    else:
+                        # Even waking now leaves too little time to get to class.
+                        ready = now + prep
+                        last_departure = timestamp(session["end_at"]) - timedelta(seconds=planned_travel_s or 0)
+                        if ready < last_departure:
+                            return None
+            slip = max(0, math.ceil((ready - departure).total_seconds()))
             saved = freeze({"session_revision": session["revision"], "decided_at": wire(now),
                 "planned_departure_at": wire(departure), "planned_travel_s": planned_travel_s, "ready_at": wire(ready),
                 "wake_delay_s": slip, "unwell": sick, "local_date": session["local_date"],
@@ -224,10 +170,11 @@ class ClassAttendance:
             if now < max(earliest, timestamp(wake["decided_at"])):
                 return None
 
+            last_departure = on_time_departure + (end - start)
             skip_cause = None
             if wake["unwell"] and wake["local_date"] == session["local_date"]:
                 skip_cause = "unwell"
-            elif has_slip and ready >= end:
+            elif has_slip and ready >= last_departure:
                 skip_cause = "overslept"
             elif has_slip and now < ready:
                 return None
@@ -249,8 +196,7 @@ class ClassAttendance:
                     if delay_s:
                         route = {**route, "travel_s": travel_s}
                 if misses_end:
-                    last_departure = on_time_departure + (end - start)
-                    skip_cause = "overslept" if has_slip and ready >= last_departure else "delayed_en_route"
+                    skip_cause = "delayed_en_route"
             if skip_cause and defer_absence and now < end:
                 return None
             attendance = {"skip_cause": skip_cause, "ready_at": wake["ready_at"] if has_slip else None,

@@ -29,6 +29,7 @@ logger = getLogger(__name__)
 # the reservation is unusable for this owner. A runner that keeps capacity
 # refusals opts in with ``retain_refusals=True``; see ``_unrun``.
 CAPACITY_REFUSALS = frozenset({"task_lane_full", "task_concurrency_limited"})
+INPUT_CHECK_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,7 @@ class _TaskRunner:
                                          name=f"companion:{task.spec.kind}:{task.task_id}:{task.attempt_no}")
             self._handles[claim.attempt_id] = (claim, worker)
             worker.add_done_callback(lambda done: self._done(claim, done))
+            inputs_checked = started
             while True:
                 remaining = budget - (perf_counter() - started)
                 if remaining <= 0:
@@ -177,7 +179,15 @@ class _TaskRunner:
                         reason = "timeout" if finished.failure.code == "task_attempt_expired" else "permission_changed"
                         return Outcome.success(RunResult(require(self._stopped(claim, reason))))
                     return Outcome.success(RunResult(finished.unwrap()))
-                valid = self.supervisor.validate(claim)
+                # Fencing, cancellation and authority are checked every poll.
+                # Owner input validation can re-read and re-digest whole sources
+                # (e.g. every candidate book), so the poll repeats it at most once
+                # per INPUT_CHECK_SECONDS; handlers still validate at each effect.
+                now = perf_counter()
+                inputs = now - inputs_checked >= INPUT_CHECK_SECONDS
+                if inputs:
+                    inputs_checked = now
+                valid = self.supervisor.validate(claim, inputs=inputs)
                 if valid.failure:
                     reason = ("cancelled" if valid.failure.code == "task_cancellation_requested" else
                               "timeout" if valid.failure.code == "task_attempt_expired" else "permission_changed")

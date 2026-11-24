@@ -14,7 +14,7 @@ from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, Ta
     TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp)
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.identity_policy.private_domain import as_source_ref
 from companion_v2.identity_policy.interventions import (REST_WAKE_INTERVENTION,
     STATE_INTERVENTION, require_capability)
@@ -31,10 +31,9 @@ from .cycle_prompts import INSTRUCTION as CYCLE_INSTRUCTION, MAINTENANCE as CYCL
 logger = getLogger(__name__)
 
 KIND = "role.state.maintain"
-# Leave room for one retry and for committing the state after the model returns.
-STATE_BUDGET_SECONDS = 480
-STATE_MARGIN_SECONDS = 270
-STATE_PROVIDER_TIMEOUT_SECONDS = STATE_BUDGET_SECONDS - STATE_MARGIN_SECONDS
+STATE_BUDGET_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
+STATE_PROVIDER_TIMEOUT_SECONDS = BACKGROUND_MODEL_WAIT_SECONDS
+STATE_MARGIN_SECONDS = STATE_BUDGET_SECONDS - STATE_PROVIDER_TIMEOUT_SECONDS
 PREFLIGHT_RETRY_SECONDS = 30
 # The local patrol reads state once per bound role and never calls a model; the
 # throttle only keeps the wake loop from re-reading configuration on every tick.

@@ -3,6 +3,7 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "plugins" / "astrbot_plugin_private_companion"),
@@ -41,7 +42,7 @@ class ExposureLifeProjectionTests(StateFixture, unittest.IsolatedAsyncioTestCase
         store = app.role_social.exposure
         store.save_batch(context, "social", "zhihu", [{"id": "article", "title": "Original title",
             "summary": "Summary", "url": "https://example.com/article"}], NOW)
-        store.topics(context, "social", "zhihu", {"article": ["Astronomy"]})
+        store.topics(context, "social", "zhihu", {"article": ["Astronomy", "Science"]})
         store.mark_exposed(context, "social", "zhihu", ["article"], NOW)
         store.mark_attempt(context, "social", "zhihu", "article", "text", NOW)
         store.feedback(context, "social", "zhihu", [
@@ -87,7 +88,12 @@ class ExposureLifeProjectionTests(StateFixture, unittest.IsolatedAsyncioTestCase
         after = manager.status(self.core)
         self.assertEqual(after["recent_exposures"], before["recent_exposures"])
         self.assertEqual(after["disliked_items"], before["disliked_items"])
-        self.assertEqual(visible_interests(app, context, NOW), interests)
+        with patch.object(app.role_life, "activity", wraps=app.role_life.activity) as read_activity:
+            self.assertEqual(visible_interests(app, context, NOW), interests)
+            self.assertEqual(read_activity.call_count, 2)
+            read_activity.side_effect = KeyError("activity no longer visible")
+            self.assertEqual(visible_interests(app, context, NOW), [])
+            self.assertEqual(read_activity.call_count, 3)
         self.assertTrue(store.already_attempted(context, "zhihu", "article"))
         self.assertTrue(store.blocked(context, "zhihu", "article"))
 

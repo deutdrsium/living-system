@@ -6,7 +6,20 @@ from ..contracts.models import StateQuality, StateValue
 from ..kernel.codec import freeze, require
 from ..kernel.repository import KernelRepository
 from ..storage import StorageReader
-from .wallet import SPEC
+from .wallet import MONTHLY_ALLOWANCE_PREFIX, SPEC
+
+
+def purchase_labels(db, owner_key, context_key, instance_ids):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='life_kernel_instances'").fetchone():
+        return {}
+    labels = {}
+    for identifier in set(instance_ids) - {None}:
+        row = db.execute("""SELECT json_extract(record_json,'$.template_id') FROM life_kernel_instances
+            WHERE owner_key=? AND instance_id=? AND json_extract(record_json,'$.context_key')=?""",
+            (owner_key, identifier, context_key)).fetchone()
+        if row:
+            labels[identifier] = {"buy_drink": "买饮料", "city_trip": "城市出行"}.get(row[0])
+    return labels
 
 
 def wallet_page(wallet, *, owner_key, context_key, limit=20, before=None):
@@ -14,7 +27,8 @@ def wallet_page(wallet, *, owner_key, context_key, limit=20, before=None):
 
     The short storage lock keeps the quote and rows consistent with the local
     single writer. No SQL transaction, kernel snapshot or recovery is started.
-    Only a pinned, same-context activity can supply a human-readable label.
+    Labels come from pinned, same-context activities or planned spending entries.
+    Monthly allowance income has its own fixed label.
     """
     wallet._installed()
     with StorageReader(wallet.storage).locked():
@@ -23,7 +37,7 @@ def wallet_page(wallet, *, owner_key, context_key, limit=20, before=None):
         reservations = db.execute("""SELECT reservation_id,instance_id,limit_minor,
             amount_remaining_minor,status,review_at FROM life_wallet_reservations
             WHERE owner_key=? AND status='active' ORDER BY reservation_id""", (owner_key,)).fetchall()
-        sql = """SELECT transaction_id,kind,amount_minor,currency,effective_at,instance_id
+        sql = """SELECT transaction_id,kind,amount_minor,currency,effective_at,instance_id,source_ref
             FROM life_wallet_transactions WHERE owner_key=?"""
         args = [owner_key]
         if before is not None:
@@ -31,15 +45,15 @@ def wallet_page(wallet, *, owner_key, context_key, limit=20, before=None):
             args.extend(before)
         rows = db.execute(sql + " ORDER BY effective_at DESC,transaction_id DESC LIMIT ?",
                           (*args, limit + 1)).fetchall()
-        labels = {}
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='life_kernel_instances'").fetchone():
-            for identifier in {row["instance_id"] for row in (*reservations, *rows[:limit])} - {None}:
-                row = db.execute("""SELECT json_extract(record_json,'$.template_id') FROM life_kernel_instances
-                    WHERE owner_key=? AND instance_id=? AND json_extract(record_json,'$.context_key')=?""",
-                    (owner_key, identifier, context_key)).fetchone()
-                # Current templates have no presentation title. Do not display
-                # an opaque template/instance ID as if it were an activity name.
-                labels[identifier] = {"buy_drink": "买饮料"}.get(row[0]) if row else None
+        labels = purchase_labels(db, owner_key, context_key, (row["instance_id"] for row in (*reservations, *rows[:limit])))
+        spending_labels = {}
+        if rows and db.execute("SELECT 1 FROM sqlite_master WHERE name='life_planned_spending'").fetchone():
+            for row in rows[:limit]:
+                spending = db.execute("""SELECT label FROM life_planned_spending
+                    WHERE expense_id=? AND owner_key=? AND context_key=? AND transaction_id=?""",
+                    (row["source_ref"], owner_key, context_key, row["transaction_id"])).fetchone()
+                if spending:
+                    spending_labels[row["transaction_id"]] = spending[0]
     last = rows[limit - 1] if len(rows) > limit else None
     return {"enabled": True, "currency": quote.currency,
         "minor_unit_digits": 0 if quote.currency in {"JPY", "KRW"} else 2,
@@ -50,7 +64,9 @@ def wallet_page(wallet, *, owner_key, context_key, limit=20, before=None):
             "status": row["status"], "review_at": row["review_at"]} for row in reservations],
         "transactions": [{"transaction_id": row["transaction_id"], "kind": row["kind"],
             "amount_minor": row["amount_minor"], "currency": row["currency"], "occurred_at": row["effective_at"],
-            "activity_label": labels.get(row["instance_id"])} for row in rows[:limit]],
+            "activity_label": ("每月生活费" if row["kind"] == "income" and row["instance_id"] is None
+                and row["source_ref"].startswith(MONTHLY_ALLOWANCE_PREFIX)
+                else spending_labels.get(row["transaction_id"], labels.get(row["instance_id"])))} for row in rows[:limit]],
         "next_before": json.dumps([last["effective_at"], last["transaction_id"]], separators=(",", ":")) if last else None}
 
 

@@ -38,3 +38,26 @@ def rejected_before_generation(error):
             return True
         error = error.__cause__
     return False
+
+
+_UPSTREAM_TIMEOUT_STATUSES = frozenset({408, 504})
+
+
+def upstream_timed_out(error):
+    """Return true when the relay answered that its own upstream timed out.
+
+    The LiteLLM relay owns per-hop wall-clock limits and failover. When it gives
+    up it returns 408/504 or a ``litellm.Timeout`` error and no completion, so
+    the request is an ordinary not-generated failure. A local read timeout is
+    not this signal: it carries no relay response.
+    """
+    seen = set()
+    while isinstance(error, Exception) and id(error) not in seen:
+        seen.add(id(error))
+        status = getattr(error, "status_code", None)
+        if type(status) is int and status in _UPSTREAM_TIMEOUT_STATUSES:
+            return True
+        if "litellm.timeout" in str(error).casefold():
+            return True
+        error = error.__cause__
+    return False

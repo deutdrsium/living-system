@@ -5,6 +5,7 @@ import base64
 import json
 import re
 from types import MappingProxyType
+from uuid import uuid4
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
 from companion_v2.execution.models import digest, encode, encode_prompt
@@ -86,7 +87,8 @@ def unwrap_code_fence(text):
 
 
 def tool_alias(action):
-    return "v2_" + digest(action)[:32]
+    # Browsing instructions name this one dispatcher explicitly; offer that same name.
+    return action if action == "social_browse" else "v2_" + digest(action)[:32]
 
 
 @dataclass(frozen=True)
@@ -271,6 +273,10 @@ def build_wire(envelope, *, model_name=""):
         messages.extend({"role": "tool", "tool_call_id": exchange.call.call_id,
                          "content": exchange.result_json} for exchange in exchanges)
         index += count
+    if request.output_format == "social_reflection" and not envelope.allow_tool_calls:
+        messages.append({"role": "user", "content":
+            '浏览已结束，不再调用工具。现在只输出反思 JSON 对象，例如 {"reflection":"本次实际经历与感想"}；'
+            '只依据已收到的真实结果，可以附本轮允许的反馈，不要再搜索、阅读或互动。'})
     wire = ModelWire(messages, tuple(tools), MappingProxyType(aliases), MappingProxyType(evidence), request.output_format,
                      sum(len(image.rendered_images) for image in request.images)
                          + (0 if request.native_video_input else sum(len(v.frames) for v in request.videos)),
@@ -370,20 +376,26 @@ def decode_response(response, wire):
     if native_calls:
         if choice.finish_reason not in ("stop", "tool_calls") or not 1 <= len(native_calls) <= 8:
             raise ValueError("incomplete or unbounded tool result")
-        calls = []
+        arguments = []
         for raw in native_calls:
             if raw.type != "function" or raw.function.name not in wire.aliases:
                 raise ValueError("model requested an undeclared tool")
-            arguments = strict_json(raw.function.arguments)
-            if not isinstance(arguments, dict):
+            parsed = strict_json(raw.function.arguments)
+            if not isinstance(parsed, dict):
                 raise ValueError("model tool arguments must be an object")
-            calls.append(ToolCall(raw.id, wire.aliases[raw.function.name], encode(arguments)))
-        if (len({c.call_id for c in calls}) != len(calls)
-                or response.tools_call_ids != [c.call_id for c in calls]
-                or response.tools_call_name != [r.function.name for r in native_calls]
-                or response.tools_call_args != [strict_json(c.arguments_json) for c in calls]):
+            arguments.append(parsed)
+        if (response.tools_call_ids != [raw.id for raw in native_calls]
+                or response.tools_call_name != [raw.function.name for raw in native_calls]
+                or response.tools_call_args != arguments):
             raise ValueError("native tool result differs from its original completion")
-        return None, tuple(calls)
+        # Gemini relays can omit IDs. Match the untouched host/raw result first,
+        # then assign local correlation IDs for this turn and its ordered replies.
+        calls = tuple(ToolCall("call_" + uuid4().hex if raw.id in (None, "") else raw.id,
+                              wire.aliases[raw.function.name], encode(parsed))
+                      for raw, parsed in zip(native_calls, arguments))
+        if len({call.call_id for call in calls}) != len(calls):
+            raise ValueError("native tool result differs from its original completion")
+        return None, calls
     if choice.finish_reason != "stop" or response.tools_call_ids or response.tools_call_name or response.tools_call_args:
         raise ValueError("incomplete final response")
     return decode_text_response(response.completion_text, wire)

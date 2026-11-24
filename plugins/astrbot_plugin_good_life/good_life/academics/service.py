@@ -54,6 +54,7 @@ class Academics:
         self.config = config or AcademicsConfig()
         require(isinstance(self.config, AcademicsConfig), "AcademicsConfig required")
         self.storage = None
+        self.term_grades = None
         self._template_refs = {}  # Process-local owner/context index; active pins remain durable.
 
     def install(self, storage):
@@ -78,7 +79,12 @@ class Academics:
             if self.config.study_enabled:
                 from . import study_artifacts
                 study_artifacts.install(db)
+            if self.config.grades_enabled:
+                from . import grades
+                grades.install(db)
         self.storage = storage
+        if self.config.grades_enabled:
+            self.term_grades = grades.TermGrades(self)
         if self.config.study_enabled:
             self.study_artifacts = study_artifacts.StudyArtifacts(self)
 
@@ -112,6 +118,13 @@ class Academics:
                 fields(query, "", "term query")
                 rows = db.execute("SELECT record_json,revision FROM life_academic_records WHERE owner_key=? AND kind='term' AND deleted=0 ORDER BY record_id", (owner_key,))
                 return {**result, "terms": [{**json.loads(row[0]), "schema_version": 1, "revision": row[1]} for row in rows]}
+            if kind == "grades":
+                require(self.term_grades is not None, "term grades are disabled", ReasonCode.MISSING_DEPENDENCY)
+                fields(query, "term_id", "grade query")
+                term_id = name(query["term_id"])
+                rows = db.execute("""SELECT record_json FROM life_term_grades WHERE owner_key=? AND term_id=?
+                    ORDER BY course_id""", (owner_key, term_id))
+                return {**result, "term_id": term_id, "grades": [json.loads(row[0]) for row in rows]}
             if kind in ("syllabus", "assignments", "study_progress"):
                 fields(query, "term_id course_id", "study query")
                 term_id, course_id = name(query["term_id"]), name(query["course_id"])
@@ -286,6 +299,23 @@ class Academics:
             self._owner(self.storage._connection, owner_key, context_key)
             return tuple(freeze(item) for item in sorted(self._session_rows(self.storage._connection, owner_key).values(), key=lambda item: item["start_at"])
                          if not item["cancelled"] and timestamp(item["end_at"]) > moment(now))[:limit]
+
+    def upcoming_sessions(self, owner_key, context_key, *, start, end, limit=64):
+        """Read-only timetable window, including cancelled sessions, for the owning private context only."""
+        self._enabled()
+        with StorageReader(self.storage).locked():
+            db = self.storage._connection
+            if db.execute("SELECT 1 FROM life_academic_owners WHERE owner_key=? AND context_key=?",
+                          (owner_key, context_key)).fetchone() is None:
+                return ()
+            zones = {item["term_id"]: item["timezone"] for item in self._records(db, owner_key, "term").values()}
+            rows = db.execute("""SELECT record_json FROM life_academic_sessions WHERE owner_key=?
+                AND julianday(json_extract(record_json,'$.end_at')) > julianday(?)
+                AND julianday(json_extract(record_json,'$.start_at')) < julianday(?)
+                ORDER BY json_extract(record_json,'$.start_at'), session_id LIMIT ?""",
+                (owner_key, wire(start), wire(end), limit)).fetchall()
+            sessions = [json.loads(row[0]) for row in rows]
+        return tuple({**item, "timezone": zones.get(item["term_id"])} for item in sessions)
 
     def unclaimed_ended(self, owner_key, context_key, *, since, now):
         with StorageReader(self.storage).locked():

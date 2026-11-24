@@ -26,7 +26,7 @@ PREFIX = "a3.reading.execution.v1:"
 MAX_RESULT_CHECKS = 6
 # Contract v1 carries no host deadline/timeout. Keep this standalone fallback
 # aligned by regression test with the host's shared reading-task timeout.
-MODEL_TASK_TIMEOUT_SECONDS = 480
+MODEL_TASK_TIMEOUT_SECONDS = 960
 logger = logging.getLogger(__name__)
 
 

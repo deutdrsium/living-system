@@ -192,6 +192,11 @@ class ClassActivities:
             if not self._owns_workspace(scope):
                 continue
             for session in self.academics.unclaimed_ended(scope.owner_key, scope.context_key, since=since, now=now):
+                if attendance.config.use_sleep_records and self.kernel.access.authorize(scope, "kernel.propose"):
+                    origin, revision = self.campus.location(scope.owner_key) if self.campus is not None else (None, 0)
+                    start = timestamp(session["start_at"])
+                    plan = self._class_departure(origin, session, start - self.early_departure_lead) or (start, 0)
+                    self._wake_class(scope, session, attendance, plan, revision, now)
                 attendance.settle_missed(scope, session, now=now, write_guard=self.kernel.access.write_guard)
 
     def settle_disabled(self, *, now):
@@ -210,33 +215,66 @@ class ClassActivities:
             "SELECT context_key FROM life_academic_owners WHERE owner_key=?", (scope.owner_key,))
         return row is not None and row[0] == scope.context_key
 
-    def _wake_class(self, scope, session, attendance, shadow, departure_plan, origin_revision, now):
-        storage = self.academics.storage
-        with StorageReader(storage).locked():
-            wake = attendance._wake(storage._connection, scope, session["session_id"])
-        if wake is not None:
-            return wake
-        start = timestamp(session["start_at"])
-        departure, travel_s = departure_plan
-        if now < departure - timedelta(seconds=attendance.config.wake_check_lead_s):
+    def _class_departure(self, origin, session, now):
+        if self.campus is None or origin is None:
             return None
-        reader = StorageReader(storage)
-        records = ()
-        if attendance.config.base_rate and reader.one("SELECT 1 FROM sqlite_master WHERE name='staged_role_activities'", ()):
-            records = tuple(row[0] for row in reader.all("""SELECT record_json FROM staged_role_activities
-                WHERE owner_key=? AND json_extract(record_json,'$.scope.kind')='private'
-                AND (json_extract(record_json,'$.sleep.kind') IS NOT NULL
-                     OR json_extract(record_json,'$.work.kind')='sleep')
-                ORDER BY updated_at DESC LIMIT 200""", (scope.owner_key,)))
-        use_shadow = shadow is not None and shadow.config.sleep
-        state = shadow.snapshot(scope.owner_key) if use_shadow else None
-        with storage._lock, self.kernel.access.write_guard(scope, "kernel.propose"):
-            return attendance.check_wake(self.kernel, scope, session["session_id"], now=now,
-                planned_departure_at=departure, planned_travel_s=travel_s, origin_revision=origin_revision,
-                sleep_records=records, known_ready_at=departure if now > start else None, a6_enabled=use_shadow,
-                a6_sleep_enabled=use_shadow, a6_state=state)
+        start = timestamp(session["start_at"])
+        destination = session["place_id"]
+        departure, travel_s = self.campus.class_departure(origin, destination, now, start, self.early_departure_lead)
+        return (departure, travel_s) if travel_s or origin == destination else None
 
-    def hosted_commitments(self, *, now, attendance, shadow=None):
+    def night_sleep_alarm(self, owner_key, context_key, now, *, prep_s):
+        with StorageReader(self.academics.storage).locked():
+            db = self.academics.storage._connection
+            workspace = db.execute("SELECT context_key FROM life_academic_owners WHERE owner_key=?", (owner_key,)).fetchone()
+            if workspace is None or workspace[0] != context_key:
+                return None
+            terms = self.academics._records(db, owner_key, "term")
+            morning_classes = []
+            for session in self.academics._session_rows(db, owner_key).values():
+                if session["cancelled"]:
+                    continue
+                tz = zone(terms[session["term_id"]]["timezone"])
+                local_now = now.astimezone(tz)
+                morning = local_now.date() + timedelta(days=local_now.hour >= 12)
+                start = timestamp(session["start_at"])
+                local_start = start.astimezone(tz)
+                if now < start and local_start.date() == morning and local_start.hour < 12:
+                    morning_classes.append((start, session))
+            if not morning_classes:
+                return None
+            start, session = min(morning_classes, key=lambda item: item[0])
+            origin = self.campus.location(owner_key)[0] if self.campus is not None else None
+            departure = self._class_departure(origin, session, now)
+            travel_s = departure[1] if departure is not None else 1800
+            return start - timedelta(seconds=travel_s + prep_s) - self.early_departure_lead
+
+    def _wake_class(self, scope, session, attendance, departure_plan, origin_revision, now):
+        storage = self.academics.storage
+        reader = StorageReader(storage)
+        with reader.locked():
+            wake = attendance._wake(storage._connection, scope, session["session_id"])
+            if wake is not None:
+                return wake
+            departure, travel_s = departure_plan
+            if attendance.config.use_sleep_records:
+                # A quote made after the last on-time departure can be clamped to now.
+                departure = min(departure, timestamp(session["start_at"]) - timedelta(seconds=travel_s))
+            if now < departure - timedelta(seconds=attendance.config.wake_check_lead_s):
+                return None
+            records = ()
+            if attendance.config.use_sleep_records and reader.one("SELECT 1 FROM sqlite_master WHERE name='staged_role_activities'", ()):
+                records = tuple(row[0] for row in reader.all("""SELECT record_json FROM staged_role_activities
+                    WHERE owner_key=? AND json_extract(record_json,'$.scope.kind')='private'
+                    AND (json_extract(record_json,'$.sleep.kind') IS NOT NULL
+                         OR json_extract(record_json,'$.work.kind')='sleep')
+                    ORDER BY updated_at DESC LIMIT 200""", (scope.owner_key,)))
+            with self.kernel.access.write_guard(scope, "kernel.propose"):
+                return attendance.check_wake(self.kernel, scope, session["session_id"], now=now,
+                    planned_departure_at=departure, planned_travel_s=travel_s, origin_revision=origin_revision,
+                    sleep_records=records)
+
+    def hosted_commitments(self, *, now, attendance):
         scopes = {(scope.owner_key, scope.context_key): scope for scope in self.kernel.access.scopes()}
         for scope in scopes.values():
             if not self.kernel.access.authorize(scope, "kernel.propose") or not self._owns_workspace(scope):
@@ -244,7 +282,7 @@ class ClassActivities:
             with self.academics.storage._lock:
                 sessions = self.academics.next_sessions(scope.owner_key, scope.context_key, now=now, limit=1)
                 if sessions:
-                    self._hosted_class(scope, sessions[0], attendance, shadow, now, scopes)
+                    self._hosted_class(scope, sessions[0], attendance, now, scopes)
             if self.campus is not None and self.campus.home_place_id:
                 self._return_home(scope, now)
         self._gc_templates()
@@ -270,7 +308,7 @@ class ClassActivities:
                 self.kernel.cancel(scope, instance.instance_id, expected_revision=instance.revision,
                     command_id=f"class-preempt-{instance.instance_id}-{instance.revision}", now=now)
 
-    def _hosted_class(self, scope, session, attendance, shadow, now, scopes):
+    def _hosted_class(self, scope, session, attendance, now, scopes):
         start, end = timestamp(session["start_at"]), timestamp(session["end_at"])
         if start > now + timedelta(days=1):
             return
@@ -280,9 +318,10 @@ class ClassActivities:
         location = self.campus.location(scope.owner_key) if self.campus is not None else (None, 0)
         origin, origin_revision = location
         departure_plan = (start, 0)
-        if origin and now < start:
-            departure_plan = self.campus.class_departure(origin, session["place_id"], now, start, self.early_departure_lead)
-        wake = self._wake_class(scope, session, attendance, shadow, departure_plan, origin_revision, now)
+        if now < start or attendance.config.use_sleep_records:
+            estimate_at = now if now < start else start - self.early_departure_lead
+            departure_plan = self._class_departure(origin, session, estimate_at) or departure_plan
+        wake = self._wake_class(scope, session, attendance, departure_plan, origin_revision, now)
         if wake is not None and (wake["session_revision"], wake.get("origin_revision")) == (session["revision"], origin_revision):
             departure_plan = (timestamp(wake["planned_departure_at"]), wake["planned_travel_s"])
         if self.kernel.repo.foreground_busy(scope.owner_key):

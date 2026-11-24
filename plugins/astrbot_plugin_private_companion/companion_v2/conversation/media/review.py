@@ -49,19 +49,20 @@ BLOCK = "block"
 
 PROVIDER_FIELD = GROUP + ".review_provider"
 DUAL_PROVIDER_FIELD = GROUP + ".review_dual_provider"
+REVIEW_WAIT_SECONDS = 92
 
 DEFAULTS = {"enable_group_nsfw_private_fallback": False,
             "group_nsfw_image_review_mode": "single",
             "group_nsfw_image_review_sensitivity": "balanced",
             "group_nsfw_image_review_min_confidence": 0.7,
-            "group_nsfw_image_review_timeout_seconds": 8.0,
+            "group_nsfw_image_review_timeout_seconds": float(REVIEW_WAIT_SECONDS),
             "group_nsfw_image_review_max_dimension": 1280,
             "group_nsfw_image_review_max_images": 1,
             "group_nsfw_image_review_failure_action": "private",
             "group_nsfw_image_review_custom_prompt": ""}
 
 LIMITS = {"group_nsfw_image_review_min_confidence": (0.0, 1.0),
-          "group_nsfw_image_review_timeout_seconds": (3.0, 30.0),
+          "group_nsfw_image_review_timeout_seconds": (3.0, float(REVIEW_WAIT_SECONDS)),
           "group_nsfw_image_review_max_dimension": (0, 4096),
           "group_nsfw_image_review_max_images": (1, MAX_INPUT_IMAGES)}
 

@@ -5,6 +5,8 @@ import json
 
 from companion_v2.execution.models import TaskError, digest, stamp
 
+from companion_v2.integration.life_event_inbox import MAX_ACADEMIC_NOTICES, academic_notice, academic_notice_ids
+
 from .foreground import ContextContribution, ContributionState
 from companion_v2.role_work.interests import visible_interests_for
 
@@ -26,6 +28,10 @@ class ConversationLifeContext:
         snapshot = {"version": SNAPSHOT_VERSION, "context_key": context.key, "captured_at": stamp(at),
                     "state": "ready", "references": [], "truncated": False, "skipped": 0, "reason": None}
         try:
+            notices = academic_notice_ids(self.reader.runtime, context, at)
+            if notices:
+                self.reader.authorize(context, at)
+                snapshot["academic_notices"] = notices
             candidates = self.reader.candidates(context, at)
         except TaskError as error:
             return {**snapshot, "state": "unavailable", "reason": error.code}
@@ -53,11 +59,16 @@ class ConversationLifeContext:
         def invalid():
             raise TaskError("life_context_invalid", "original life snapshot is invalid")
         fields = {"version", "context_key", "captured_at", "state", "references", "truncated", "skipped", "reason"}
-        if (type(snapshot) is not dict or set(snapshot) not in (fields, fields | {"interests"}) or snapshot["version"] != SNAPSHOT_VERSION
+        if (type(snapshot) is not dict or not fields <= set(snapshot) <= fields | {"interests", "academic_notices"}
+                or snapshot["version"] != SNAPSHOT_VERSION
                 or snapshot["context_key"] != context.key or snapshot["state"] not in ("ready", "unavailable")
                 or type(snapshot["truncated"]) is not bool or type(snapshot["skipped"]) is not int
                 or not 0 <= snapshot["skipped"] <= 64 or type(snapshot["references"]) is not list
                 or len(snapshot["references"]) > MAX_ACTIVITIES + MAX_JOURNALS):
+            invalid()
+        notices = snapshot.get("academic_notices", [])
+        if (type(notices) is not list or len(notices) > MAX_ACADEMIC_NOTICES or any(type(item) is not str
+                or not 1 <= len(item) <= 256 for item in notices) or len(set(notices)) != len(notices)):
             invalid()
         interests = snapshot.get("interests", [])
         if (type(interests) is not list or len(interests) > 3 or any(type(item) is not dict
@@ -104,12 +115,23 @@ class ConversationLifeContext:
 
     def contributions(self, snapshot, context, at):
         self.validate_snapshot(snapshot, context)
-        if snapshot["state"] == "unavailable":
-            return (ContextContribution("life-context", "role.life", "role_life_context", ContributionState.UNAVAILABLE),)
-        if not snapshot["references"] and not snapshot.get("interests"):
-            return ()
-        if datetime.fromisoformat(snapshot["captured_at"]) > at:
+        notice_ids = snapshot.get("academic_notices", [])
+        notice_materials = ()
+        captured_at = datetime.fromisoformat(snapshot["captured_at"])
+        has_life_material = snapshot["references"] or snapshot.get("interests")
+        if (notice_ids or has_life_material) and captured_at > at:
             raise TaskError("life_context_invalid", "life snapshot cannot precede its capture time")
+        if notice_ids:
+            self.reader.authorize(context, at)
+            notice_materials = tuple(ContextContribution("academic-notice:" + event_id, "role.life",
+                "academic_grade_notice", ContributionState.READY, json.dumps({"notice": notice}, ensure_ascii=False))
+                for event_id in notice_ids
+                if (notice := academic_notice(self.reader.runtime, context, event_id, captured_at)) is not None)
+        if snapshot["state"] == "unavailable":
+            return (ContextContribution("life-context", "role.life", "role_life_context",
+                                        ContributionState.UNAVAILABLE),) + notice_materials
+        if not has_life_material:
+            return notice_materials
         materials = self.reader.read(snapshot["references"], context, at)
         if sum(len(item.payload) for item in materials) > MAX_PAYLOAD_CHARS:
             raise TaskError("life_context_invalid", "original life material exceeds its context budget")
@@ -120,6 +142,6 @@ class ConversationLifeContext:
         interest_materials = tuple(ContextContribution("interest:" + item["interest_id"], "role.life",
             "role_interest", ContributionState.READY, json.dumps({key: item[key] for key in ("name", "status", "summary")}, ensure_ascii=False))
             for item in interests if (item["interest_id"], item["revision"]) in saved and item["status"] not in ("paused", "dormant", "exposed"))
-        return (ContextContribution("life-context", "role.life", "role_life_context", ContributionState.READY, info),) + interest_materials + tuple(
+        return (ContextContribution("life-context", "role.life", "role_life_context", ContributionState.READY, info),) + notice_materials + interest_materials + tuple(
             ContextContribution("life:" + digest(item.reference), "role.life", item.purpose,
                                 ContributionState.READY, item.payload) for item in materials)

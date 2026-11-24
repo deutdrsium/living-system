@@ -115,7 +115,9 @@ class CalendarCommandBridge:
             raise
 
     def _request(self, context, role_key, conversation_key, owner_key, command_id, operation_id,
-                 identifier, action, expected_revision, data, sources, actor, operator, planning, now):
+                 identifier, action, expected_revision, data, sources, actor, operator, planning, now, *, timezone_name=None):
+        if timezone_name is None:
+            timezone_name = self.calendar.access.role_state.settings(context)[0]["planning_timezone"]
         role_raw = self.records.dispatch("get_raw", owner_key=role_key, identifier=identifier)
         conversation_raw = self.records.dispatch("get_raw", owner_key=conversation_key, identifier=identifier)
         role = json.loads(role_raw) if role_raw else None
@@ -136,7 +138,8 @@ class CalendarCommandBridge:
                     "previous_hash": hashlib.sha256(raw.encode("utf-8")).hexdigest() if raw is not None else None,
                     "action": action, "data": data, "sources": json.loads(encode(sources)),
                     "actor": json.loads(encode(actor)), "operator_authenticated": operator is not None,
-                    "planning": planning, "observed_at": now.isoformat(timespec="microseconds")}}
+                    "planning": planning, "planning_timezone": timezone_name,
+                    "observed_at": now.isoformat(timespec="microseconds")}}
 
     def _legacy_receipt(self, operation, context, operation_id, role_key, conversation_key):
         if (operation.state is not OperationState.COMPLETED or operation.operation.owner != "calendar"

@@ -593,10 +593,14 @@ class ModelManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         status = self.manager.status(self.core).unwrap()
         for invalid in (None, {}, {"kind": "conversation.reply"},
                         self.request(status, changes={"provider": "primary"}, reset=["provider"]),
-                        self.request(status, changes={"fallback": "primary"}, key="duplicate-fallback"),
                         self.request(status, changes={"provider": "unregistered"})):
             result = self.manager.configure(self.core, invalid)
             self.assertIsNotNone(result.failure)
+        # A fallback equal to the primary is a valid "retry the same route once".
+        same_route = self.manager.configure(self.core,
+            self.request(status, changes={"fallback": "primary"}, key="same-route-fallback")).unwrap()
+        self.assertEqual(same_route["task"]["fields"]["fallback"]["value"], "primary")
+        status = self.manager.status(self.core).unwrap()
         self.assertEqual(self.manager.status(self.important).failure.code, "core_access_required")
         self.assertEqual(self.manager.configure(self.important,
             self.request(status, changes={"prompt": "private"})).failure.code, "core_access_required")

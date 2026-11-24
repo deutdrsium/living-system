@@ -1,10 +1,12 @@
 """Single-writer simulated wallet on the existing LifeStorage transaction boundary.
 
-Amounts are contract-v1 Money in integer minor units. No import/open migration,
-network payments, automatic allowance, or production ownership changes occur.
-Callers provide stable business keys and evidence; retries retain the original
-operation ID, expected revision and evidence. Even a new operation ID cannot pay
-the same reservation step or configured income period twice.
+Amounts are contract-v1 Money in integer minor units. All income and payments
+are simulated. The hosted economy coordinator can credit a configured monthly
+allowance for the current local month using a stable income key.
+Callers provide stable business keys and evidence; command retries retain the
+original operation ID, expected revision and evidence. The allowance scheduler
+skips periods with committed income. Even a new operation ID cannot pay the same
+reservation step or configured income period twice.
 """
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +21,7 @@ MAX_MINOR = 2**63 - 1
 # Deliberately supported ISO 4217 codes; unknown configurations fail closed.
 SUPPORTED_CURRENCIES = frozenset(("CNY", "USD", "EUR", "JPY", "GBP", "HKD", "TWD", "SGD", "KRW", "AUD", "CAD", "CHF", "NZD"))
 VERSION_KEY = "economy_schema_version"
+MONTHLY_ALLOWANCE_PREFIX = "monthly-allowance:"
 SPEC = ModuleSpec("economy", "1", ("economy.balance_minor", "economy.available_minor", "economy.purchase_budget_minor"),
                   emits=("kernel.purchase.progressed", "kernel.purchase.completed", "kernel.purchase.cancelled"),
                   consumes=("economy.purchase", "economy.city_trip", "economy.abandon_release"))
@@ -238,7 +241,11 @@ class Wallet:
             balance = amount(balance + payload["amount_minor"])
         else:
             require(quote.revision > 0, "wallet has no evidenced income", ReasonCode.INSUFFICIENT_RESOURCE)
-            if kind == "reserve":
+            if kind == "planned_spend":
+                require(payload["amount_minor"] <= quote.available_minor, "insufficient available balance",
+                        ReasonCode.INSUFFICIENT_RESOURCE)
+                balance -= payload["amount_minor"]
+            elif kind == "reserve":
                 review_at = restore(datetime, payload["review_at"])
                 require(review_at > moment(evidence.effective_at), "reservation review must follow its creation")
                 require(evidence.instance_id is not None, "reservation requires an activity instance")
@@ -282,6 +289,8 @@ class Wallet:
         else:
             db.execute("UPDATE life_wallet_accounts SET balance_minor=?,revision=revision+1 WHERE owner_key=? AND revision=?",
                        (balance, owner, quote.revision))
+        if kind == "planned_spend":
+            kind = "spend"
         if kind in ("income", "spend", "refund"):
             transaction_id = "wallet-tx-" + digest({"owner": owner, "business_key": business_key})
             db.execute("INSERT INTO life_wallet_transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -321,10 +330,31 @@ class Wallet:
         return self._write(owner_key, kind="release", payload={"reservation_id": name(reservation_id)},
                            business_key=encode(("release", reservation_id)), **command)
 
+    def _spend_planned(self, db, owner_key, expense_id, minor, at, expected_revision):
+        """Settle a scheduled expense in the transaction that records its outcome."""
+        return self._execute(db, owner_key, operation_id=expense_id, expected_revision=expected_revision,
+            evidence=Evidence(expense_id, at, Provenance.SIMULATED), kind="planned_spend",
+            payload={"amount_minor": amount(minor, 1)}, business_key=encode(("planned_spend", expense_id)))
+
     def record_income(self, owner_key, income_key, money, **command):
         """income_key is a stable configured rule+period or earned-work receipt ID."""
         return self._write(owner_key, kind="income", payload={"income_key": name(income_key), "amount_minor": self._money(money)},
                            business_key=encode(("income", income_key)), **command)
+
+    def credit_monthly_allowance(self, owner_key, month, money, *, now):
+        self._installed()
+        income_key = MONTHLY_ALLOWANCE_PREFIX + month
+        reader = StorageReader(self.storage)
+        # The single writer lock covers both the receipt check and the command.
+        # A committed period keeps its original amount, revision and evidence.
+        with reader.locked():
+            prior = reader.one("""SELECT 1 FROM life_wallet_transactions
+                WHERE owner_key=? AND kind='income' AND business_key=?""", (owner_key, encode(("income", income_key))))
+            if prior is not None:
+                return
+            self.record_income(owner_key, income_key, money, operation_id=income_key,
+                expected_revision=self.quote_available(owner_key).revision,
+                evidence=Evidence(income_key, now, Provenance.SIMULATED))
 
     def refund(self, owner_key, transaction_id, refund_key, money, **command):
         return self._write(owner_key, kind="refund", payload={"related_transaction_id": name(transaction_id),

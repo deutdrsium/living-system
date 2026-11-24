@@ -1692,8 +1692,9 @@ test('maintenance shows connected external token ledgers without mixing their bu
   assert.match(root.innerHTML, /50/);
   assert.match(root.innerHTML, /25/);
   assert.match(root.innerHTML, /V2 角色预算保持独立|不计入 V2 角色预算/);
-  assert.match(root.innerHTML, /V2 联动摘要/);
-  assert.match(root.innerHTML, /只读分类计数，不含记忆正文/);
+  assert.match(root.innerHTML, /本插件联动摘要/);
+  assert.match(root.innerHTML, /只读分类计数/);
+  assert.doesNotMatch(root.innerHTML, /记忆正文/);
   assert.match(root.innerHTML, /私聊内容/);
   assert.match(root.innerHTML, /<dt>合计<\/dt><dd>10<\/dd>/);
   const externalOverview = root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];

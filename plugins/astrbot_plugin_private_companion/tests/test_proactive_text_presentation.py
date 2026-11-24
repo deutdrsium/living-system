@@ -71,7 +71,7 @@ class ProactiveTextPresentationTests(ContactFixture, unittest.IsolatedAsyncioTes
         def reserve(envelope):
             reservations["count"] += 1
             if reservations["count"] == 1:
-                raise TaskError("host_model_limit", "request exceeds its declared input/output profile")
+                raise TaskError("host_model_limit_input", "request exceeds its declared input profile")
             return Amount(100, 100)
         self.providers = (replace(provider, reserve=reserve),)
 

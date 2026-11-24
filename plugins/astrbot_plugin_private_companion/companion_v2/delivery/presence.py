@@ -4,6 +4,7 @@ import asyncio
 from datetime import timedelta
 import json
 import logging
+from time import monotonic
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
 from companion_v2.foundation.refs import ScopeKind
@@ -25,6 +26,8 @@ class PresenceCoordinator:
         self._result_contexts = {}
         self._active_routes = {}
         self.status_worker = None
+        self._next_status_check = 0
+        self._status_requested = False
         self.closed = False
 
     @staticmethod
@@ -88,10 +91,14 @@ class PresenceCoordinator:
             lease = {"context": context, "reset": reset, "turns": {}}
             self.native_replies[route] = lease
         lease["activity_at"] = stamp(self.app.now())
+        new_turn = turn_id not in lease["turns"]
         lease["turns"].setdefault(turn_id, {"batch_id": turn_id, "state": "prepared",
                                           "execution_path": "astrbot_core"})
         self.bind(context)
         self._advance_typing()
+        if new_turn:
+            self._status_requested = True
+            self._advance_status()
         self.app.notify()
 
     def finish_native_reply(self, context, turn_id):
@@ -234,14 +241,27 @@ class PresenceCoordinator:
         if self.closed:
             return
         self._advance_typing()
-        if self.status_worker and self.status_worker.done():
+        self._advance_status()
+
+    def _advance_status(self):
+        if self.status_worker is not None:
+            if not self.status_worker.done():
+                return
             if not self.status_worker.cancelled():
                 error = self.status_worker.exception()
                 if error:
                     self.results["presence"] = {"state": "unknown", "code": getattr(error, "code", "presence_failed")}
             self.status_worker = None
-        if self.status_worker is None and self._candidates():
+        if not self._status_requested and monotonic() < self._next_status_check:
+            return
+        self._status_requested = False
+        if self._candidates():
             self.status_worker = asyncio.create_task(self._sync_status(), name="companion:presence")
+            self.status_worker.add_done_callback(self._status_finished)
+
+    def _status_finished(self, _worker):
+        if not self.closed and self._status_requested:
+            self.app.notify()
 
     def _advance_typing(self):
         if self.closed:
@@ -406,6 +426,7 @@ class PresenceCoordinator:
         return False
 
     async def _sync_status(self):
+        self._next_status_check = monotonic() + 30
         candidates = self._candidates()
         for account, contexts in candidates.items():
             if len(contexts) != 1:

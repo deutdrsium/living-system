@@ -47,10 +47,18 @@ def validate(runtime, record, at):
     return validate_with_loader(runtime, record.reference.owner, at, lambda: record)
 
 
-def validate_with_loader(runtime, owner, at, load_record):
-    """Read the full source only when an attached owner actually attests it."""
+def owner_requirement(read_one, owner):
+    return read_one("SELECT value FROM runtime_metadata WHERE key = ?", (_PREFIX + owner,))
+
+
+def validate_with_loader(runtime, owner, at, load_record, *, requirement=None):
+    """Read the full source only when an attached owner actually attests it.
+
+    ``requirement`` lets a pinned read snapshot reuse the owner's metadata row;
+    the in-memory guard and its check still run on every call.
+    """
     guard = getattr(runtime, "_source_owner_guards", {}).get(owner)
-    required = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (_PREFIX + owner,))
+    required = requirement(owner) if requirement is not None else owner_requirement(runtime.read_one, owner)
     if guard is None:
         if required is not None:
             raise TaskError("source_owner_unavailable", "the original source owner is not currently attached")

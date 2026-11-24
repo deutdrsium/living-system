@@ -14,7 +14,7 @@ window.CompanionDecisionPage = (() => {
   const replyViewSections = {
     response: ["wakeup_direct", "wakeup_interest", "wakeup_members"],
     tempo: ["group_continuation", "private_debounce", "wakeup_cold_group", "wakeup_fatigue"],
-    safety: ["silence_policy", "group_air_guard", "private_closing", "group_content_safety"],
+    safety: ["silence_policy", "group_air_guard", "group_content_safety"],
   };
   let root = null;
   let activeView = "overview";
@@ -177,7 +177,7 @@ window.CompanionDecisionPage = (() => {
             <span class="decision-step-number">2</span><span class="decision-step-copy"><b>参与节奏</b><small>冷群重启、等待、疲劳与冷却</small><em>冷群重启 ${flag(s, "group_wakeup_cold_group_enabled")} · 疲劳上限 ${shown(s.group_wakeup_fatigue_limit)} 点</em></span>${icon("arrow-right")}
           </button>
           <button type="button" class="decision-chain-step" data-decision-open="safety">
-            <span class="decision-step-number">3</span><span class="decision-step-copy"><b>沉默与安全</b><small>撤回、收尾、空气护栏与内容边界</small><em>撤回沉默 ${flag(s, "recall_silence_enabled")} · 收尾 ${flag(s, "private_closing_guard_enabled")} · 空气护栏 ${flag(s, "group_air_guard_enabled")}</em></span>${icon("arrow-right")}
+            <span class="decision-step-number">3</span><span class="decision-step-copy"><b>沉默与安全</b><small>撤回、空气护栏与内容边界</small><em>撤回沉默 ${flag(s, "recall_silence_enabled")} · 空气护栏 ${flag(s, "group_air_guard_enabled")}</em></span>${icon("arrow-right")}
           </button>
           <button type="button" class="decision-chain-step" data-decision-open="group">
             <span class="decision-step-number">4</span><span class="decision-step-copy"><b>群聊参与</b><small>氛围与话题线供当前回复参考，插话或跟读另行判定</small><em>氛围参考 ${atmosphereCount === null ? "—" : `${atmosphereCount} / 4`} · 话题线 ${sourceFlag("role", g, "enable_group_topic_threads")} · 跟读 ${sourceFlag("role", g, "enable_group_repeat_follow")}</em></span>
@@ -246,8 +246,8 @@ window.CompanionDecisionPage = (() => {
       const guards = replyReady ? ["enable_group_injection_guard", "enable_group_privacy_guard", "enable_group_reality_promise_guard"]
         .filter(key => on(s, key)).length : null;
       return `<div class="decision-stats decision-stats-four">
-        ${stat("沉默策略", `${flag(s, "recall_silence_enabled")} · ${flag(s, "private_closing_guard_enabled")}`,
-          "撤回沉默 · 私聊收尾沉默")}
+        ${stat("沉默策略", flag(s, "recall_silence_enabled"),
+          "撤回沉默；私聊收住由 Laya 判断")}
         ${stat("内容护栏", guards === null ? "— / 3" : `${guards} / 3 开`,
           guards === null ? pending() : "注入 · 隐私 · 现实承诺", guards === 3 ? "ok" : "")}
         ${stat("空气护栏窗口", shown(s.group_air_guard_window_seconds, " 秒"), "窗口内统计角色自己的发言")}

@@ -143,6 +143,54 @@ class PlanningOutputTests(unittest.TestCase):
         self.assertEqual([item[0]["title"] for item in items], ["读下一小节"])
         self.assertEqual(rejected, ())
 
+    def test_spending_drops_invalid_entries_and_preserves_original_item_indices(self):
+        job = self.job()
+        job["material"] = {"wallet": {"entry_cap_minor": 50000},
+                            "calendar": [{"id": "existing", "kind": "role_plan", "state": "accepted"}]}
+        entry = {"label": "午饭", "amount": 15.25, "at": output()["start"], "item": 1}
+        entries = [entry, {**entry, "item": "existing"}, {**entry, "item": 0}, {**entry, "item": "unknown"},
+                   {**entry, "label": " "}, {**entry, "label": "\ud800"},
+                   {**entry, "at": (NOW - timedelta(seconds=1)).isoformat()},
+                   {**entry, "at": job["end"].isoformat()}, {**entry, "at": "2026-09-21T10:00:00"}]
+        entries += [{**entry, "amount": value} for value in (0, -1, 500.01, 0.009, "15", True, float("nan"))]
+        spending = []
+        with self.assertLogs("companion_v2.agenda.planning_output", level="INFO"):
+            items, rejected = parse_output(json.dumps({"items": [output(minutes=0), output()], "spending": entries}),
+                                           job, spending=spending)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(rejected, ({"index": 0, "code": "invalid_plan_item"},))
+        self.assertEqual([(row["item"], row["amount_minor"]) for row in spending], [(0, 1525), ("existing", 1525)])
+        job.pop("material")
+        spending.clear()
+        self.assertEqual(len(parse_output(json.dumps({"items": [output()], "spending": entries}),
+                                          job, spending=spending)[0]), 1)
+        self.assertEqual(spending, [])
+
+    def test_unrepresentable_spending_exponent_keeps_calendar_and_sibling_expenses(self):
+        job = self.job() | {"material": {"wallet": {"entry_cap_minor": 50000}}}
+        entry = {"label": "午饭", "amount": 15.25, "at": output()["start"], "item": 0}
+        text = json.dumps({"items": [output()], "spending": [
+            {**entry, "amount": "huge-exponent"}, entry, {**entry, "amount": "fractional-cent"}]})
+        text = text.replace('"huge-exponent"', "1e999999999999999999999")
+        text = text.replace('"fractional-cent"', "15.25000000000000001")
+        spending = []
+        items, rejected = parse_output(text, job, spending=spending)
+        self.assertEqual([item[0]["title"] for item in items], [output()["title"]])
+        self.assertEqual(rejected, ())
+        self.assertEqual(spending, [{"label": "午饭", "amount_minor": 1525, "at": entry["at"], "item": 0}])
+
+    def test_intervention_create_can_carry_a_cost(self):
+        job = self.job() | {"mode": "intervention", "material": {"wallet": {"entry_cap_minor": 50000}}}
+        create = {"action": "create", "title": "买东西", "start": output()["start"], "minutes": 15, "detail": "去商店"}
+        spending = []
+        items, rejected = parse_output(json.dumps({"changes": [
+            {**create, "label": "日用品", "amount": 12},
+            {**create, "title": "另一个计划", "amount": 8},
+        ]}), job, spending=spending)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(rejected, ())
+        self.assertEqual(spending, [{"label": "日用品", "amount_minor": 1200, "at": create["start"], "item": 0}])
+
     def test_intervention_only_changes_accepted_role_plan_records(self):
         plan = {"id": "role-plan", "revision": 3, "kind": "role_plan", "state": "accepted",
             "title": "阅读", "schedule": json.loads(encode(Schedule(NOW + timedelta(hours=2), "Asia/Shanghai"))),

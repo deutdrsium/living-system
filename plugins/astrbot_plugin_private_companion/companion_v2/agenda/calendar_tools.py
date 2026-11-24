@@ -1,5 +1,6 @@
 """Original-role calendar queries and attributed commands; human confirmation stays separate."""
 
+from datetime import timedelta
 import json
 
 from companion_v2.execution.models import TaskError, digest, encode
@@ -8,16 +9,20 @@ from companion_v2.role_work.growth.tool_sources import GrowthToolSources
 from companion_v2.identity_policy.private_domain import source_ref
 from .calendar import INSTRUCTION
 
+CLASS_DAYS = 14
+
 
 class CalendarTools:
     actions = frozenset({"calendar.query", "calendar.command"})
-    instruction = "\n" + INSTRUCTION + "\ncalendar.command 的 evidence_handles 使用本轮 growth_evidence_handles 的原材料。确认约定由人类管理端完成。"
+    instruction = ("\n" + INSTRUCTION + "\ncalendar.command 的 evidence_handles 使用本轮 growth_evidence_handles 的原材料。确认约定由人类管理端完成。"
+                   "\ncalendar.query 结果中的 classes 是角色自己课表里未来 14 天的固定课程（course、当地 start/end、place、cancelled=true 为停课），"
+                   "由课表维护，不能用 calendar.command 创建、修改或取消；没有 classes 字段表示课表不可用，不臆造课程。")
 
     def __init__(self, calendar, messages):
         self.calendar, self.messages = calendar, messages
         self.sources = GrowthToolSources(messages)
         self.catalog = (
-            ToolSpec("calendar.query", "查看当前角色日历；时间是计划，不是已发生经历。", encode({"type": "object",
+            ToolSpec("calendar.query", "查看当前角色日历与课表；日历时间是计划，不是已发生经历；classes 是课表中未来 14 天的固定课程，只读。", encode({"type": "object",
                 "properties": {"after_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
                 "additionalProperties": False})),
             ToolSpec("calendar.command", "新增、修改、取消计划或提议约定，设置期次例外或提醒；不替用户确认约定。", encode({
@@ -43,10 +48,7 @@ class CalendarTools:
         from companion_v2.conversation.native_tool_sources import validate_tool_turn
         validate_tool_turn(self.messages, context, batch_id)
         if action == "calendar.query":
-            if set(arguments) - {"after_id", "limit"} or not 1 <= arguments.get("limit", 20) <= 20:
-                raise ValueError("invalid calendar query")
-            result = self.calendar.inventory(context, **{"limit": 20, **arguments})
-            return {"state": "succeeded", "effect": "none", "payload": result}, None
+            return {"state": "succeeded", "effect": "none", "payload": self.query(context, arguments)}, None
         if (not {"action", "id", "expected_revision", "evidence_handles"}.issubset(arguments)
                 or set(arguments) - {"action", "id", "expected_revision", "evidence_handles", "data"}):
             raise ValueError("invalid calendar command")
@@ -60,6 +62,18 @@ class CalendarTools:
         else:
             result = self.calendar.command(context, **args, action=arguments["action"], data=arguments.get("data"), sources=sources)
         return {"state": "succeeded", "effect": "committed", "payload": result}, result["operation_id"]
+
+    def query(self, context, arguments):
+        if set(arguments) - {"after_id", "limit"} or not 1 <= arguments.get("limit", 20) <= 20:
+            raise ValueError("invalid calendar query")
+        result = self.calendar.inventory(context, **{"limit": 20, **arguments})
+        if not arguments.get("after_id"):
+            now = self.calendar.tasks.now()
+            classes = self.calendar.class_sessions(context, now, now + timedelta(days=CLASS_DAYS))
+            if classes is not None:
+                # Timetable sessions are a read-only view; validation only covers calendar items.
+                result = {**result, "classes": classes}
+        return result
 
     def validate(self, row, context, result, later):
         self.calendar.access.check(context, "calendar.read" if row["action"].endswith("query") else "calendar.write")

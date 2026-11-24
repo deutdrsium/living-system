@@ -356,13 +356,14 @@ def morning_plan(profile, *, at, zone=None, role_woke_at=None, contact=None,
 
 
 def role_wake_at(body_sleep):
-    """The role's own wake receipt, never used as evidence about the user."""
-    if not isinstance(body_sleep, Mapping) or body_sleep.get("state") != "awake":
+    """The role's own wake receipt, never used as evidence about the user.
+
+    Any sleep with ``ended_at`` is over (completed or cancelled); a sleeping or
+    paused sleep has none, so the role is not awake yet.
+    """
+    if not isinstance(body_sleep, Mapping):
         return None
-    last = body_sleep.get("last_completed")
-    if not isinstance(last, Mapping):
-        return None
-    value = last.get("completed_at")
+    value = body_sleep.get("ended_at")
     if not isinstance(value, str):
         return None
     try:

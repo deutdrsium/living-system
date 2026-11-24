@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta
+from functools import cache
 from zoneinfo import ZoneInfo
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
@@ -21,6 +22,7 @@ from companion_v2.role_work.state.maintenance import KIND as STATE_KIND
 from companion_v2.role_work.state.ownership import role_owner, role_schedule_key
 from companion_v2.role_work.life.smart_reading import choice_slot, reading_window
 from companion_v2.role_work.codec import activity_from_json
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.storage.models import CommitState, OperationState
 from companion_v2.storage.repositories import OperationRepository
 
@@ -424,12 +426,16 @@ def capabilities_for(controller, registry, *, plugin, registration_id):
         with app.role_life.consistent_snapshot():
             records = routine.activities()
             calendar = app.calendar.occurrences(routine.context, start=at, end=at + timedelta(minutes=30))
-            authorized = []
-            for activity in records:
-                if (activity.work.kind == "reading" and activity.state.value == "planned"
-                        and app.role_journal.sources.validate_reference_for_audience(activity.work.source,
-                            recipient=routine.context.actor.subject, observed_at=at).is_success):
-                    authorized.append(activity.work.source.source_id)
+
+            @cache
+            def source_visible(source):
+                return app.role_journal.sources.validate_reference_for_audience(
+                    source, recipient=routine.context.actor.subject, observed_at=at).is_success
+
+            with validation_batch(app.runtime, at):
+                authorized = [activity.work.source.source_id for activity in records
+                    if activity.work.kind == "reading" and activity.state.value == "planned"
+                    and source_visible(activity.work.source)]
             approved_paused = [activity.activity_id for activity in records
                 if activity.work.kind == "reading" and activity.state.value == "paused"
                 and routine.approved_interrupted_reading_retry(activity, app.role_reader.task_id(routine.context, activity))]

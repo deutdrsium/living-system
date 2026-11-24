@@ -19,7 +19,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.conversation.models import InboundConversationEvent
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ReferenceValidationError, RoleOwnerRef, SourceRef, VersionRef
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 
 from .materials import JournalMaterial, validate_materials
 from .models import JournalContext, JournalDraft, JournalKind, JournalRef, JournalState, revision
@@ -38,11 +38,12 @@ DREAM_KIND = "role.journal.dream"
 DERIVE_KIND = "role.journal.derive"
 SELECT_KIND = "role.journal.select"
 WRITING_KINDS = frozenset({DIARY_KIND, DREAM_KIND, DERIVE_KIND, SELECT_KIND})
+TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 
 
 def writing_profiles(provider, *, max_output_tokens=2048):
     return tuple(ModelTaskProfile(kind, Lane.BACKGROUND, provider,
-        "保持原人格，按本次私人书写任务及素材语义生成。", max_output_tokens=max_output_tokens)
+        "保持原人格，按本次私人书写任务及素材语义生成。", max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
         for kind in (DIARY_KIND, DREAM_KIND, DERIVE_KIND, SELECT_KIND))
 
 
@@ -125,9 +126,9 @@ class RoleJournalWriter:
         binding = ProviderBinding("role.journal", "local", "1", "journal-writer-1")
         self.registrations = tuple(TaskRegistration(TaskDefinition(kind, "role.journal", "role.journal.write",
             Lane.BACKGROUND, side_effect=SideEffect.LOCAL, binding=binding, max_attempts=1,
-            timeout_seconds=480, concurrency=2), self.validate) for kind in (DIARY_KIND, DREAM_KIND, DERIVE_KIND)) + (
+            timeout_seconds=TASK_TIMEOUT_SECONDS, concurrency=2), self.validate) for kind in (DIARY_KIND, DREAM_KIND, DERIVE_KIND)) + (
             TaskRegistration(TaskDefinition(SELECT_KIND, "role.journal", "role.journal.write", Lane.BACKGROUND,
-                timeout_seconds=480, max_attempts=1, concurrency=2), self.validate),)
+                timeout_seconds=TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=2), self.validate),)
 
     def attach(self, gateway, *, require_running=None, waiting=None):
         if self.gateway is not None or gateway.runtime is not self.runtime:
@@ -281,7 +282,7 @@ class RoleJournalWriter:
             self._check_job(job)
             self._target_current(job)
             now = self.tasks.now()
-            spec = TaskSpec(task_id, job.context, kind, request_hash, request_id, now, now + timedelta(seconds=480))
+            spec = TaskSpec(task_id, job.context, kind, request_hash, request_id, now, now + timedelta(seconds=TASK_TIMEOUT_SECONDS))
             self._pending[task_id] = job
             invocation = asyncio.current_task()
             self._invocations.add(invocation)

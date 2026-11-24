@@ -7,13 +7,14 @@ the synthetic sender, and never open a platform connection.
 
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from companion_v2.configuration.models import ConfigurationError
 from companion_v2.proactive import rhythm
 from companion_v2.proactive.configuration import (CURVE_CEILING, CURVE_FLOOR, DEFAULT_HOUR_CURVE, GROUP,
-                                                  configuration_fields, curve_text, hour_activity_curve)
+                                                  PURPOSES, configuration_fields, curve_text, hour_activity_curve)
 from companion_v2.proactive.greetings import ANCHOR_PURPOSE, INSOMNIA_PURPOSE
 from companion_v2.proactive.preferences import ContactPreferences
 from tests.contact_schedule_support import ContactScheduleFixture
@@ -120,6 +121,20 @@ class RhythmConfigurationTests(unittest.TestCase):
                          held.hour_allows(context, preferences, quiet_base))
         self.assertTrue(held.hour_allows(context, stub_preferences(), quiet_base))
 
+    def test_private_silence_hold_lasts_the_closing_grace(self):
+        silenced = datetime(2026, 9, 21, 14, tzinfo=timezone.utc)
+        held = rhythm.ContactRhythm(None)
+        preferences = stub_preferences(proactive_closing_grace_minutes=45)
+        with patch.object(held, "private_silence_at", return_value=silenced):
+            self.assertEqual(held.private_silence_hold(preferences, silenced + timedelta(minutes=10), StubContext(), {}),
+                             silenced + timedelta(minutes=45))
+            self.assertIsNone(held.private_silence_hold(preferences, silenced + timedelta(minutes=46), StubContext(), {}))
+            self.assertIsNone(held.private_silence_hold(stub_preferences(proactive_closing_grace_minutes=0),
+                                                        silenced, StubContext(), {}))
+        # No silence of the current input (a newer input, or none recorded) means no hold.
+        with patch.object(held, "private_silence_at", return_value=None):
+            self.assertIsNone(held.private_silence_hold(preferences, silenced, StubContext(), {}))
+
     def test_current_local_hour_uses_the_original_slot_draw_during_long_intervals(self):
         context = StubContext()
         preferences = stub_preferences(proactive_hour_activity_enabled=True, quiet_timezone="Asia/Shanghai",
@@ -191,6 +206,63 @@ class RhythmSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTest
         self.assertEqual(len(self.contacts(app)), 1)
         self.advance(app, 1800)
         await self.automatic_delivery(app, count=2)
+
+    def planned(self, schedule):
+        """Run one scheduler pass and return what ``_plan`` decided for the window."""
+        results = []
+        original = schedule._plan
+
+        def capture(row, at):
+            results.append(original(row, at))
+            return results[-1]
+
+        with patch.object(schedule, "_plan", side_effect=capture):
+            schedule.advance()
+        return results
+
+    def share_candidate(self, app, purpose="life"):
+        from companion_v2.proactive.contact_models import ContactIntent
+        from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
+        scope, at = self.contact_context().scope, self.clock.now()
+        opportunity = Opportunity("held-share-" + purpose, scope, at, at + timedelta(minutes=5))
+        thought = Thought("held-share-thought", opportunity, ThoughtKind.CONVERSATION, "角色想分享今天的事",
+                          EvidenceSnapshot(scope, at, ()), 1.0)
+        return opportunity, (ContactIntent(purpose, thought),), {"source": "fixture"}
+
+    async def test_stub_share_is_planned_without_a_private_silence(self):
+        host, _ = await self.scheduled()
+        app = host.application
+        schedule = app.contact_schedule
+        self.settings(app, {"max_contacts_24h": 5, "dedup_enabled": False}).unwrap()
+        self.advance(app, 120)
+        candidate = self.share_candidate(app)
+        schedule.events = SimpleNamespace(select=lambda *_args, **_kwargs: (candidate, False), close=lambda: None)
+        with patch.object(schedule.rhythm, "private_silence_at", return_value=None):
+            planned = [result for result in self.planned(schedule) if result is not None]
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0][4]["activity_event"], {"source": "fixture"})
+
+    async def test_laya_private_silence_holds_voluntary_shares_but_not_alerts(self):
+        host, _ = await self.scheduled()
+        app = host.application
+        schedule = app.contact_schedule
+        self.settings(app, {"proactive_closing_grace_minutes": 30, "max_contacts_24h": 5,
+                            "dedup_enabled": False}).unwrap()
+        self.advance(app, 120)
+        silenced = self.clock.now()
+        candidate = self.share_candidate(app)
+        schedule.events = SimpleNamespace(select=lambda *_args, **_kwargs: (candidate, False), close=lambda: None)
+        with patch.object(schedule.rhythm, "private_silence_at", return_value=silenced):
+            held = self.planned(schedule)
+            self.assertTrue(held)
+            self.assertTrue(all(result is None for result in held), held)
+            self.assertEqual(len(self.contacts(app)), 0)
+            # An official alert is the kind of contact a closed conversation still lets through.
+            alert = (candidate[0], {"alert": "fixture"})
+            schedule.official_alert_events.select = lambda *_args, **_kwargs: alert
+            passed = [result for result in self.planned(schedule) if result is not None]
+            self.assertEqual(len(passed), 1)
+            self.assertEqual(passed[0][4]["official_alert_pending"], {"alert": "fixture"})
 
     async def test_body_length_hint_reaches_the_contact_request(self):
         host, _ = await self.scheduled()
@@ -276,6 +348,91 @@ class RhythmSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTest
         self.advance(app, 23 * 3600 + 1800)
         app.contact_schedule.advance()
         self.assertEqual(self.contacts(app), ())
+
+    async def test_day_greeting_includes_recent_wake_hint_from_sleep_execution(self):
+        from companion_v2.role_work.state.management import StateManagement
+
+        host, _ = await self.scheduled()
+        app = host.application
+        context = self.contact_context()
+        manager = StateManagement(app, context)
+        before = manager.status(self.core).unwrap()
+        manager.command(self.core, dict(action="configure", operation_key="state-on",
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"enabled": True})).unwrap()
+        self.grant(context.actor, context.scope, "role.life.run")
+        self.grant(context.actor, context.scope, "role.life.read")
+        self.grant(context.actor, context.scope, "role.state.read")
+        routine = app.life_runtime.bind(context, "原角色人格提示")
+        sleep = routine.start_sleep("greeting-sleep", 30)
+        self.advance(app, 20 * 60)
+        routine.wake(sleep.activity_id, expected_revision=sleep.revision, operation_id="greeting-wake")
+        changes = {purpose + ".enabled": False for purpose in PURPOSES}
+        changes.update({
+            ANCHOR_PURPOSE + ".enabled": True,
+            "enable_daily_greetings": True, "greeting_idle_minutes": 0,
+            "max_contacts_24h": 5, "dedup_enabled": False,
+        })
+        self.settings(app, changes).unwrap()
+        self.advance(app, 5 * 60)
+        await self.automatic_delivery(app)
+        record = self.records(app)[0]
+        self.assertEqual(record["automatic_origin"]["greeting_event"]["kind"], "day_anchor")
+        self.assertIn("角色刚醒来约5分钟（共睡约20分钟）", record["thought_summary"])
+        materials = "\n".join(m.payload for m in self.contact_calls()[0].original.context.materials)
+        self.assertIn("角色刚醒来约5分钟（共睡约20分钟）", materials)
+
+    async def test_insomnia_require_sleep_state_rejects_normal_wake_and_allows_interrupted(self):
+        from companion_v2.role_work.state.management import StateManagement
+
+        host, _ = await self.scheduled()
+        app = host.application
+        context = self.contact_context()
+        manager = StateManagement(app, context)
+        before = manager.status(self.core).unwrap()
+        manager.command(self.core, dict(action="configure", operation_key="state-on",
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"enabled": True})).unwrap()
+        self.grant(context.actor, context.scope, "role.life.run")
+        self.grant(context.actor, context.scope, "role.life.read")
+        self.grant(context.actor, context.scope, "role.state.read")
+        changes = {purpose + ".enabled": False for purpose in PURPOSES}
+        changes.update({
+            INSOMNIA_PURPOSE + ".enabled": True,
+            "allow_insomnia_night_message": True, "insomnia_require_sleep_state": True,
+            "insomnia_night_daily_limit": 2, "interval_seconds": 3600, "idle_seconds": 900,
+            "quiet_timezone": "UTC", "quiet_enabled": False,
+            "max_contacts_24h": 5, "dedup_enabled": False,
+        })
+        self.settings(app, changes).unwrap()
+        # Normal completed sleep inside the night window must not open an insomnia slot.
+        self.advance(app, 23 * 3600)
+        routine = app.life_runtime.bind(context, "原角色人格提示")
+        nap = routine.start_sleep("night-nap", 20)
+        self.advance(app, 20 * 60)
+        routine.wake(nap.activity_id, expected_revision=nap.revision, operation_id="night-nap-wake")
+        self.advance(app, 10 * 60)
+        app.contact_schedule.advance()
+        await self.until(lambda: not app.contact_schedule._workers)
+        self.assertEqual(app.role_state.read(context, at=self.clock.now())["sleep_execution"]["state"], "awake")
+        self.assertIsNone(app.contact_schedule.greeting_events.select(
+            context, self.preferences(app, context), self.clock.now()))
+        self.assertEqual(self.records(app), [])
+
+        # An interrupted sleep does open the insomnia slot and passes the interrupted hint.
+        sleep = routine.start_sleep("night-sleep", 120)
+        self.advance(app, 15 * 60)
+        app.role_state.body_clock.interrupt(
+            context, sleep.activity_id, observed_at=self.clock.now(), grace_minutes=30)
+        self.assertEqual(app.role_state.read(context, at=self.clock.now())["sleep_execution"]["state"], "interrupted")
+        self.advance(app, 5 * 60)
+        await self.automatic_delivery(app)
+        record = self.records(app)[0]
+        self.assertEqual(record["purpose"], INSOMNIA_PURPOSE)
+        self.assertEqual(record["automatic_origin"]["greeting_event"]["kind"], "insomnia_night")
+        self.assertIn("睡眠被打断", record["thought_summary"])
+        materials = "\n".join(m.payload for m in self.contact_calls()[0].original.context.materials)
+        self.assertIn("睡眠被打断", materials)
 
     async def test_share_probability_suppresses_only_role_shares(self):
         host, _ = await self.scheduled()

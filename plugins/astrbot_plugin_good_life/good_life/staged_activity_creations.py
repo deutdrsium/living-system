@@ -99,6 +99,7 @@ class StagedActivityCreations:
         self.storage = storage
         self.reader = StorageReader(storage)
         self.commands = PreparedCommands(storage)
+        self.night_sleep_alarm = None
 
     def dispatch(self, operation, *args, **kwargs):
         prefix = "activity_creation."
@@ -141,9 +142,19 @@ class StagedActivityCreations:
             raise ValueError("scheduled sleep kind is invalid")
         minutes = (25 if kind == "nap" else
                    recommended_sleep_minutes(base_need_minutes, sleep_debt_minutes, workload_score))
+        at = _time(observed_at)
+        wake_at = at + timedelta(minutes=minutes)
+        if kind == "night" and self.night_sleep_alarm is not None:
+            alarm = self.night_sleep_alarm(_digest_json(owner), context_key, at)
+            if alarm is not None and alarm < wake_at:
+                if alarm <= at:
+                    raise ValueError("the class alarm has already passed")
+                wake_at = alarm
+                minutes = max(1, (wake_at - at) // timedelta(minutes=1))
         activity = self.propose_manual_sleep(owner=owner, scope=scope, context_key=context_key, operation_id=request_id,
             observed_at=observed_at, minutes=minutes, base_need_minutes=base_need_minutes,
             workload_score=workload_score, sleep_debt_minutes=sleep_debt_minutes)
+        activity["work"]["due_at"] = wake_at.astimezone(timezone.utc).isoformat(timespec="microseconds")
         activity["sleep"]["kind"] = kind
         if kind == "nap":
             activity["description"] = "角色短暂午休"

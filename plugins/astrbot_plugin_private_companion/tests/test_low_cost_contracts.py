@@ -102,7 +102,7 @@ def test_expression_learning_and_content_drafts_require_known_evidence() -> None
         }],
     }, allowed_evidence={"m1", "m2"})
     assert learning.signals[0].confidence == 0.5
-    assert "只观察表达形式" in INSTRUCTION
+    assert "只观察可借鉴的表达形式" in INSTRUCTION
     with pytest.raises(ValueError, match="invalid_evidence"):
         parse_learning({
             "summary": "", "signals": [{

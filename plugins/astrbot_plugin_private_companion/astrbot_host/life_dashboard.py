@@ -49,7 +49,7 @@ async def dispatch(controller, registry, *, plugin, registration_id, operation, 
                 or operation not in ("life.read", "life.command", "state.read", "state.command",
                                      "calendar.occurrences", "life.activities", "life.wallet", "life.management", "academics.term",
                                      "academics.timetable", "academics.occurrences", "academics.syllabus",
-                                     "academics.assignments", "academics.study_progress", "academics.study_artifacts",
+                                     "academics.assignments", "academics.grades", "academics.study_progress", "academics.study_artifacts",
                                      "academics.study_artifact", "academics.command", "academics.places")):
             raise TaskError("life_dashboard_invalid", "invalid life management route")
         inventory = controller.web_api.target_inventory(refresh_routes=False)

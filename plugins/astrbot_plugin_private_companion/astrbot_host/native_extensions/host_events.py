@@ -29,6 +29,11 @@ def _events(controller, name):
         else:
             from .reality.host_events import RealityHostEvents as EventOwner
         owner = EventOwner(runtime, lambda: _active(controller, name) is runtime)
+        if name == "live":
+            def desktop_inputs():
+                desktop = getattr(controller, "desktop_api", None)
+                return desktop.owned_avatar_inputs() if desktop is not None else ()
+            owner.desktop_inputs = desktop_inputs
         runtime._host_event_owner = owner
     return owner
 
@@ -51,9 +56,15 @@ def prepare_native_host_request(controller, event, req):
         set_system_instruction(req, "soullink")
         set_system_instruction(req, "live2d")
     _dispatch(controller, "request", event, req)
+    desktop = getattr(controller, "desktop_api", None)
+    if desktop is not None:
+        desktop.inject_wardrobe(event, req)
 
 
 def observe_native_host_response(controller, event, response):
+    desktop = getattr(controller, "desktop_api", None)
+    if desktop is not None:
+        desktop.capture_lines(event, response)
     _dispatch(controller, "response", event, response)
 
 

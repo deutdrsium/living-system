@@ -65,8 +65,8 @@ async function boot() {
   const bridge = window.AstrBotPluginPage, post = bridge.apiPost;
   bridge.apiPost = (...args) => { const receipt = post(...args); receipts.push(receipt); return receipt; };
   const message = data => window.fire("message", {source:parent, data:{channel:"companion-workspace", ...data}});
-  const scope = (readGeneration, role, section = "reading") => message({kind:"context", context:{section,
-    display:{role_name:role, subject_name:`${role} participant`}, readGeneration}});
+  const scope = (readGeneration, role, section = "reading", active = true) => message({kind:"context", context:{section,
+    display:{role_name:role, subject_name:`${role} participant`}, readGeneration, active}});
   scope(0, "A");
   await settle();
   return {byId, bridge, scope, files, receipts, timers,
@@ -114,9 +114,9 @@ test("changing the mapped role clears the iframe synchronously and replaces pagi
   $("older").fire("click");
   $("more-activities").fire("click");
   const [lateRead, queuedRead] = app.requests("GET").slice(1);
-  assert.deepEqual(queuedRead.body, {archive_kind:"reading_note", before:"date-A", after_activity:"cursor-A"});
+  assert.deepEqual(queuedRead.body, {compact:"1", limit:20, view:"reading", archive_kind:"reading_note", note_cursor:"date-A", after_activity:"cursor-A"});
   const rejected = assert.rejects(app.bridge.apiGet("life", {}), {code:"scope_changed"});
-  assert.ok([...app.timers.values()].some(timer => timer.delay === 3000), "role A scheduled polling");
+  assert.equal([...app.timers.values()].some(timer => timer.delay === 3000), false, "in-flight refresh replaces the old poll");
 
   app.reply(queuedRead, snapshot("queued A"));
   app.scope(1, "B", "browsing");
@@ -137,7 +137,7 @@ test("changing the mapped role clears the iframe synchronously and replaces pagi
   assert.equal(app.timers.size, 1, "only role B's read timer survives");
   const read = app.requests("GET").at(-1);
   assert.equal(read.readGeneration, 1);
-  assert.deepEqual(read.body, {archive_kind:"social_note"});
+  assert.deepEqual(read.body, {compact:"1", limit:20, view:"reading", archive_kind:"social_note"});
 
   app.reply(lateRead, snapshot("late A"));
   await rejected;
@@ -149,6 +149,26 @@ test("changing the mapped role clears the iframe synchronously and replaces pagi
   assert.equal($("role").textContent, "B");
   assert.equal($("timezone").value, "zone-B");
   assert.match(textOf($("social-list")), /Browsing B/);
+});
+
+test("idle reading_enabled does not poll and a hidden wallet workspace does not read", async () => {
+  const app = await boot();
+  const idle = {...snapshot("A"), activities:[], running:[], config:{enabled:true, reading_enabled:true}};
+  app.reply(app.requests("GET").at(-1), idle);
+  await settle();
+  assert.equal([...app.timers.values()].some(timer => timer.delay === 3000), false);
+  const count = app.requests("GET").length;
+  app.scope(0, "A", "settings", false);
+  app.byId("refresh").fire("click");
+  await settle();
+  assert.equal(app.requests("GET").length, count);
+  app.scope(0, "A", "reading", true);
+  assert.equal(app.requests("GET").length, count + 1);
+  app.reply(app.requests("GET").at(-1), {...idle, refresh_active:true});
+  await settle();
+  assert.equal([...app.timers.values()].some(timer => timer.delay === 3000), true);
+  app.scope(0, "A", "settings", false);
+  assert.equal([...app.timers.values()].some(timer => timer.delay === 3000), false);
 });
 
 test("same-generation context retains the iframe draft and lets an EPUB batch finish", async () => {
@@ -226,4 +246,45 @@ test("role changes retain sent EPUB receipts and stop unsent files from crossing
   assert.equal(app.requests("GET").length, 3, "old EPUB completions do not reload the new role");
   assert.equal($("role").textContent, "C");
   assert.equal($("notice").textContent, "");
+});
+
+test("reading notes and shelf fragments are grouped by book, newest book open, 其他 last", async () => {
+  const app = await boot(), $ = app.byId;
+  const part = (id, title, state, updated_at, start_offset, end_offset) =>
+    ({activity_id:id, kind:"reading", title, state, updated_at, start_offset, end_offset});
+  const note = (id, book_title, completed_at, start_offset, end_offset) => ({kind:"reading_note", activity_id:id,
+    local_date:completed_at.slice(0, 10), completed_at, book_title, start_offset, end_offset, body:`Body ${id}`});
+  app.reply(app.requests("GET").at(-1), {...snapshot("A"),
+    activities:[part("o1", "Old · 1–10 / 100 字符", "completed", "2026-11-10T00:00:00Z", 0, 10),
+      part("n2", "New · 11–20 / 40 字符", "planned", "2026-11-20T00:00:00Z", 10, 20),
+      part("n1", "New · 1–10 / 40 字符", "completed", "2026-11-19T00:00:00Z", 0, 10),
+      {title:"Browsing A", kind:"social"}],
+    journals:[note("n1", "New", "2026-11-19T00:00:00Z", 0, 10), note("x", "", "2026-11-21T00:00:00Z", 0, 5),
+      note("o1", "Old", "2026-11-10T00:00:00Z", 0, 10), note("n0", "New", "2026-11-18T00:00:00Z", 0, 10)]});
+  await settle();
+  const title = group => group.children[0].children[0].textContent;
+
+  const shelf = $("reading-list").children;
+  assert.deepEqual(shelf.map(title), ["《New》", "《Old》"]);
+  assert.deepEqual(shelf.map(group => group.open), [true, false]);
+  assert.match(textOf(shelf[0].children[0]), /2 段 · 已读 25%/);
+  assert.deepEqual(shelf[0].children[1].children.map(card => card.children[0].textContent),
+    ["片段 1–10 / 40 字符", "片段 11–20 / 40 字符"], "fragments follow the book's order");
+  assert.match(textOf($("social-list")), /Browsing A/, "browsing stays a flat list");
+
+  let notes = $("journal-list").children;
+  assert.deepEqual(notes.map(title), ["《New》", "《Old》", "其他"]);
+  assert.deepEqual(notes.map(group => group.open), [true, false, false]);
+  assert.match(textOf(notes[0].children[0]), /2 篇 .* 读到 10 \/ 40 字/);
+  assert.deepEqual(notes[0].children[1].children.map(link => link.textContent),
+    ["2026-11-18 · 第 1–10 字", "2026-11-19 · 第 1–10 字"], "notes within a book run oldest first");
+  assert.match(textOf($("journal-detail")), /Body n1/);
+
+  // A group the reader collapsed stays collapsed when the list redraws; the group
+  // holding the newly selected note opens.
+  notes[0].children[0].fire("click");
+  notes[1].children[1].children[0].fire("click");
+  notes = $("journal-list").children;
+  assert.deepEqual(notes.map(group => group.open), [false, true, false]);
+  assert.match(textOf($("journal-detail")), /Body o1/);
 });

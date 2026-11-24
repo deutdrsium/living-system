@@ -34,7 +34,8 @@ from companion_v2.execution.service import outcome
 from companion_v2.expression.configuration import read_settings as expression_settings
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef, normalize_utc
-from companion_v2.model_gateway.models import ModelCompletion, ModelTaskProfile, is_released
+from companion_v2.model_gateway.models import (BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelCompletion,
+                                               ModelTaskProfile, is_released)
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
 from companion_v2.role_work.state import humanized
 from companion_v2.sources.repositories import SourceRepository
@@ -59,7 +60,7 @@ from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER, 
 
 CONTACT_KIND = "proactive.compose"
 PLAN_KIND = "proactive.plan"
-JUDGE_TIMEOUT_SECONDS = 480
+JUDGE_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 # A manual diagnostic composes on the same single background lane as automatic
 # contact work. Wait for a free slot instead of reporting the collision as an
 # admission denial; the bound keeps the operator's test from hanging on a long
@@ -99,13 +100,13 @@ def role_state_for_prompt(summary, purpose):
 def contact_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(CONTACT_KIND, Lane.BACKGROUND, provider,
         "保持原人格；按本轮生成方式和真实来源组织主动联系。",
-        max_output_tokens=max_output_tokens, prompt_sections=prompt_sections())
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS, prompt_sections=prompt_sections())
 
 
 def plan_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(PLAN_KIND, Lane.BACKGROUND, provider,
         "只规划主动联系的时机与新回合切口，不写用户可见正文。",
-        max_output_tokens=max_output_tokens)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def _push_scope(kind):
@@ -127,7 +128,8 @@ def persona_judge_profile(provider, *, max_output_tokens=260):
     of sending it unjudged.
     """
     return ModelTaskProfile(JUDGE_KIND, Lane.BACKGROUND, provider,
-        "按当前人格与世界观点评一条已写好的主动消息，只决定放行或拦下。", max_output_tokens=max_output_tokens)
+        "按当前人格与世界观点评一条已写好的主动消息，只决定放行或拦下。",
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def _segmentation_policy(settings):
@@ -158,9 +160,9 @@ class ProactiveContacts:
         self.gateway = self.runner = self.plan_runner = self.generation = self.judge_runner = None
         self.registrations = (TaskRegistration(TaskDefinition(CONTACT_KIND, GROUP, GROUP, Lane.BACKGROUND,
             side_effect=SideEffect.LOCAL, binding=ProviderBinding(GROUP, "local", "1", "contact-worker-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=2), self.validate),
+            timeout_seconds=BACKGROUND_TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=2), self.validate),
             TaskRegistration(TaskDefinition(PLAN_KIND, GROUP, GROUP, Lane.BACKGROUND,
-                side_effect=SideEffect.NONE, timeout_seconds=480, max_attempts=1, concurrency=2),
+                side_effect=SideEffect.NONE, timeout_seconds=BACKGROUND_TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=2),
                 self.validate_plan),
             TaskRegistration(TaskDefinition(JUDGE_KIND, GROUP, GROUP, Lane.BACKGROUND,
                 side_effect=SideEffect.LOCAL, binding=ProviderBinding(GROUP, "local", "1", "contact-judge-1"),
@@ -1873,7 +1875,10 @@ class ProactiveContacts:
         return part_text
 
     def _draft(self, request, at, *, historical=False):
-        require(self.tasks.authorize_context(request.context, action=GROUP, observed_at=at))
+        if historical and self.history is not None:
+            self.history._authorize(request.context, GROUP, at)
+        else:
+            require(self.tasks.authorize_context(request.context, action=GROUP, observed_at=at))
         row = self.runtime.read_one("SELECT * FROM proactive_contacts WHERE contact_id = ?", (request.source_ref,))
         if (row is None or request.owner != GROUP or request.logical_key != row["contact_id"]
                 or row["origin_key"] != request.context.key):

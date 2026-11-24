@@ -20,7 +20,8 @@ from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, SourceRef, VersionRef
 from companion_v2.conversation.media.models import ImageDescriptor, PromptImage
-from companion_v2.model_gateway.models import ModelTaskProfile, ToolExchange, ToolSpec
+from companion_v2.model_gateway.models import (BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile,
+                                               ToolExchange, ToolSpec)
 from companion_v2.sources.models import SourceRecord
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -32,6 +33,8 @@ from .exposure import ExposureStore, FEED_OPERATIONS, READ_OPERATIONS, public_it
 
 KIND = "role.social.browse"
 SOCIAL_TIMEOUT_SECONDS = 3600
+SOCIAL_CHILD_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
+SOCIAL_CHILD_WAIT_SECONDS = SOCIAL_CHILD_TIMEOUT_SECONDS - 5
 IMAGE_KIND = "role.social.image_narration"
 CLASSIFY_KIND = "role.social.classify_recommendations"
 
@@ -58,18 +61,18 @@ WRITES = frozenset(("bili_like", "bili_favorite", "bili_follow", "xhs_like", "xh
 
 def social_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider, "按自己兴趣自主浏览，基于真实结果留下主观感想。",
-                            max_output_tokens=max_output_tokens, timeout_seconds=180)
+                            max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def social_classify_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(CLASSIFY_KIND, Lane.BACKGROUND, provider, "只依据推荐内容归类话题。",
-                            max_output_tokens=max_output_tokens, timeout_seconds=120)
+                            max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def social_image_profile(provider):
     return ModelTaskProfile(IMAGE_KIND, Lane.BACKGROUND, provider,
         "为自主浏览中实际取得的图片或视频画面提供简短视觉转述。",
-        max_output_tokens=512, capabilities=("text", "image"), timeout_seconds=30)
+        max_output_tokens=512, capabilities=("text", "image"), timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def available_operations(configured):
@@ -173,9 +176,11 @@ class RoleSocial:
             side_effect=SideEffect.EXTERNAL_NETWORK, binding=ProviderBinding("role.social", "local", "1", "social-1"),
             timeout_seconds=SOCIAL_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),
             TaskRegistration(TaskDefinition(IMAGE_KIND, "role.social.image", "role.life.run", Lane.BACKGROUND,
-                side_effect=SideEffect.NONE, timeout_seconds=45, max_attempts=1, concurrency=1), self.validate_image),
+                side_effect=SideEffect.NONE, timeout_seconds=SOCIAL_CHILD_TIMEOUT_SECONDS, max_attempts=1, concurrency=1),
+                self.validate_image),
             TaskRegistration(TaskDefinition(CLASSIFY_KIND, "role.social.classification", "role.life.run", Lane.BACKGROUND,
-                side_effect=SideEffect.NONE, timeout_seconds=135, max_attempts=1, concurrency=1), self.validate_classification))
+                side_effect=SideEffect.NONE, timeout_seconds=SOCIAL_CHILD_TIMEOUT_SECONDS, max_attempts=1, concurrency=1),
+                self.validate_classification))
 
     def attach(self, gateway, *, waiting=None):
         self.gateway, self.tasks = gateway, gateway.tasks
@@ -263,8 +268,9 @@ class RoleSocial:
         now = self.tasks.now()
         try:
             require(self.tasks.submit(TaskSpec(identifier, parent.context, IMAGE_KIND, digest(item), identifier,
-                                               now, now + timedelta(seconds=45))))
-            outcome = await asyncio.wait_for(self.image_runner.run(parent.context, identifier), timeout=40)
+                                               now, now + timedelta(seconds=SOCIAL_CHILD_TIMEOUT_SECONDS))))
+            outcome = await asyncio.wait_for(self.image_runner.run(parent.context, identifier),
+                                             timeout=SOCIAL_CHILD_WAIT_SECONDS)
             if outcome.failure or outcome.unwrap().stop_code is not None:
                 return ""
             return self._image_results.pop(identifier, "")
@@ -324,8 +330,9 @@ class RoleSocial:
         now = self.tasks.now()
         try:
             require(self.tasks.submit(TaskSpec(identifier, job.context, CLASSIFY_KIND, digest(item), identifier,
-                                               now, now + timedelta(seconds=135))))
-            result = await asyncio.wait_for(self.classification_runner.run(job.context, identifier), timeout=130)
+                                               now, now + timedelta(seconds=SOCIAL_CHILD_TIMEOUT_SECONDS))))
+            result = await asyncio.wait_for(self.classification_runner.run(job.context, identifier),
+                                            timeout=SOCIAL_CHILD_WAIT_SECONDS)
             if result.failure or result.unwrap().stop_code is not None:
                 return mapping
             inferred = self._classification_results.pop(identifier, {})
@@ -514,6 +521,27 @@ class RoleSocial:
             has_text = False
         return "text" if has_text else "image_description" if image_described else "metadata"
 
+    @staticmethod
+    def _fit_history(session, request, history):
+        from companion_v2.adapters.astrbot.model_wire import build_wire
+
+        limit = min(provider.maximum_input_estimate for provider in session.plan.providers)
+        envelope = replace(session.plan.envelope, original=request, tools=session.tools,
+                           allow_tool_calls=session.round_no < session.round_limit,
+                           tool_history=history, reasoning_rounds=session.reasoning_rounds)
+        for index, exchange in enumerate(history):
+            if build_wire(envelope).input_estimate() <= limit:
+                break
+            result = json.loads(exchange.result_json)
+            if result.get("context_omitted"):
+                continue
+            # Keep the original call and its outcome, but not unbounded old page bodies.
+            shortened = json.dumps({"ok": result.get("ok", False), "context_omitted": True,
+                "text": "此前工具正文已从本轮上下文省略；不要据此描述未保留的内容细节。"}, ensure_ascii=False)
+            history = history[:index] + (ToolExchange(exchange.call, shortened),) + history[index + 1:]
+            envelope = replace(envelope, tool_history=history)
+        return history
+
     async def _generate(self, run):
         job = self._pending[run.task.task_id]
         port = self.app.social_port
@@ -627,7 +655,9 @@ class RoleSocial:
                              [c["id"] for c in recommendation_cards if c.get("blocked")])] if recommendation_cards else []
         automatic_pending = bool(recommendation_attempt and recommendation_attempt["coverage"] != "metadata")
         while True:
-            completion = await session.generate(request, history=history, media_refresh=validate_media)
+            history = self._fit_history(session, request, history)
+            completion = await session.generate(request, history=history, media_refresh=validate_media,
+                owner_refresh=lambda original, current, previous, refreshed: current == request and refreshed == history)
             if automatic_pending:
                 op = READ_OPERATIONS[recommendation_platform]
                 viewed.add((op, random_id))

@@ -1,4 +1,4 @@
-/* 小屋右栏：只投影当前授权对象的状态、日历与生活确认。 */
+/* 小屋右栏：只投影当前授权对象的状态、日历、当天课次与生活确认。 */
 "use strict";
 window.CompanionHomeSidebar = (() => {
   const e = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -119,6 +119,14 @@ window.CompanionHomeSidebar = (() => {
     return item.end != null ? start + " – " + (day(item.start, zone) === day(item.end, zone) ? clock(item.end, zone) : moment(item.end, now, zone)) : start;
   }
   const activities = life => Array.isArray(life?.activities) ? life.activities : [];
+  /* 课次：product-page.js 按角色当地今天读 life/classes（日期，end 不含）；读不到时为 null。
+     只有覆盖今天的结果才算读到，否则空白不判断为未安排。 */
+  function classRange(input, now = Date.now()) {
+    const start = dayKey(now, zoneOf(input));
+    return {start, end:new Date(Date.parse(start) + 86400000).toISOString().slice(0, 10)};
+  }
+  const classesKnown = (input, now) => Array.isArray(input.classes?.items) && input.classes.start === classRange(input, now).start;
+  const classesOf = input => Array.isArray(input.classes?.items) ? input.classes.items : [];
   const sleepOf = ({state, life}) => state?.body_sleep || life?.body_sleep || state?.state?.sleep_execution;
   function vital(kind, raw, {sleeping=false, disabled=false, loading=false, unreadable=false}={}) {
     const icons = {energy:"battery",health:"heart-pulse",hunger:"utensils",sleep:"moon",mood:"heart",
@@ -220,6 +228,14 @@ window.CompanionHomeSidebar = (() => {
       add({key:`calendar:${item.id}:${item.sequence}`, title:text(item.title) || "未命名安排", start, end,
         detail:text(item.detail), label:`${kind} · ${phase}`, tone, order:1});
     }
+    // 停上的课次不算安排。
+    for (const item of classesOf(input)) {
+      const start = stamp(item.start), end = stamp(item.end), title = text(item.course) || "课程";
+      if (item.cancelled === true || !overlapsToday(start, end, now, zone)) continue;
+      const phase = end <= now ? "时段已过" : start <= now ? "上课中" : "课表安排";
+      add({key:`class:${item.date}:${item.start}:${title}`, title, start, end, detail:text(item.place),
+        label:`课程 · ${phase}`, tone:end <= now ? "elapsed" : start <= now ? "current" : "planned", order:1});
+    }
     for (const item of activities(life)) {
       const started = stamp(item.started_at), updated = stamp(item.updated_at), due = stamp(item.due_at);
       const active = item.state === "active", completed = item.state === "completed", paused = item.state === "paused";
@@ -285,6 +301,7 @@ window.CompanionHomeSidebar = (() => {
       if (missingRuntimeSections.length) messages.push(`${missingRuntimeSections.join("与")}暂不可读取：角色数据尚未就绪，请核对账号与人格的角色映射；首次设置状态不会因此改变。`);
       if (!calendarRead && !stateRuntimeMissing) messages.push(`日历：${state ? "安排尚未读取" : unavailable("state")}`);
       if (!lifeRead && !lifeRuntimeMissing) messages.push(`活动：${unavailable("life")}`);
+      if (calendarRead && lifeRead && !classesKnown(input, now)) messages.push("课表：暂未读取");
       const coverage = state?.occurrences;
       if (coverage?.skipped) {
         const reasons = coverage.skipped_reasons || {};
@@ -312,7 +329,7 @@ window.CompanionHomeSidebar = (() => {
     const upcoming = items.filter(item=>!active.includes(item) && !current.includes(item) && !elapsed.includes(item));
     const live = [...active, ...current, ...upcoming]
       .sort((a,b)=>(a.start ?? Infinity)-(b.start ?? Infinity) || a.order-b.order || a.key.localeCompare(b.key));
-    const coverageComplete = calendarRead && lifeRead && !state?.occurrences?.partial
+    const coverageComplete = calendarRead && lifeRead && classesKnown(input, now) && !state?.occurrences?.partial
       && !state?.occurrences?.skipped && !state?.occurrences?.scan_truncated
       && !state?.occurrences?.occurrences_truncated && !planningIncomplete;
     const rows = timelineRows(live, now, zone, coverageComplete);
@@ -340,5 +357,5 @@ window.CompanionHomeSidebar = (() => {
       ${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}
       <p class="home-side-caption">${planningNote ? `${e(planningNote)} · ` : ""}时间按 ${e(zone)} 显示</p>`;
   }
-  return {renderState, renderSchedule};
+  return {renderState, renderSchedule, classRange};
 })();

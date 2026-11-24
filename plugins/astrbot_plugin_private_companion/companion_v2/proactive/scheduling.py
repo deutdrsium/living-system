@@ -125,6 +125,10 @@ class ContactSchedule:
         self.screen_events = ScreenContactEvents(contacts)
         self.relationship_events = RelationshipContactEvents(contacts, messages)
         self._diagnostics_cleaned_at = None
+        # Host port: context -> skip reason code or None. A window the host
+        # holds (closed desktop app, or a QQ window while its owner's desktop is
+        # open) gets no automatic contact; other windows are evaluated as usual.
+        self.window_gate = None
 
     @staticmethod
     def _diagnostic_key(kind, value=""):
@@ -530,6 +534,23 @@ class ContactSchedule:
                 return None
         if self._appointment_silence(context, preferences, at):
             self._note_window(context, row, at, "rhythm", "skipped", "appointment_silence")
+            return None
+        # Laya judged the private conversation had come to rest: no role-initiated
+        # contact for the closing grace. Reminders (selected above), official
+        # alerts and significant weather changes are the only exceptions.
+        private_hold = self.rhythm.private_silence_hold(preferences, at, context, interaction)
+        if private_hold is not None:
+            if self.official_alert_events is not None:
+                candidate = self.official_alert_events.select(context, preferences, at)
+                if candidate is not None:
+                    opportunity, marker = candidate
+                    return context, opportunity, (), batch["role_instruction"], {**origin, "official_alert_pending": marker}
+            if hour_allowed and self.weather_change_events is not None:
+                candidate = self.weather_change_events.select(context, preferences, at)
+                if candidate is not None:
+                    opportunity, marker = candidate
+                    return context, opportunity, (), batch["role_instruction"], {**origin, "weather_change_pending": marker}
+            self._note_window(context, row, at, "rhythm", "skipped", "laya_private_silence", next_at=private_hold)
             return None
         if self.wake_events is not None:
             candidate = self.wake_events.select(context, preferences, at, source=event.source,
@@ -1573,9 +1594,26 @@ class ContactSchedule:
         return now, rows, available, len(legacy_rows), len(native_rows)
 
     def _plan_one(self, row, now):
-        """Evaluate one candidate off the write transaction."""
+        """Evaluate one candidate off the write transaction.
+
+        Wake, greeting and insomnia producers all consult the role's state at
+        ``now``; one scoped read serves the whole plan.
+        """
+        role_state = getattr(self, "role_state", None)
+        if role_state is None:
+            return self._plan_unscoped(row, now)
+        with role_state.read_scope():
+            return self._plan_unscoped(row, now)
+
+    def _plan_unscoped(self, row, now):
         if self._closed or row["origin_key"] in self._workers:
             return None
+        if self.window_gate is not None:
+            context = TaskContext.restore(json.loads(row["context_json"]))
+            reason = self.window_gate(context)
+            if reason:
+                self._note_window(context, row, now, "delivery_admission", "skipped", reason)
+                return None
         if self._peek(row, now):
             context = TaskContext.restore(json.loads(row["context_json"]))
             self._note_window(context, row, now, "sources", "pending", "screen_observation_pending")

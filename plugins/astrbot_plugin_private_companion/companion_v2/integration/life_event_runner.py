@@ -13,7 +13,7 @@ from companion_v2.references.service import owner_key
 from companion_v2.role_work.interest_tasks import KIND as INTEREST_KIND
 from companion_v2.role_work.interests import scope_key
 
-from .life_event_inbox import PREFIX, accept, receive_pending
+from .life_event_inbox import ACADEMIC_NOTICES, PREFIX, accept, receive_pending
 
 
 class LifeEventRunner:
@@ -23,6 +23,7 @@ class LifeEventRunner:
         self._worker_contexts = {}
         self._retry_at = {}
         self._cursors = {}
+        self._academic_notices_at = 0
         self._interest_contexts = set()
         self._closed = False
 
@@ -33,15 +34,24 @@ class LifeEventRunner:
     def advance(self, routines):
         if self._closed:
             return
-        contexts = {routine.context.key: routine for routine in routines
-                    if getattr(routine, "context", None) is not None and getattr(routine, "instruction", None) is not None
-                    and isinstance(getattr(routine, "settings", None), dict) and routine.settings.get("enabled") is True
-                    and not getattr(routine, "_closed", False) and not getattr(routine, "_retired", False)}
+        bound = {routine.context.key: routine for routine in routines
+                 if getattr(routine, "context", None) is not None and getattr(routine, "instruction", None) is not None
+                 and not getattr(routine, "_closed", False) and not getattr(routine, "_retired", False)}
+        contexts = {key for key, routine in bound.items()
+                    if isinstance(getattr(routine, "settings", None), dict) and routine.settings.get("enabled") is True}
+        now = monotonic()
+        poll_notices = now >= self._academic_notices_at and bool(bound)
+        if poll_notices:
+            self._academic_notices_at = now + 60
         for key, context_key in tuple(self._worker_contexts.items()):
             if context_key not in contexts and key in self._workers:
                 self._workers[key].cancel()
-        for routine in contexts.values():
-            for consumer in ("journal", "dream", "interest", "wardrobe"):
+        for key, routine in bound.items():
+            enabled = key in contexts
+            consumers = ("journal", "dream", "interest", "wardrobe") if enabled else ()
+            if poll_notices:
+                consumers += (ACADEMIC_NOTICES,)
+            for consumer in consumers:
                 try:
                     cursor_key = (routine.context.key, consumer)
                     result = receive_pending(self.app, routine.context, consumer=consumer, observed_at=self.app.now(),
@@ -49,6 +59,8 @@ class LifeEventRunner:
                     self._cursors[cursor_key] = result["next_after"]
                 except (TaskError, ValueError, KeyError, TypeError):
                     break
+            if not enabled:
+                continue
             for consumer, handler in (("dream", self._dream), ("wardrobe", self._wardrobe), ("interest", self._interest)):
                 rows = self.app.runtime.read_all("""SELECT key, value FROM runtime_metadata
                     WHERE key LIKE ? AND json_valid(value)

@@ -29,6 +29,7 @@ class VTSParameterScheduler:
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._send_lock = asyncio.Lock()
+        self.desktop_owned_inputs = None
         self.frames_sent = 0
         self.last_sent_at = 0.0
         self.last_error = ""
@@ -88,6 +89,9 @@ class VTSParameterScheduler:
                 except (TypeError, ValueError):
                     pass
             normalized[parameter_id] = row
+        if self.desktop_owned_inputs is not None:
+            for parameter_id in self.desktop_owned_inputs():
+                normalized.pop(parameter_id, None)
         if normalized:
             self._layers[source] = normalized
             self._layer_updated_at[source] = time.monotonic()
@@ -136,7 +140,8 @@ class VTSParameterScheduler:
         # Mouth sync deliberately wins when both layers target the same input.
         for source in sorted(self._layers, key=lambda item: (item == "mouth", item)):
             merged.update(self._layers[source])
-        return [{"id": key, **value} for key, value in merged.items()]
+        owned = self.desktop_owned_inputs() if self.desktop_owned_inputs is not None else ()
+        return [{"id": key, **value} for key, value in merged.items() if key not in owned]
 
     async def flush(self) -> bool:
         parameters = self.merged_parameters()
@@ -158,6 +163,10 @@ class VTSParameterScheduler:
                 return False
             self._next_connection_attempt_at = 0.0
             self.connection_error = ""
+            if self.desktop_owned_inputs is not None and self.desktop_owned_inputs():
+                parameters = self.merged_parameters()
+                if not parameters:
+                    return False
             try:
                 await self.vts.inject_parameters(parameters=parameters, mode="set")
                 self.frames_sent += 1

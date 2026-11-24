@@ -27,7 +27,7 @@ OWNER = KIND
 # persona measured 8.9-19.2 s per turn. Every review budget therefore derives
 # from one ceiling, ordered so the provider call expires first, then the
 # supervised task, then the waiting parent; each layer records its own reason.
-REVIEW_BUDGET_SECONDS = 35
+REVIEW_BUDGET_SECONDS = 65
 REVIEW_MARGIN_SECONDS = 5
 REVIEW_PROVIDER_TIMEOUT_SECONDS = REVIEW_BUDGET_SECONDS - REVIEW_MARGIN_SECONDS
 REVIEW_WAIT_SECONDS = REVIEW_BUDGET_SECONDS + REVIEW_MARGIN_SECONDS

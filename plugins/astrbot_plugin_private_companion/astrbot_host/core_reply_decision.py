@@ -6,7 +6,7 @@ import logging
 from time import perf_counter
 
 from companion_v2.decision.conversation import decision_advice
-from companion_v2.decision.store import LayaSettingsError
+from companion_v2.decision.store import DEFAULTS, LayaSettingsError
 from companion_v2.execution.models import require, stamp
 from .group_admission import group_trigger_facts
 
@@ -15,28 +15,60 @@ logger = logging.getLogger(__name__)
 
 
 def _recent_private_messages(application, context, event_id, at):
-    """Read a small, authorized history window and keep the current turn separate."""
+    """Read the recent private dialogue, including the role's own proactive messages.
+
+    Replies and inputs come from the private dialogue; voluntary contacts are
+    background deliveries and live in their own history. Both are merged by
+    time so Laya sees the role's last word, even when it was a proactive one.
+    """
+    entries = []
     try:
         from companion_v2.conversation.private_history import PrivateConversationHistory
 
         history = PrivateConversationHistory(application.background_history)
         snapshot = history.capture(context, at, limit=6, max_chars=2400,
                                   exclude_event_id=event_id, action="conversation.reply")
-        items = history.read(snapshot, context, at, action="conversation.reply")
+        for item in history.read(snapshot, context, at, action="conversation.reply"):
+            entries.append((item.get("role"), item.get("text"),
+                            item.get("received_at") or item.get("delivered_at") or "", False))
     except Exception as error:
         logger.debug("[CompanionV2] Laya 私聊历史暂不可用 error_type=%s", type(error).__name__)
-        return []
+    try:
+        background = application.background_history
+        snapshot = background.capture(context, at, limit=3, max_chars=1600)
+        for item in background.read(snapshot, context, at):
+            entries.append(("assistant", item.get("text"), item.get("delivered_at") or "", True))
+    except Exception as error:
+        logger.debug("[CompanionV2] Laya 主动消息历史暂不可用 error_type=%s", type(error).__name__)
+    entries.sort(key=lambda entry: str(entry[2]))
+    # Spend the budget from the newest message backwards: the latest exchange
+    # is what decides whether the conversation has come to rest.
     recent, remaining = [], 1800
-    for item in items:
-        role = item.get("role")
-        body = str(item.get("text", "")).strip()
+    for role, text, moment, proactive in reversed(entries[-8:]):
+        body = str(text or "").strip()
         if role not in ("user", "assistant") or not body or remaining <= 0:
             continue
         body = body[:min(600, remaining)]
-        recent.append({"role": role, "text": body,
-                       "at": item.get("received_at") or item.get("delivered_at") or ""})
+        item = {"role": role, "text": body, "at": str(moment)}
+        if proactive:
+            item["proactive"] = True
+        recent.append(item)
         remaining -= len(body)
-    return recent
+    return list(reversed(recent))
+
+
+def _private_silence(result, active, threshold):
+    """Only a confident Laya `silent` ends a private turn; everything else replies."""
+    if result.get("status") != "ok" or active.get("action") != "silent":
+        return False, None
+    gate = {"threshold_percent": threshold}
+    confidence = result.get("action_confidence")
+    if type(confidence) not in (int, float):
+        return False, {**gate, "status": "confidence_unavailable"}
+    gate["action_probability_percent"] = round(confidence * 100, 2)
+    if confidence * 100 >= threshold:
+        return True, {**gate, "status": "passed"}
+    return False, {**gate, "status": "below_threshold"}
 
 
 def _recent_group_bot_messages(application, context, event_id, at):
@@ -162,6 +194,8 @@ def core_decision_facts(event, prepared, application, *, at):
                 "seconds_ago": max(0, round((at - parse_moment(turn["returned_at"])).total_seconds()))}
                 for turn in turns[-3:] if parse_moment(turn.get("returned_at")) is not None]
     elif context is not None:
+        inbound_at = getattr(native, "at", None)
+        facts["current_at"] = (inbound_at if isinstance(inbound_at, datetime) else at).isoformat()
         facts["recent_private_messages"] = _recent_private_messages(
             application, context, prepared.get("event_id") or getattr(native, "event_id", None), at)
     state_summary = _role_state_summary(application, context)
@@ -173,17 +207,7 @@ def core_decision_facts(event, prepared, application, *, at):
 async def prepare_core_reply_decision(event, prepared, *, application, now=None):
     """Inference failures retain the ordinary authorized core reply path."""
     started = perf_counter()
-    if prepared.get("channel") == "private":
-        result = {"status": "skipped", "reason": "private_default_reply",
-                  "applied_decision": {}, "suppress_reply": False,
-                  "elapsed_ms": round((perf_counter() - started) * 1000)}
-        prepared["laya_decision"] = result
-        logger.info(
-            "[CompanionV2] Laya 核心接话判断 event_ref=%s turn_id=%s channel=private "
-            "status=skipped action=reply reason=private_default_reply elapsed_ms=%s",
-            prepared.get("event_ref"), prepared.get("turn_id"), result["elapsed_ms"],
-        )
-        return result
+    private = prepared.get("channel") == "private"
     # A direct @ is an explicit invitation to speak.  Laya may classify the
     # text as "silent" (for example when the mention contains an image or a
     # short request), but that classification must not override the caller's
@@ -207,9 +231,17 @@ async def prepare_core_reply_decision(event, prepared, *, application, now=None)
     resolver = getattr(application, "laya_decision_resolver", None)
     service = None
     result = {"status": "skipped", "reason": "laya_resolver_unavailable"}
+    threshold = DEFAULTS["private_silence_confidence_threshold"]
     try:
         service = resolver(prepared.get("context")) if callable(resolver) else None
-        if service is not None:
+        settings = dict(DEFAULTS)
+        store = getattr(service, "store", None)
+        if private and store is not None:
+            settings = store.raw()
+            threshold = settings["private_silence_confidence_threshold"]
+        if service is not None and private and not settings["private_silence_enabled"]:
+            result = {"status": "skipped", "reason": "laya_private_disabled"}
+        elif service is not None:
             trace = getattr(service, "set_trace", None)
             if callable(trace):
                 trace(event_ref=prepared.get("turn_id"), source="conversation")
@@ -230,7 +262,17 @@ async def prepare_core_reply_decision(event, prepared, *, application, now=None)
         if detail:
             result["reason_detail"] = detail
     active, instruction = decision_advice(result)
-    result = {**result, "applied_decision": active, "suppress_reply": active.get("action") in ("wait", "silent")}
+    if private:
+        # Private keeps its debounce instead of Laya `wait`, and its ordinary
+        # reply keeps the prompt it had: Laya only decides whether to stay quiet.
+        suppress, gate = _private_silence(result, active, threshold)
+        instruction = ""
+        result = {**result, "applied_decision": active, "suppress_reply": suppress}
+        if gate is not None:
+            result["private_silence"] = gate
+            result["reason"] = "laya_private_silent" if suppress else "laya_private_silence_" + gate["status"]
+    else:
+        result = {**result, "applied_decision": active, "suppress_reply": active.get("action") in ("wait", "silent")}
     record_application = getattr(service, "record_application", None)
     if callable(record_application):
         record_application({"applied_decision": active, "suppress_reply": result["suppress_reply"]})

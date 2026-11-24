@@ -12,6 +12,7 @@
     configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。", life_activity_not_removable: "只有已完成或已取消的阅读记录可以删除。", life_journal_snapshot_unavailable: "生活与日记数据暂未同步完成，请稍后再试。" };
   let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null, archiveKind = "diary", loadSequence = 0;
+  const visibleView = () => tab === "archive" ? "archive" : tab === "interests" ? "interests" : tab === "sleep" ? "settings" : "reading";
   const pending = new Map();
   const booleanFields = ["enabled", "diary_enabled", "derive_enabled"];
   const numberFields = [];
@@ -51,7 +52,7 @@
     busy = value;
     document.querySelectorAll("button, select").forEach(b => { b.disabled = value; });
     $("close-dialog").disabled = false;
-    $("newer").disabled = value || datePage === 0; $("older").disabled = value || !state?.next_date;
+    $("newer").disabled = value || datePage === 0; $("older").disabled = value || !(state?.next_note_cursor || state?.next_date);
     $("more-activities").disabled = value || !state?.next_activity;
     $("first-activities").disabled = value || !activityCursor;
     $("start-host").disabled = value || state?.host_state === "running";
@@ -184,72 +185,140 @@
       }
     }
   }
+  // 兴趣页每 3 秒可能随轮询重绘：展开状态记在这里，数据没变时不重绘，
+  // 这样展开的卡片、正在输入的名称和键盘焦点都不会被刷掉。
+  const expanded = new Set(), listLimit = 8;
+  let interestSignature = "";
+  function foldCard(key, title, badge, line, tone = "") {
+    const card = node("details", undefined, "activity fold"); card.open = expanded.has(key);
+    card.addEventListener("toggle", () => { if (card.open) expanded.add(key); else expanded.delete(key); });
+    const summary = node("summary"), head = node("span", undefined, "fold-head");
+    head.append(node("strong", title, "fold-title"));
+    if (badge) head.append(node("span", badge, "badge" + (tone ? " " + tone : "")));
+    summary.append(head);
+    if (line) summary.append(node("span", line, "fold-line"));
+    const body = node("div", undefined, "fold-body"); card.append(summary, body);
+    return {card, body};
+  }
+  function appendLimited(list, key, rows) {
+    const showAll = () => expanded.has(key);
+    rows.forEach((row, index) => { row.hidden = index >= listLimit && !showAll(); list.append(row); });
+    if (rows.length <= listLimit) return;
+    const label = () => showAll() ? "收起" : `显示其余 ${rows.length - listLimit} 条`;
+    const more = node("button", label(), "quiet more"); more.type = "button";
+    more.setAttribute("aria-expanded", String(showAll()));
+    more.addEventListener("click", () => {
+      if (showAll()) expanded.delete(key); else expanded.add(key);
+      rows.slice(listLimit).forEach(row => { row.hidden = !showAll(); });
+      more.textContent = label(); more.setAttribute("aria-expanded", String(showAll()));
+    });
+    list.append(more);
+  }
+  function miniRow(title, meta, button) {
+    const row = node("div", undefined, "mini-row"), text = node("div", undefined, "mini-text");
+    text.append(node("strong", title), node("span", meta, "muted"));
+    row.append(text); if (button) row.append(button);
+    return row;
+  }
   function renderInterests() {
+    const signature = JSON.stringify([state.profile_hobbies, state.interests, state.disliked_items, state.recent_exposures]);
+    if (signature === interestSignature) return;
+    interestSignature = signature;
     const profile = $("profile-hobbies"); profile.replaceChildren();
-    if (state.profile_hobbies) profile.append(node("h3", "角色档案中的爱好"),
-      node("p", state.profile_hobbies, "prose"), node("p", "这是已有设定；下方是从实际活动中逐渐形成的线索。", "muted"));
+    if (state.profile_hobbies) {
+      const {card, body} = foldCard("profile", "角色档案中的爱好", "已有设定", state.profile_hobbies, "tone-quiet");
+      body.append(node("p", state.profile_hobbies, "prose"), node("p", "这是已有设定；下方是从实际活动中逐渐形成的线索。", "muted"));
+      profile.append(card);
+    }
     const list = $("interest-list"); list.replaceChildren();
     const items = state.interests || [];
     if (!items.length) list.append(node("p", "还没有可展示的兴趣线索。", "empty"));
     const labels = {exposed: "接触中", curious: "正在探索", active: "正在探索", established: "稳定爱好", disliked: "试过不喜欢", dormant: "长期未接触", paused: "已暂停"};
+    const tones = {established: "", disliked: "tone-danger", dormant: "tone-quiet", paused: "tone-quiet", exposed: "tone-accent", curious: "tone-accent", active: "tone-accent"};
     const groups = [["接触中", ["exposed"]], ["正在探索", ["curious", "active"]], ["稳定爱好", ["established"]],
       ["试过不喜欢", ["disliked"]], ["长期未接触或暂停", ["dormant", "paused"]]];
-    const ordered = groups.flatMap(([label, statuses]) => {
+    for (const [heading, statuses] of groups) {
       const entries = items.filter(item => statuses.includes(item.status));
-      return entries.length ? [{heading: label}, ...entries] : [];
-    });
-    for (const item of ordered) {
-      if (item.heading) { list.append(node("h3", item.heading)); continue; }
-      const card = node("article", undefined, "activity");
-      card.append(node("h3", item.name), node("span", labels[item.status] || item.status, "badge"));
-      if (item.exposure_count) card.append(node("p", `有效接触 ${item.exposure_count} 次 · ${item.content_count} 条内容 · 熟悉度 ${item.familiarity}`, "muted"));
-      if (item.summary) card.append(node("p", item.summary, "prose"));
-      for (const contact of item.contacts || []) card.append(node("p", `${date(contact.occurred_at)} · ${contact.platform} · ${contact.title}${contact.coverage ? " · " + (coverageNames[contact.coverage] || contact.coverage) : ""}`, "muted"));
-      if (item.next_question) card.append(node("p", "想继续了解：" + item.next_question, "muted"));
-      for (const evidence of item.evidence || []) card.append(node("p", `${date(evidence.occurred_at)} · ${evidence.source || "活动"}${evidence.active === false ? " · 历史反馈" : ""} · ${evidence.reason}`, "muted"));
-      const actions = node("div", undefined, "actions");
-      const args = {interest_id: item.interest_id, expected_revision: item.revision, view_token: item.view_token};
-      const pause = node("button", item.status === "paused" ? "恢复探索" : "暂停探索", "secondary");
-      pause.type = "button"; pause.addEventListener("click", () => send(item.status === "paused" ? "interest_resume" : "interest_pause", args));
-      const rename = node("button", "更正名称", "secondary"), field = document.createElement("input"), save = node("button", "保存名称", "secondary");
-      rename.type = save.type = "button"; field.value = item.name; field.maxLength = 50; field.setAttribute("aria-label", "兴趣名称");
-      field.hidden = save.hidden = true;
-      rename.addEventListener("click", () => { field.hidden = save.hidden = false; field.focus(); });
-      save.addEventListener("click", () => { if (field.value.trim()) send("interest_edit", {...args, name: field.value.trim()}); });
-      actions.append(pause, rename, field, save);
-      if (item.status === "disliked") {
-        const clear = node("button", "解除不喜欢", "secondary"); clear.type = "button";
-        clear.addEventListener("click", () => send("interest_clear_dislike", args)); actions.append(clear);
-      }
-      const targets = items.filter(other => other.interest_id !== item.interest_id);
-      if (targets.length) {
-        const select = document.createElement("select"); select.setAttribute("aria-label", "合并到的兴趣");
-        select.append(new Option("选择合并目标", ""), ...targets.map(other => new Option(other.name, other.interest_id)));
-        const merge = node("button", "合并到所选兴趣", "secondary"); merge.type = "button";
-        merge.addEventListener("click", () => { const target = targets.find(other => other.interest_id === select.value);
-          if (target) send("interest_merge", {...args, target_id: target.interest_id, target_revision: target.revision}); });
-        actions.append(select, merge);
-      }
-      card.append(actions); list.append(card);
+      if (!entries.length) continue;
+      const title = node("h3", heading, "group-head"); title.append(node("small", `${entries.length} 项`));
+      list.append(title);
+      appendLimited(list, "more:" + heading, entries.map(item => interestCard(item, items, labels, tones)));
     }
     const disliked = $("disliked-item-list"); disliked.replaceChildren();
-    if ((state.disliked_items || []).length) disliked.append(node("h3", "试过不喜欢的具体内容"));
-    for (const item of state.disliked_items || []) {
-      const card = node("article", undefined, "activity");
-      card.append(node("h3", item.title), node("p", `${item.platform} · ${date(item.occurred_at)}${item.reason ? " · " + item.reason : ""}`, "muted"));
-      const clear = node("button", "解除不喜欢", "secondary"); clear.type = "button";
-      clear.addEventListener("click", () => send("interest_item_clear", {dislike_id: item.dislike_id,
-        expected_revision: item.revision, view_token: item.view_token}));
-      card.append(clear); disliked.append(card);
+    const dislikedItems = state.disliked_items || [];
+    if (dislikedItems.length) {
+      const group = node("details", undefined, "fold-group"); group.open = expanded.has("group:disliked");
+      group.addEventListener("toggle", () => { if (group.open) expanded.add("group:disliked"); else expanded.delete("group:disliked"); });
+      const summary = node("summary", "试过不喜欢的具体内容"); summary.append(node("span", `${dislikedItems.length} 条 · 可逐条解除`));
+      const rows = node("div", undefined, "mini-list");
+      appendLimited(rows, "more:disliked", dislikedItems.map(item => {
+        const clear = node("button", "解除不喜欢", "secondary small"); clear.type = "button";
+        clear.addEventListener("click", () => send("interest_item_clear", {dislike_id: item.dislike_id,
+          expected_revision: item.revision, view_token: item.view_token}));
+        return miniRow(item.title, `${item.platform} · ${date(item.occurred_at)}${item.reason ? " · " + item.reason : ""}`, clear);
+      }));
+      group.append(summary, rows); disliked.append(group);
     }
     const recent = $("recent-exposure-list"); recent.replaceChildren();
-    for (const item of state.recent_exposures || []) {
-      const card = node("article", undefined, "activity");
-      const stages = {"获取":"已获取", "接触":"已接触", "尝试":"已尝试", "反馈":"已反馈"};
-      card.append(node("h3", item.title), node("p", `${item.platform} · ${date(item.exposed_at || item.fetched_at)} · ${stages[item.stage] || item.stage}${item.coverage ? " · " + (coverageNames[item.coverage] || item.coverage) : ""}${item.random_attempt ? " · 随机试读" : ""}`, "muted"));
-      recent.append(card);
-    }
+    const stages = {"获取":"已获取", "接触":"已接触", "尝试":"已尝试", "反馈":"已反馈"};
+    appendLimited(recent, "more:recent", (state.recent_exposures || []).map(item => miniRow(item.title,
+      `${item.platform} · ${date(item.exposed_at || item.fetched_at)} · ${stages[item.stage] || item.stage}${item.coverage ? " · " + (coverageNames[item.coverage] || item.coverage) : ""}${item.random_attempt ? " · 随机试读" : ""}`)));
     if (!(state.recent_exposures || []).length) recent.append(node("p", "暂无推荐接触记录。", "empty"));
+  }
+  function interestCard(item, items, labels, tones) {
+    const line = [item.familiarity != null && item.exposure_count ? `熟悉度 ${item.familiarity}` : "",
+      item.exposure_count ? `接触 ${item.exposure_count} 次` : "", item.summary || ""].filter(Boolean).join(" · ");
+    const {card, body} = foldCard("interest:" + item.interest_id, item.name, labels[item.status] || item.status, line, tones[item.status] || "");
+    if (item.summary) body.append(node("p", item.summary, "prose"));
+    if (item.exposure_count) body.append(node("p", `有效接触 ${item.exposure_count} 次 · ${item.content_count} 条内容 · 熟悉度 ${item.familiarity}`, "muted"));
+    if (item.next_question) body.append(node("p", "想继续了解：" + item.next_question, "muted"));
+    const trail = (heading, lines) => {
+      if (!lines.length) return;
+      const ul = node("ul", undefined, "trail"); lines.forEach(text => ul.append(node("li", text)));
+      body.append(node("h4", heading), ul);
+    };
+    const showDetails = detail => {
+      trail("最近接触", (detail.contacts || []).map(contact => `${date(contact.occurred_at)} · ${contact.platform} · ${contact.title}${contact.coverage ? " · " + (coverageNames[contact.coverage] || contact.coverage) : ""}`));
+      trail("感受记录", (detail.evidence || []).map(evidence => `${date(evidence.occurred_at)} · ${evidence.source || "活动"}${evidence.active === false ? " · 历史反馈" : ""} · ${evidence.reason}`));
+    };
+    let requested = false;
+    const loadDetails = async () => {
+      if (!card.open || requested || !item.compact) return;
+      requested = true;
+      const sequence = loadSequence;
+      try {
+        const result = await api("GET", {view: "interests", interest_id: item.interest_id, archive_kind: archiveKind});
+        if (sequence !== loadSequence) return;
+        const detail = result.interests?.find(entry => entry.interest_id === item.interest_id);
+        if (detail) showDetails(detail);
+      } catch (error) { requested = false; if (sequence === loadSequence) notice(error.message, true); }
+    };
+    card.addEventListener("toggle", loadDetails);
+    if (item.compact) void loadDetails(); else showDetails(item);
+    const actions = node("div", undefined, "actions");
+    const args = {interest_id: item.interest_id, expected_revision: item.revision, view_token: item.view_token};
+    const pause = node("button", item.status === "paused" ? "恢复探索" : "暂停探索", "secondary");
+    pause.type = "button"; pause.addEventListener("click", () => send(item.status === "paused" ? "interest_resume" : "interest_pause", args));
+    const rename = node("button", "更正名称", "secondary"), field = document.createElement("input"), save = node("button", "保存名称", "secondary");
+    rename.type = save.type = "button"; field.value = item.name; field.maxLength = 50; field.setAttribute("aria-label", "兴趣名称");
+    field.hidden = save.hidden = true;
+    rename.addEventListener("click", () => { field.hidden = save.hidden = false; field.focus(); });
+    save.addEventListener("click", () => { if (field.value.trim()) send("interest_edit", {...args, name: field.value.trim()}); });
+    actions.append(pause, rename, field, save);
+    if (item.status === "disliked") {
+      const clear = node("button", "解除不喜欢", "secondary"); clear.type = "button";
+      clear.addEventListener("click", () => send("interest_clear_dislike", args)); actions.append(clear);
+    }
+    const targets = items.filter(other => other.interest_id !== item.interest_id);
+    if (targets.length) {
+      const select = document.createElement("select"); select.setAttribute("aria-label", "合并到的兴趣");
+      select.append(new Option("选择合并目标", ""), ...targets.map(other => new Option(other.name, other.interest_id)));
+      const merge = node("button", "合并到所选兴趣", "secondary"); merge.type = "button";
+      merge.addEventListener("click", () => { const target = targets.find(other => other.interest_id === select.value);
+        if (target) send("interest_merge", {...args, target_id: target.interest_id, target_revision: target.revision}); });
+      actions.append(select, merge);
+    }
+    body.append(actions); return card;
   }
   const blockedRetries = new Set();
   function renderReceipts() {
@@ -312,13 +381,16 @@
   async function load(preserveNotice = false) {
     if (!bridge) return;
     const sequence = ++loadSequence;
+    clearTimeout(polling);
     try {
-      const result = await api("GET", { archive_kind: archiveKind, ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
+      const result = await api("GET", { compact: "1", limit: 20, view: visibleView(), archive_kind: archiveKind,
+        ...(datePages[datePage] ? (archiveKind === "diary" ? { before: datePages[datePage] } : { note_cursor: datePages[datePage] }) : {}),
+        ...(activityCursor ? { after_activity: activityCursor } : {}) });
       if (sequence !== loadSequence) return;
       state = result;
       if (!preserveNotice) notice(""); render();
       clearTimeout(polling);
-      if (state.running.length || state.activities.some(a => a.state === "active") || state.config.reading_enabled) polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, 3000);
+      if (state.refresh_active || state.running.length || state.activities.some(a => a.state === "active") || state.reading_plan?.state === "choosing") polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, 3000);
     } catch (error) {
       if (sequence !== loadSequence) return;
       state = selected = null;
@@ -352,6 +424,7 @@
   document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
     tab = b.dataset.tab; document.querySelectorAll("[data-tab]").forEach(x => x.setAttribute("aria-current", x === b ? "page" : "false"));
     document.querySelectorAll(".tab-panel").forEach(p => { p.hidden = p.id !== tab; }); $("activity-pages").hidden = !["reading", "sleep", "social"].includes(tab);
+    void load();
   }));
   document.querySelectorAll("[data-archive-kind]").forEach(b => b.addEventListener("click", () => {
     if (archiveKind === b.dataset.archiveKind) return;
@@ -439,7 +512,7 @@
   $("epub-folder").addEventListener("change", importBooks);
   $("start-sleep").addEventListener("click", () => open("sleep"));
   $("write-diary").addEventListener("click", () => send("diary"));
-  $("older").addEventListener("click", () => { datePages[++datePage] = state.next_date; load(); });
+  $("older").addEventListener("click", () => { datePages[++datePage] = state.next_note_cursor || state.next_date; load(); });
   $("newer").addEventListener("click", () => { datePage--; load(); });
   $("more-activities").addEventListener("click", () => { activityCursor = state.next_activity; load(); });
   $("first-activities").addEventListener("click", () => { activityCursor = null; load(); });

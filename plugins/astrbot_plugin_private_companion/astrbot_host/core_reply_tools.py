@@ -651,7 +651,8 @@ class CoreReplyToolSession:
             result, _ = memory.execute(context, self.turn_id, "read", action, arguments)
             return result
         if owner == "calendar":
-            payload = app.tools.calendar.calendar.inventory(context, **{"limit": 20, **arguments})
+            # Same read as the V2 tool loop, so the core reply also sees the role's own timetable (classes).
+            payload = app.tools.calendar.query(context, arguments)
             return {"state": "succeeded", "effect": "none", "payload": payload}
         if owner in ("growth", "timeline"):
             reader = getattr(app.tools, owner)

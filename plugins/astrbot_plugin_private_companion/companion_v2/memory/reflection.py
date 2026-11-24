@@ -15,7 +15,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.foundation.refs import ScopeKind
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.sources.models import SourceRecord
 from companion_v2.relationships import anniversaries
 
@@ -51,7 +51,7 @@ def reflection_output_tokens(configured):
 
 def reflection_profile(provider, *, max_output_tokens=4096):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
-        "按原人格整理已授权资料，有来源地更新认识，允许不修改。", max_output_tokens=max_output_tokens)
+        "按原人格整理已授权资料，有来源地更新认识，允许不修改。", max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 class MemoryReflection:
@@ -62,10 +62,8 @@ class MemoryReflection:
         self._closed, self._invocations = False, set()
         self.selection = ReflectionSelection(self)
         binding = ProviderBinding("memory.extract", "local", "1", "memory-extract-1")
-        # Model routing allows 600 seconds per provider, with one fallback.
-        # The task must leave room for both attempts and its local checkpoint.
         self.registrations = (TaskRegistration(TaskDefinition(KIND, "memory", "memory.reflect", Lane.BACKGROUND,
-            side_effect=SideEffect.LOCAL, binding=binding, timeout_seconds=1230, max_attempts=1, concurrency=1), self.validate),)
+            side_effect=SideEffect.LOCAL, binding=binding, timeout_seconds=BACKGROUND_TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, memory, gateway, *, require_running=None):
         if self.gateway is not None or gateway.runtime is not self.runtime or memory.runtime is not self.runtime:

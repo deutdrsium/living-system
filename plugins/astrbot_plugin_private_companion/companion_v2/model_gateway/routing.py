@@ -12,7 +12,7 @@ from companion_v2.conversation.foreground import PromptRequest
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.runner import TaskRun
 
-from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
+from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, MAX_MODEL_TIMEOUT_SECONDS, ModelEnvelope, ModelTaskProfile
 from .refusal import parse_refusal_terms
 from .replacement_rules import checked_rules, match_route, output_capabilities, validate_targets
 
@@ -34,7 +34,7 @@ def configuration_fields(profiles: tuple[ModelTaskProfile, ...]) -> tuple[FieldD
             ("timeout_seconds", ValueKind.INTEGER, profile.timeout_seconds),
             ("replacement_scope", ValueKind.TEXT, profile.replacement_scope),
         ):
-            boundaries = ({"minimum": 1, "maximum": 600} if suffix == "timeout_seconds" else
+            boundaries = ({"minimum": 1, "maximum": MAX_MODEL_TIMEOUT_SECONDS} if suffix == "timeout_seconds" else
                           {"minimum": 1, "maximum": MAX_MODEL_OUTPUT_TOKENS} if kind is ValueKind.INTEGER else {})
             if suffix == "refusal_terms":
                 boundaries = {"maximum_chars": 4096}
@@ -126,7 +126,7 @@ class ModelRouter:
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
 
-    def _route_selection(self, profile, values, context, request, at):
+    def _route_selection(self, profile, values, context, request, at, *, fallback_saved=False):
         rules = checked_rules(values["replacement_rules"])
         texts = [material.payload for material in request.context.materials
                  if material.source is not None and material.source.scope == context.scope
@@ -137,8 +137,10 @@ class ModelRouter:
                     values["replacement_scope"] == "plugin" and profile.kind != "conversation.reply")
         match = match_route(rules, "\n".join(texts), at) if in_scope else None
         primary = match.provider_id if match else values["provider"]
+        # A saved fallback equal to the primary means "retry the same route once".
+        # The registry/host default copies the primary and still means no fallback.
         provider_ids = (primary,) + ((values["fallback"],)
-            if values["fallback"] and values["fallback"] != primary else ())
+            if values["fallback"] and (values["fallback"] != primary or fallback_saved) else ())
         selected = tuple(self.providers.get(provider_id) for provider_id in provider_ids)
         if any(provider is None for provider in selected):
             raise TaskError("model_provider_unavailable", "configured provider has no local adapter")
@@ -156,7 +158,9 @@ class ModelRouter:
         snapshot = self.apply_provider_default(profile, snapshot, self.provider_default(context, profile, snapshot))
         values = {name.rsplit(".", 1)[1]: item.value for name, item in snapshot.fields.items()}
         self._validate_route_targets(profile, values)
-        match, providers, _ = self._route_selection(profile, values, context, request, at)
+        match, providers, _ = self._route_selection(
+            profile, values, context, request, at,
+            fallback_saved=snapshot.fields[profile.group + ".fallback"].source is not None)
         ceiling, basis = self._output_ceiling(profile, snapshot, values, self.providers)
         if basis == "explicit":
             self._validate_route_targets(profile, values, max_output_tokens=ceiling)
@@ -187,14 +191,13 @@ class ModelRouter:
         # route adopted: a refusal has to name both sides of the comparison, and
         # only this one is what the operator can edit.
         saved_max_output_tokens = values["max_output_tokens"]
-        fallback_field = routed_snapshot.fields[profile.group + ".fallback"]
-        if provider_id is None and values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
-            raise TaskError("model_fallback_duplicate", "fallback must select a different provider")
+        fallback_saved = routed_snapshot.fields[profile.group + ".fallback"].source is not None
         evaluated_at = run.supervisor.now()
         try:
             if provider_id is None:
                 self._validate_route_targets(profile, values)
-                match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+                match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at,
+                                                                  fallback_saved=fallback_saved)
                 ceiling, basis = self._output_ceiling(profile, routed_snapshot, values, self.providers)
                 if basis == "explicit":
                     self._validate_route_targets(profile, values, max_output_tokens=ceiling)

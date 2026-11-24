@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from httpx import Timeout
 from openai.types.responses import Response
 
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -83,8 +84,10 @@ class _FakeClient:
         self.responses = _FakeResponses(state)
         self.max_retries = max_retries
         self.base_url = NS(host="api.example.invalid")
+        self.timeout = Timeout(120, connect=5)
 
-    def with_options(self, *, max_retries):
+    def with_options(self, *, max_retries, timeout=None):
+        self.state.request_timeout = timeout
         return _FakeClient(self.state, max_retries)
 
 
@@ -280,12 +283,15 @@ class ResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.failure, ModelFailure.WIRE_DECODE)
 
     async def test_memory_reflection_captures_the_normalized_response(self):
-        native, _state = make_provider()
+        native, state = make_provider()
         adapter = make_adapter(native)
-        native.client.state.behavior = lambda **_: _response('{"summary":"记得"}')
+        state.behavior = lambda **_: _response('{"summary":"记得"}')
+        envelope = replace(make_envelope(output_format="memory_reflection"), transport_read_timeout=600)
 
-        response = await adapter.generate(make_envelope(output_format="memory_reflection"))
+        response = await adapter.generate(envelope)
 
+        self.assertEqual(state.request_timeout, Timeout(120, connect=5, read=600))
+        self.assertEqual(native.client.timeout, Timeout(120, connect=5))
         self.assertEqual(response.status, "generated")
         self.assertEqual(response.captured_output.text, '{"summary":"记得"}')
         self.assertEqual(response.captured_output.finish_reason, "stop")
@@ -351,6 +357,28 @@ class ResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.failure, ModelFailure.PREPARATION)
             self.assertEqual(response.diagnostics.error_code, "host_media_unsupported")
         self.assertEqual(state.calls, [])
+
+    async def test_relay_timeouts_are_ordinary_not_generated_failures(self):
+        class RelayError(Exception):
+            def __init__(self, message, status_code):
+                super().__init__(message)
+                self.status_code = status_code
+
+        for error in (RelayError("Request Timeout", 408), RelayError("Gateway Timeout", 504),
+                      RelayError("litellm.Timeout: upstream exceeded 300s wall-clock limit", 500)):
+            native, state = make_provider()
+            adapter = make_adapter(native)
+
+            def behavior(**_):
+                raise error
+
+            state.behavior = behavior
+            with self.subTest(error=str(error)), self.assertLogs(provider_module.logger, "WARNING") as logs:
+                response = await adapter.generate(make_envelope())
+            self.assertEqual(response.status, "not_started")
+            self.assertEqual(response.failure, ModelFailure.TRANSPORT)
+            self.assertEqual(response.diagnostics.error_code, "upstream_timeout")
+            self.assertIn("上游超时", "\n".join(logs.output))
 
     async def test_image_urls_survive_native_preparation(self):
         native, state = make_provider()

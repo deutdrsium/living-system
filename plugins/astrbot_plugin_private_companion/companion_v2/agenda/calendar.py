@@ -8,6 +8,7 @@ from companion_v2.execution.models import TaskError, digest, encode, require, st
 from companion_v2.foundation.refs import OperationRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
 from companion_v2.integration import calendar_reminder_hold
+from companion_v2.role_work.state.ownership import role_owner
 from .calendar_access import CalendarAccess
 from .models import AgendaTarget, Schedule
 from .records import CalendarRecords
@@ -45,7 +46,7 @@ class _LifeCalendarReader:
         self._calendar, self._records = calendar, records
 
     def __getattr__(self, name):
-        if name not in LIFE_RECORD_METHODS:
+        if name not in (*LIFE_RECORD_METHODS, "planned_spending", "class_sessions"):
             raise AttributeError(name)
 
         def read(*args, **kwargs):
@@ -106,6 +107,27 @@ class CalendarService:
     @records.setter
     def records(self, records):
         self._legacy_records = records
+
+    def planned_spending(self, context, at, *, timezone_name=None):
+        if self._life_calendar_owner() != "good_life":
+            return None
+        try:
+            self.access.check(context, "calendar.read" if timezone_name else "role.life.read", at=at)
+            return self.records.planned_spending(owner_key=digest(role_owner(context)), context_key=context.key,
+                                                 at=at, timezone_name=timezone_name)
+        except TaskError:
+            return None
+
+    def class_sessions(self, context, start, end):
+        """The role's own timetable sessions from the life plugin; None when academics is unavailable."""
+        if self._life_calendar_owner() != "good_life":
+            return None
+        try:
+            self.access.check(context, "calendar.read", at=start)
+            return self.records.class_sessions(owner_key=digest(role_owner(context)), context_key=context.key,
+                                               start=start, end=end)
+        except TaskError:
+            return None
 
     def set_life_bridge_resolver(self, resolver):
         if not callable(resolver):

@@ -192,11 +192,14 @@ class HourCurveAdjustmentTests(unittest.TestCase):
 
 
 class ReceiptAndInstructionTests(unittest.TestCase):
-    def test_role_wake_at_reads_body_sleep_receipt(self):
-        body = {"state": "awake", "last_completed": {"completed_at": "2026-10-12T06:40:00+08:00"}}
+    def test_role_wake_at_reads_sleep_execution_receipt(self):
+        body = {"state": "awake", "ended_at": "2026-10-12T06:40:00+08:00", "slept_minutes": 420}
         self.assertEqual(role_wake_at(body), datetime(2026, 10, 11, 22, 40, tzinfo=ZoneInfo("UTC")))
-        self.assertIsNone(role_wake_at({"state": "sleeping", "last_completed": {}}))
-        self.assertIsNone(role_wake_at({"state": "awake", "last_completed": {"completed_at": "2026-10-12T06:40:00"}}))
+        self.assertIsNone(role_wake_at({"state": "sleeping", "ended_at": None}))
+        self.assertIsNone(role_wake_at({"state": "interrupted", "ended_at": None}))
+        self.assertIsNone(role_wake_at({"state": "awake", "ended_at": "2026-10-12T06:40:00"}))
+        cancelled = {"state": "interrupted", "ended_at": "2026-10-12T06:40:00+08:00"}
+        self.assertEqual(role_wake_at(cancelled), datetime(2026, 10, 11, 22, 40, tzinfo=ZoneInfo("UTC")))
 
     def test_instructions_keep_the_evidence_boundary(self):
         self.assertIn("角色自己醒来", MORNING_INSTRUCTION)

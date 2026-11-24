@@ -71,7 +71,7 @@ test("environment summary points to the role weather settings below", async () =
 
   assert.match(environment.innerHTML, /角色所在地[\s\S]*自定义测试区域/);
   assert.match(environment.innerHTML, /当前实况来源 · Open-Meteo/);
-  assert.match(environment.innerHTML, /官方预警源尚未就绪 · 需和风凭据/);
+  assert.match(environment.innerHTML, /<span>官方预警源尚未就绪<\/span>/);
   assert.match(environment.innerHTML, /同一角色的私聊共用/);
   assert.doesNotMatch(environment.innerHTML, /角色地点与观测时效、主动天气问候/);
   assert.doesNotMatch(environment.innerHTML, /统一在日程工作区维护/);

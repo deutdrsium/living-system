@@ -2,7 +2,7 @@
 
 from companion_v2.execution.models import TaskError, require
 from companion_v2.identity_policy.private_domain import source_ref
-from companion_v2.sources.dependencies import key
+from companion_v2.sources.dependencies import key, validation_batch
 from companion_v2.storage.codec import decode_timestamp, scope_from_row
 from companion_v2.foundation.refs import SourceRef, VersionRef
 
@@ -25,7 +25,9 @@ class StateEvidence:
             if key(reference) in seen:
                 continue
             seen.add(key(reference))
-            require(repository.validate_reference(reference, observed_at=at))
+            # Batch only the walk: a good_life state owner must not be dispatched inside its pinned snapshot.
+            with validation_batch(self.service.runtime, at):
+                require(repository.validate_reference(reference, observed_at=at))
             from companion_v2.conversation.native_observations import NATIVE_OWNERS, source_row, validate_observation
             if reference.owner in NATIVE_OWNERS:
                 original = source_row(self.service.runtime, reference)

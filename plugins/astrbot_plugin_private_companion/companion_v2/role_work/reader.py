@@ -13,7 +13,7 @@ from companion_v2.execution.runner import ExactTaskRunner, RunResult
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, VersionRef
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, ModelTaskProfile
 from companion_v2.model_gateway.life_tasks import MODEL_TASK_TIMEOUT_SECONDS
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -28,13 +28,13 @@ READ_ACTION = "role.reading.record"
 
 def reading_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(READ_KIND, Lane.BACKGROUND, provider,
-        "保持原人格，阅读本次实际提供的原文片段。", max_output_tokens=max_output_tokens)
+        "保持原人格，阅读本次实际提供的原文片段。", max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def book_choice_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(CHOICE_KIND, Lane.BACKGROUND, provider,
         "参考人格、兴趣和日程，从候选书中选择一本，或暂时不读。",
-        max_output_tokens=max_output_tokens, timeout_seconds=60)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)

@@ -90,6 +90,23 @@ async function boot(at="2026-11-18T01:00:00Z") {
   };
 }
 
+test("wallet loads independently of the paired snapshot and keeps its hidden life iframe inactive", async () => {
+  const app = await boot();
+  await app.frameMessage({kind:"ready"});
+  assert.equal(app.frameMessages.filter(message => message.kind === "context").at(-1).context.active, false);
+  app.selectPage("wallet");
+  const wallet = app.reads.find(read => read.route.endsWith("/life/wallet"));
+  assert.ok(wallet, "wallet starts even while the initial life/state pair is unresolved");
+  wallet.resolve({label:"wallet ready"}); await app.settle();
+  assert.equal(app.frameMessages.filter(message => message.kind === "context").at(-1).context.active, false);
+  await resolveSnapshot(app, 0, "a", "initial");
+  const count = app.reads.length;
+  await app.advance(2 * minute);
+  assert.equal(app.reads.length, count, "wallet does not poll hidden overview/state snapshots");
+  app.selectPage("reading");
+  assert.equal(app.frameMessages.filter(message => message.kind === "context").at(-1).context.active, true);
+});
+
 function life(tag) {
   return {activities:[{activity_id:tag, title:`活动 ${tag}`, state:"active", started_at:"2026-11-18T00:00:00Z"}]};
 }
@@ -366,6 +383,63 @@ test("confirmed saves start a pair immediately when idle and share its state eve
   }
 });
 
+const fall = {term_id:"2026-fall", start_date:"2026-09-01", end_date:"2027-01-20", timezone:"Asia/Shanghai"};
+async function resolveClasses(app, index, range, items=[], places) {
+  const terms = app.reads[index];
+  assert.equal(terms.route, `${rolePath("a")}/academics/term`);
+  terms.resolve({revision:1, terms:[{...fall, term_id:"2025-spring", start_date:"2025-02-01", end_date:"2025-07-01"}, fall]});
+  await app.settle();
+  const occurrences = app.reads[index + 1];
+  assert.equal(occurrences.route, `${rolePath("a")}/academics/occurrences`);
+  assert.deepEqual({...occurrences.body}, {term_id:"2026-fall", ...range}, "current term, dates, end exclusive");
+  occurrences.resolve({revision:1, term_id:"2026-fall", timezone:"Asia/Shanghai", ...range, items});
+  await app.settle();
+  if (places) {
+    const setup = app.reads[index + 2];
+    assert.equal(setup.route, `${rolePath("a")}/academics/places`);
+    setup.resolve(places);
+    await app.settle();
+  }
+}
+
+test("today's class sessions come from the academics read and fill the agenda", async () => {
+  const app = await boot("2026-11-23T02:30:00Z");
+  app.reads[0].resolve({activities:[]});
+  app.reads[1].resolve({settings:{planning_timezone:"Asia/Shanghai"}, occurrences:{items:[]}});
+  await app.settle();
+  const range = {start:"2026-11-23", end:"2026-11-24"};
+  app.reads[2].resolve({...range, timezone:"Asia/Shanghai", items:[]});
+  await resolveClasses(app, 3, range, [
+    {session_id:"s1", course_name:"马克思主义哲学导论", start_at:"2026-11-23T01:55:00Z", end_at:"2026-11-23T03:35:00Z",
+      local_date:"2026-11-23", place_id:"p6", cancelled:false},
+    {session_id:"s2", course_name:"停上的课", start_at:"2026-11-23T05:00:00Z", end_at:"2026-11-23T06:40:00Z",
+      local_date:"2026-11-23", place_id:"p6", cancelled:true}],
+    {classes_enabled:true, places:[{place_id:"p6", name:"示例教学楼", type:"teaching"}]});
+  const html = app.byId("upcoming").innerHTML;
+  assert.match(html, /马克思主义哲学导论<\/strong><small>课程 · 上课中<\/small><small class="gl-agenda-detail">示例教学楼/);
+  assert.doesNotMatch(html, /停上的课|此刻未安排|不完整/);
+  assert.match(app.byId("current").innerHTML, /马克思主义哲学导论/);
+});
+
+test("an unavailable academics read keeps blank time unknown", async () => {
+  for (const fail of [read => read.reject(Object.assign(new Error("off"), {code:"missing_dependency"})),
+    read => read.resolve({revision:0, terms:[]})]) {
+    const app = await boot("2026-11-23T02:30:00Z");
+    app.reads[0].resolve({activities:[]});
+    app.reads[1].resolve({settings:{planning_timezone:"Asia/Shanghai"}, occurrences:{items:[]}});
+    await app.settle();
+    app.reads[2].resolve({start:"2026-11-23", end:"2026-11-24", timezone:"Asia/Shanghai", items:[]});
+    assert.equal(app.reads[3].route, `${rolePath("a")}/academics/term`);
+    fail(app.reads[3]);
+    await app.settle();
+    const html = app.byId("upcoming").innerHTML;
+    assert.match(html, /日程数据不完整/);
+    assert.match(html, /课表暂未读取/);
+    assert.doesNotMatch(html, /gl-agenda-gap/);
+    assert.equal(app.reads.length, 4);
+  }
+});
+
 test("matching range metadata cannot verify a three-minute-fast browser near role-local midnight", async () => {
   const timezone = "Asia/Shanghai";
   const serverAt = Date.parse("2026-11-18T15:59:00Z");
@@ -385,7 +459,7 @@ test("matching range metadata cannot verify a three-minute-fast browser near rol
     const first = Date.parse(browserAt) + 30 * minute;
     range.resolve({start, end, timezone, items:[{id:"slot", title:"计划",
       start:new Date(first).toISOString(), end:new Date(first + 30 * minute).toISOString()}]});
-    await app.settle();
+    await resolveClasses(app, 3, {start, end});
     const html = app.byId("upcoming").innerHTML;
     assert.equal(/不完整/.test(html), !complete);
     assert.equal(/gl-agenda-gap/.test(html), complete);
@@ -514,7 +588,10 @@ test("wallet uses a verified life timezone when state fails and prefers a verifi
   app.reads[1].reject(new Error("state failed"));
   await app.settle();
   assert.equal(app.byId("wallet").innerHTML, "America/Los_Angeles");
+  // Passive wallet views no longer request hidden overview/state snapshots.
+  app.selectPage("overview");
   await app.advance(2 * minute);
+  app.selectPage("wallet");
   app.reads[4].resolve({...state("recovered"), settings:{planning_timezone:"Europe/Paris"}});
   await app.settle();
   assert.equal(app.byId("wallet").innerHTML, "Europe/Paris");

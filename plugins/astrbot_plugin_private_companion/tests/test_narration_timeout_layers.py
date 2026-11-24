@@ -72,8 +72,8 @@ class NarrationLayerTests(unittest.TestCase):
     def test_every_layer_inside_the_configured_wait_is_ordered(self):
         # These are the values one wait implies. What this plugin budgets per call
         # is the task layer; the model round adds its own profile default, so the
-        # round tests below cover both sides of the 7 s / 19 s boundary.
-        for waits, layers in ((range(3, 31), image_narration_layers),
+        # round tests below cover both sides of the model and task timeout ordering.
+        for waits, layers in ((range(3, 61), image_narration_layers),
                               (range(3, 61), video_narration_layers)):
             for wait in waits:
                 provider, task, parent = layers(wait)
@@ -235,6 +235,10 @@ class ImageNarrationRoundTests(_NarrationFixture, unittest.IsolatedAsyncioTestCa
             return await self.service.summarize(parent_run, "batch-1", self.settings())
 
     async def test_a_round_that_outlives_its_provider_budget_is_reported_by_the_model_layer(self):
+        # Use a short saved model timeout to exercise the provider layer.
+        self.wait_seconds = 6
+        self.provider_seconds = 2
+        _, self.budget_seconds, self.wait = image_narration_layers(self.wait_seconds)
         with self.assertLogs(self.logger_name, level="INFO") as captured:
             caption = await self.caption()
         self.assertEqual(caption, "")
@@ -242,16 +246,14 @@ class ImageNarrationRoundTests(_NarrationFixture, unittest.IsolatedAsyncioTestCa
         self.assertIn("code=model_timeout", logged,
                       "the layer that stopped the round must name itself")
         self.assertNotIn("image_narration_wait_exhausted", logged)
-        self.assertIn("provider_seconds_default=%s" % self.provider_seconds, logged)
+        self.assertIn(f"provider_seconds_default={IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS}", logged)
         self.assertAlmostEqual(self.deadline_seconds(), self.budget_seconds, delta=1)
         self.assertEqual(dict(self.events()[-1]), {"state": "failed", "reason": "worker_error"})
         self.assertEqual(self.rounds, 1)
 
     async def test_a_wait_below_the_provider_default_stops_at_the_task_layer(self):
-        # The wait is configurable down to 1 s while the round keeps the profile
-        # default, so below a 7 s wait the supervised task expires first. That is
-        # still a named stop -- it is never the silent outer cancellation this
-        # change removes.
+        # A short configured wait gives the supervised task an earlier deadline
+        # than the model profile, so the task records the timeout.
         self.wait_seconds = 3
         _, self.budget_seconds, self.wait = image_narration_layers(self.wait_seconds)
         with self.assertLogs(self.logger_name, level="INFO") as captured:

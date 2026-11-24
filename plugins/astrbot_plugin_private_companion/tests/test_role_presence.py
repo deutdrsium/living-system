@@ -52,6 +52,57 @@ class FakePresence:
 
 
 class PresenceTests(StateFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_status_refresh_is_throttled_while_typing_is_checked_each_pass(self):
+        wall = NOW
+        host, app, context, manager = self.setup_state(now=lambda: wall)
+        self.configure(manager, presence_enabled=True)
+        await self.start(host)
+        wall += timedelta(hours=2)
+        coordinator = PresenceCoordinator(app, FakePresence())
+        self.addAsyncCleanup(coordinator.close)
+        coordinator.bind(context)
+        with patch.object(coordinator, "_sync_status", wraps=coordinator._sync_status) as sync, \
+                patch.object(coordinator, "_advance_typing", wraps=coordinator._advance_typing) as typing, \
+                patch("companion_v2.delivery.presence.monotonic", return_value=100) as elapsed:
+            coordinator.advance()
+            elapsed.return_value = 105  # The worker starts after it was queued.
+            await coordinator.status_worker
+            wall += timedelta(seconds=1)
+            elapsed.return_value = 106
+            coordinator.advance()
+            wall -= timedelta(hours=1)
+            elapsed.return_value = 134
+            coordinator.advance()
+            self.assertEqual(sync.await_count, 1)
+            elapsed.return_value = 135
+            coordinator.advance()
+            await coordinator.status_worker
+            self.assertEqual(sync.await_count, 2)
+            self.assertEqual(typing.call_count, 4)
+
+    async def test_native_reply_intake_restores_online_before_the_next_periodic_refresh(self):
+        port = FakePresence()
+        host, app, context, manager = self.setup_state()
+        self.configure(manager, enabled=True, online_status_enabled=True)
+        app.role_state.write(context, data=state_data(online_mode="invisible"),
+                             expected_revision=0, operation_key="old-invisible")
+        await self.start(host)
+        coordinator = PresenceCoordinator(app, port)
+        self.addAsyncCleanup(coordinator.close)
+        coordinator.bind(context)
+        with patch("companion_v2.delivery.presence.monotonic", return_value=100) as elapsed:
+            coordinator.advance()
+            await coordinator.status_worker
+            self.assertEqual([mode for _, mode in port.modes], ["invisible"])
+            self.clock.advance(timedelta(seconds=1))
+            elapsed.return_value = 101
+            coordinator.begin_native_reply(context, "quick-reply")
+            coordinator.finish_native_reply(context, "quick-reply")
+            await coordinator.status_worker
+            self.assertEqual([mode for _, mode in port.modes], ["invisible", "online"])
+            coordinator.advance()
+            self.assertIsNone(coordinator.status_worker)
+
     async def test_real_reply_restores_online_without_reapplying_old_away_after_finish(self):
         port = FakePresence()
         host, app, context, manager = self.setup_state(presence_port=port)

@@ -10,19 +10,21 @@ from unittest.mock import AsyncMock, patch
 
 from astrbot.core.config import DEFAULT_CONFIG
 from astrbot.core.pipeline.process_stage.stage import ProcessStage
-from companion_v2.conversation.reply_settings import ReplyConfigurationOwner, configuration_fields, target_for
+from companion_v2.conversation.reply_settings import (ReplyConfigurationOwner, configuration_fields,
+                                                      retire_private_closing_values, target_for, validate)
 from companion_v2.conversation.participation import (CONFIG_GROUP, GroupParticipationConfigurationOwner,
                                                     configuration_fields as participation_fields)
 from companion_v2.decision.client import LayaClientError
 from astrbot_host.laya_client import LayaDecisionClient
 from companion_v2.decision.contract import CONFIGURABLE_DECISION_FIELDS
-from companion_v2.decision.prompt import DECISION_QUESTIONS, decision_questions
+from companion_v2.decision.prompt import build_state, decision_questions, render_model_state
 from companion_v2.decision.service import LayaDecisionService
 from companion_v2.decision.store import LayaSettingsStore, LayaSettingsError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.model_gateway.core_observations import observations_for_role
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
-from astrbot_host.core_reply_decision import core_decision_facts
+from astrbot_host.core_reply_decision import _private_silence, _recent_private_messages, core_decision_facts
+from companion_v2.configuration.models import encode
 from tests.group_host_support import GroupFixture, group_config
 from tests.test_laya_decision import laya_result
 from tests.test_main_no_reply import ENTRY
@@ -46,8 +48,50 @@ class CoreDecisionPromptTests(unittest.TestCase):
         private = decision_questions({"scope_kind": "private"}, enabled)
         self.assertIn("未叫机器人时旁听", group["action"]["criteria"]["silent"])
         self.assertIn("候选", group["action"]["instructions"])
-        self.assertEqual(private["action"]["criteria"]["silent"], DECISION_QUESTIONS["action"]["criteria"]["silent"])
+        self.assertNotIn("旁听", private["action"]["criteria"]["silent"])
         self.assertNotIn("interject", private["action"]["criteria"])
+
+    def test_private_question_asks_whether_the_conversation_has_come_to_rest(self):
+        from companion_v2.decision.prompt import PRIVATE_ACTION_QUESTION
+        private = decision_questions({"scope_kind": "private"}, dict.fromkeys(CONFIGURABLE_DECISION_FIELDS, True))
+        self.assertEqual(private["action"], PRIVATE_ACTION_QUESTION)
+        self.assertTrue(private["action"]["instructions"].startswith("当前消息是唯一待判断发言。这是私聊。"))
+        self.assertNotIn("历史只用于", private["action"]["instructions"])
+        self.assertEqual(set(private["action"]["criteria"]), {"reply", "silent", "wait", "clarify"})
+        self.assertEqual(private["turn_state"], decision_questions({"scope_kind": "unknown"}, {})["turn_state"])
+
+    def test_private_state_renders_recent_dialogue_with_the_roles_proactive_last_word(self):
+        facts = {"scope_kind": "private", "user_text": "那就明天见\n晚安",
+                 "current_at": "2025-01-15T14:05:00+00:00", "recent_private_messages": [
+            {"role": "user", "text": "今天的展览结束了", "at": "2025-01-15T13:00:00+00:00"},
+            {"role": "assistant", "text": "明早再聊展览，晚安呀", "at": "2025-01-15T14:00:00+00:00",
+             "proactive": True}]}
+        model = json.loads(render_model_state(build_state(facts)))["facts"]
+        self.assertEqual(model["conversation_basis"], "validated_private_native_dialogue")
+        self.assertTrue(model["assistant_reply_returned"])
+        self.assertEqual(model["conversation"][-1], {"speaker": "assistant", "at": "2025-01-15T14:00:00+00:00",
+                                                     "message": "明早再聊展览，晚安呀", "proactive": True})
+        self.assertEqual(model["user_text"], "那就明天见\n晚安")
+        self.assertEqual(model["current_at"], "2025-01-15T14:05:00+00:00")
+
+    def test_private_history_merges_proactive_contacts_by_time(self):
+        class Dialogue:
+            def __init__(self, _history):
+                pass
+
+            def capture(self, *_args, **_kwargs):
+                return {}
+
+            def read(self, *_args, **_kwargs):
+                return ({"role": "user", "text": "今天的展览结束了", "received_at": "2025-01-15T13:00:00+00:00"},)
+
+        background = NS(capture=lambda *_args, **_kwargs: {}, read=lambda *_args, **_kwargs: (
+            {"text": "明早再聊展览，晚安呀", "delivered_at": "2025-01-15T14:00:00+00:00"},))
+        with patch("companion_v2.conversation.private_history.PrivateConversationHistory", Dialogue):
+            recent = _recent_private_messages(NS(background_history=background), object(), "event", None)
+        self.assertEqual([item["text"] for item in recent], ["今天的展览结束了", "明早再聊展览，晚安呀"])
+        self.assertTrue(recent[-1]["proactive"])
+        self.assertNotIn("proactive", recent[0])
 
 
 class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
@@ -59,11 +103,13 @@ class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.plugin.staging = self.controller
         self.fields = dict.fromkeys(CONFIGURABLE_DECISION_FIELDS, True)
         self.enabled, self.prediction, self.calls = True, laya_result(), []
+        self.private_enabled = True
 
         def resolver(context):
             store = LayaSettingsStore(self.root / "decision-config", context.scope.native_scope_id,
                                       context.role_binding.role.subject_id)
-            store.update(store.raw()["revision"], {"enabled": self.enabled, "decision_fields": self.fields})
+            store.update(store.raw()["revision"], {"enabled": self.enabled, "decision_fields": self.fields,
+                                                   "private_silence_enabled": self.private_enabled})
             return LayaDecisionService(store, runtime=self.app.runtime, origin_key=context.key, client_factory=LayaDecisionClient)
 
         self.app.attach_laya_decision(resolver)
@@ -320,15 +366,128 @@ class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(permitted.call_llm)
         self.assert_no_provider_or_send(permitted)
 
-    async def test_private_turn_uses_astrbot_default_without_laya_delay(self):
-        self.prediction = laya_result({"action": "silent"})
-        event = self.event(identifier="private-silence", text="不用回复，记一下")
+    @staticmethod
+    def private_prediction(action, confidence):
+        payload = laya_result({"action": action})
+        payload["answers"]["action"]["answer_confidence"] = confidence
+        return payload
+
+    def no_reply_reasons(self):
+        return [row["reason_code"] for row in self.app.runtime.read_all(
+            "SELECT reason_code FROM inbound_no_replies WHERE channel = 'private'", ())]
+
+    async def test_confident_private_silence_skips_the_model_and_records_its_reason(self):
+        self.prediction = self.private_prediction("silent", 0.92)
+        event = self.event(identifier="private-goodnight", text="那就明天见\n晚安")
+        with self.assertLogs(ENTRY.prepare_core_reply_decision.__globals__["logger"], level="INFO") as captured:
+            prepared = await self.intake(event)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0]["scope_kind"], "private")
+        self.assertIn("recent_private_messages", self.calls[0][0])
+        self.assertIn("判断一个真人此刻是否还会回这条消息", self.calls[0][1]["action"]["instructions"])
+        self.assertEqual(self.calls[0][0]["current_at"], prepared["native_input"].at.isoformat())
+        decision = prepared["laya_decision"]
+        self.assertTrue(decision["suppress_reply"])
+        self.assertEqual(decision["reason"], "laya_private_silent")
+        self.assertEqual(decision["private_silence"]["status"], "passed")
+        self.assertFalse(getattr(event, "is_at_or_wake_command", False))
+        self.assert_no_provider_or_send(event)
+        self.assertEqual(self.no_reply_reasons(), ["laya_private_silent"])
+        self.assertIn("channel=private", "\n".join(captured.output))
+        record = observations_for_role(self.app.runtime, prepared["context"])[0]
+        self.assertEqual(record["generation_state"], "suppressed")
+        row = self.app.runtime.read_one("SELECT status FROM laya_decision_events WHERE batch_id = ?",
+                                        (prepared["turn_id"],))
+        self.assertEqual(row["status"], "ok")
+
+    async def test_private_silence_holds_proactive_until_the_user_speaks_again(self):
+        from companion_v2.diagnostics.inbound import turn_token
+        from companion_v2.proactive.rhythm import ContactRhythm
+
+        rhythm = ContactRhythm(self.app.runtime)
+        self.prediction = self.private_prediction("silent", 0.92)
+        prepared = await self.intake(self.event(identifier="private-rest", text="晚安"))
+        context = prepared["context"]
+        row = self.app.runtime.read_one(
+            "SELECT origin_key, code FROM inbound_no_replies WHERE reason_code = 'laya_private_silent'", ())
+        self.assertEqual(row["code"], turn_token(prepared["turn_id"]))
+        self.assertEqual(row["origin_key"], context.key)
+        interaction = self.app.background_history.interaction(context, self.clock.now())
+        self.assertIsNotNone(rhythm.private_silence_at(context, interaction))
+
+        self.clock.advance(timedelta(minutes=3))
+        self.prediction = self.private_prediction("reply", 0.9)
+        later = await self.intake(self.event(identifier="private-again", text="对了，展馆几点开门？"))
+        self.assertFalse(later["laya_decision"]["suppress_reply"])
+        interaction = self.app.background_history.interaction(context, self.clock.now())
+        self.assertIsNone(rhythm.private_silence_at(context, interaction))
+
+    async def test_private_low_confidence_silence_replies(self):
+        self.prediction = self.private_prediction("silent", 0.55)
+        event = self.event(identifier="private-weak", text="晚安")
         prepared = await self.intake(event)
-        self.assertEqual(self.calls, [])
-        self.assertEqual(prepared["laya_decision"]["reason"], "private_default_reply")
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(prepared["laya_decision"]["suppress_reply"])
+        self.assertEqual(prepared["laya_decision"]["reason"], "laya_private_silence_below_threshold")
+        self.assertTrue(event.is_at_or_wake_command)
+        self.assertNotIn("Laya 本轮语义判断", prepared.get("prompt_instruction", ""))
+        self.assertEqual(self.no_reply_reasons(), [])
+
+    def test_only_a_confident_private_silent_suppresses(self):
+        def gate(action, confidence, status="ok"):
+            return _private_silence({"status": status, "action_confidence": confidence}, {"action": action}, 80)[0]
+
+        self.assertTrue(gate("silent", 0.80))
+        self.assertFalse(gate("silent", 0.79))
+        self.assertFalse(gate("silent", None))
+        for action in ("reply", "wait", "clarify", "interject"):
+            self.assertFalse(gate(action, 0.99), action)
+        self.assertFalse(gate("silent", 0.99, status="failed"))
+
+    async def test_private_laya_failure_replies(self):
+        self.prediction = LayaClientError("laya_inference_timeout", "private error text")
+        event = self.event(identifier="private-failure", text="晚安")
+        prepared = await self.intake(event)
+        self.assertEqual(prepared["laya_decision"]["status"], "failed")
         self.assertFalse(prepared["laya_decision"]["suppress_reply"])
         self.assertTrue(event.is_at_or_wake_command)
-        self.assert_no_provider_or_send(event)
+        self.assertEqual(self.no_reply_reasons(), [])
+
+    async def test_private_switch_off_restores_always_reply_without_inference(self):
+        self.private_enabled = False
+        self.prediction = self.private_prediction("silent", 0.99)
+        event = self.event(identifier="private-switch-off", text="晚安")
+        prepared = await self.intake(event)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(prepared["laya_decision"]["reason"], "laya_private_disabled")
+        self.assertTrue(event.is_at_or_wake_command)
+        # Groups keep using Laya when only the private switch is off.
+        self.prediction = laya_result({"action": "silent"})
+        await self.intake(self.incoming("group-still-decides", "dsh 有没有什么好玩的插件"))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_retired_closing_guard_values_load_and_are_removed(self):
+        context = (await self.controller.observe_group_early(self.group_event(identifier="retired-values"))).unwrap()
+        common = self.controller.settings.common
+        fields = configuration_fields(common.segmentation, common.streaming, common.policy.part_gap_seconds)
+        owner = ReplyConfigurationOwner(self.app.runtime)
+        target = owner._stable_group_target(target_for(context))
+        store = self.app.runtime.configuration_store
+        with store.transaction() as connection:
+            connection.execute("INSERT OR IGNORE INTO configuration_targets VALUES (?, ?, 0, ?)",
+                               (target.key, encode(target.document()), "2026-09-21T00:00:00.000000+00:00"))
+            for name, value in (("enabled", "true"), ("window_seconds", "600"), ("prompt_enabled", "false")):
+                connection.execute("INSERT INTO configuration_values VALUES (?, ?, ?, 1)",
+                    (target.key, "conversation.presentation.private_closing_guard_" + name, value))
+        snapshot = owner.read(target, fields)
+        self.assertFalse(any("private_closing" in key for key in snapshot.fields))
+        validate({key.removeprefix("conversation.presentation."): item.value for key, item in snapshot.fields.items()})
+        revision = snapshot.revision
+        self.assertEqual(retire_private_closing_values(self.app.runtime), 3)
+        self.assertEqual(retire_private_closing_values(self.app.runtime), 0)
+        self.assertGreater(owner.read(target, fields).revision, revision)
+        self.assertEqual(store.read_all("SELECT 1 FROM configuration_values WHERE field_id LIKE ?",
+                                        ("%private_closing_guard%",)), ())
 
     async def test_native_private_and_group_resolvers_read_same_global_configuration(self):
         private = (await self.controller.prepare_core_reply(self.event(identifier="global-private"))).unwrap()

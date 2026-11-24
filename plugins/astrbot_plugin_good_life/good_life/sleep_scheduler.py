@@ -21,7 +21,8 @@ from .storage import StorageReader
 
 
 class DueSleepScheduler:
-    def __init__(self, storage, capabilities, *, interval_seconds=1.0, reading_executor=None, clock=None):
+    def __init__(self, storage, capabilities, *, interval_seconds=1.0, reading_executor=None, clock=None,
+                 monotonic_clock=None, spending_tick=None):
         if (type(capabilities) is not dict or capabilities.get("api_version") != "companion.life-host.v1"
                 or not all(callable(capabilities.get(name)) for name in ("contexts", "wake", "recover"))
                 or not isinstance(interval_seconds, (int, float)) or interval_seconds <= 0):
@@ -33,10 +34,11 @@ class DueSleepScheduler:
         self.records = StagedActivityRecords(storage)
         self.commands = PreparedCommands(storage)
         self.capabilities = dict(capabilities)
+        self.spending_tick = spending_tick
         self.planner = SleepPlanner()
         self.state_scheduler = (StateScheduler(storage, capabilities)
             if all(callable(capabilities.get(name)) for name in ("state_bindings", "state_preflight", "state_run")) else None)
-        self.reading_scheduler = (ReadingScheduler(storage, capabilities, executor=reading_executor)
+        self.reading_scheduler = (ReadingScheduler(storage, capabilities, executor=reading_executor, monotonic_clock=monotonic_clock)
             if all(callable(capabilities.get(name)) for name in ("reading_snapshot", "reading_choice_result", "choose_reading",
                                                                   "start_reading", "execute_reading", "recover_reading")) else None)
         self.social_scheduler = (SocialScheduler(capabilities)
@@ -48,6 +50,7 @@ class DueSleepScheduler:
         self._worker = None
         self._stopped = False
         self._checked_interrupted_work = set()
+        self._next_sleep_check = {}
         self.last_failure = None
         self.hold_night_sleep = None
 
@@ -224,8 +227,10 @@ class DueSleepScheduler:
                         self.last_failure = getattr(error, "code", "life_wake_unavailable")
             if all(callable(self.capabilities.get(name)) for name in ("sleep_snapshot", "start_sleep", "recover_sleep_creation")):
                 for context_key, owner_key in contexts.items():
-                    if owner_key in blocked:
+                    identity = (context_key, owner_key)
+                    if owner_key in blocked or now < self._next_sleep_check.get(identity, now):
                         continue
+                    self._next_sleep_check[identity] = now + timedelta(seconds=30)
                     try:
                         snapshot = self.capabilities["sleep_snapshot"](context_key)
                         observed_at = datetime.fromisoformat(snapshot.pop("observed_at"))
@@ -265,6 +270,11 @@ class DueSleepScheduler:
                     self.state_scheduler.advance(now)
                 except Exception as error:
                     self.last_failure = getattr(error, "code", "life_state_scheduler_unavailable")
+            if self.spending_tick is not None:
+                try:
+                    self.spending_tick(now)
+                except Exception as error:
+                    self.last_failure = getattr(error, "code", "life_planned_spending_unavailable")
             if self.calendar_scheduler is not None:
                 try:
                     self.calendar_scheduler.advance(now)
@@ -283,20 +293,29 @@ class DueSleepScheduler:
                         or (self.social_scheduler and context_key in self.social_scheduler.workers)):
                     continue
                 first = False
+                snapshot = None
                 if self.social_scheduler is not None and context_key not in manual:
-                    try:
-                        snapshot = self.capabilities["social_snapshot"](context_key)
-                        local = datetime.fromisoformat(snapshot["observed_at"]).astimezone(ZoneInfo(snapshot["timezone"]))
-                        first = social_first(snapshot["owner"], local.date().isoformat(), snapshot["interests"], snapshot["records"])
-                    except Exception:
-                        pass
+                    snapshot = self.social_scheduler.snapshot_if_due(context_key, now)
+                    if snapshot is not None:
+                        try:
+                            local = datetime.fromisoformat(snapshot["observed_at"]).astimezone(ZoneInfo(snapshot["timezone"]))
+                            first = social_first(snapshot["owner"], local.date().isoformat(), snapshot["interests"], snapshot["records"])
+                        except Exception:
+                            pass
                 order = ((self.social_scheduler, self.reading_scheduler) if first else
                          (self.reading_scheduler, self.social_scheduler))
                 for scheduler in order:
-                    if scheduler is not None:
+                    if scheduler is None:
+                        continue
+                    if scheduler is self.social_scheduler:
+                        if context_key in manual:
+                            snapshot = scheduler.snapshot_if_due(context_key, now)
+                        if snapshot is not None:
+                            scheduler.advance(context_key, snapshot, self.planner)
+                    else:
                         scheduler.advance({context_key: owner}, now, self.planner)
-                        if context_key in scheduler.workers:
-                            break
+                    if context_key in scheduler.workers:
+                        break
             return {"recovered": recovered, "woken": woken}
 
     def start(self):

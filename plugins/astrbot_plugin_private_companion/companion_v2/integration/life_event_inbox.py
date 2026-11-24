@@ -1,4 +1,4 @@
-"""Durably accept verified life completions for host-owned follow-up work."""
+"""Durably accept life completions and private role notices."""
 
 from datetime import datetime
 import hashlib
@@ -17,11 +17,15 @@ from . import life_events
 
 PREFIX = "life.event.inbox.v1:"
 VERSION_KEY = "life.event.inbox.version"
-CONSUMERS = frozenset({"journal", "dream", "interest", "wardrobe"})
+ACADEMIC_NOTICES = "academic_notices"
+ACADEMIC_NOTICE_PREFIX = PREFIX + "academics:"
+MAX_ACADEMIC_NOTICES = 12
+CONSUMERS = frozenset({"journal", "dream", "interest", "wardrobe", ACADEMIC_NOTICES})
 
 
 def inbox_key(context, consumer, event_id):
-    return PREFIX + digest([context.key, consumer, event_id])
+    prefix = ACADEMIC_NOTICE_PREFIX if consumer == ACADEMIC_NOTICES else PREFIX
+    return prefix + digest([context.key, consumer, event_id])
 
 
 def _operation_id(context, consumer, event_id):
@@ -73,12 +77,20 @@ def accept(app, context, event, *, consumer, observed_at):
         provider = app.role_life.events_provider()
         if provider.dispatch("get", event_id=event["event_id"], consumer=consumer) != event:
             raise TaskError("life_event_unconfirmed", "completion event is not present in the life provider")
-        activity, original_operation = _validate_completion(app, context, event, consumer, observed_at)
+        if consumer == ACADEMIC_NOTICES:
+            notice = event["payload"].get("notice")
+            if (event["kind"] != "academics.grade.released" or type(notice) is not str
+                    or not 1 <= len(notice) <= 600 or datetime.fromisoformat(event["occurred_at"]) > observed_at):
+                raise TaskError("life_event_invalid", "invalid academic notice")
+        else:
+            activity, original_operation = _validate_completion(app, context, event, consumer, observed_at)
 
         def authorize(value, at):
             result = app.tasks.authorize_context(value, action="role.life.run", observed_at=at)
             if not result.is_success:
                 return result
+            if consumer == ACADEMIC_NOTICES:
+                return Outcome.success(True)
             current = OperationRepository(app.runtime).get(event["payload"]["operation_id"])
             if (not current.is_success or current.value.operation != original_operation.operation
                     or current.value.parameter_hash != original_operation.parameter_hash
@@ -99,8 +111,8 @@ def accept(app, context, event, *, consumer, observed_at):
                 raise TaskError("life_event_inbox_invalid", "life event inbox version is incompatible")
             connection.execute("INSERT OR IGNORE INTO runtime_metadata(key, value) VALUES (?, '1')", (VERSION_KEY,))
             key = inbox_key(context, consumer, item["event_id"])
-            # The journal reads the verified activity directly when collecting its daily materials.
-            state = "completed" if consumer == "journal" else "pending"
+            # These consumers read their originals on demand; they need no worker.
+            state = "completed" if consumer in ("journal", ACADEMIC_NOTICES) else "pending"
             document = json.dumps({"schema": "companion.life-event-inbox.v1", "state": state,
                                    "consumer": consumer, "event": item},
                                   ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -108,6 +120,27 @@ def accept(app, context, event, *, consumer, observed_at):
 
         return life_events.consume_once(app.runtime, context=context, event=event, consumer=consumer,
                                         observed_at=observed_at, authorize=authorize, apply=enqueue)
+
+
+def academic_notice_ids(runtime, context, at):
+    rows = runtime.read_all("""SELECT json_extract(value, '$.event.event_id') AS event_id
+        FROM runtime_metadata WHERE key GLOB ? AND json_valid(value)
+        AND json_extract(value, '$.event.context_key')=?
+        AND julianday(json_extract(value, '$.event.occurred_at')) <= julianday(?)
+        ORDER BY json_extract(value, '$.event.sequence') DESC LIMIT ?""",
+        (ACADEMIC_NOTICE_PREFIX + "*", context.key, at.isoformat(), MAX_ACADEMIC_NOTICES))
+    return [row["event_id"] for row in rows]
+
+
+def academic_notice(runtime, context, event_id, at):
+    row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?",
+                           (inbox_key(context, ACADEMIC_NOTICES, event_id),))
+    if row is not None:
+        event = json.loads(row["value"])["event"]
+        life_events._validate_event(context, event, ACADEMIC_NOTICES)
+        if datetime.fromisoformat(event["occurred_at"]) <= at:
+            return event["payload"]["notice"]
+    return None
 
 
 def verify_received(runtime, context, event, *, consumer):

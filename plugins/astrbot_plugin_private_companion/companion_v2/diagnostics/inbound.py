@@ -46,6 +46,11 @@ _WINDOWED: dict[str, tuple[datetime, int]] = {}
 _LOGGED: dict[tuple[str, str], None] = {}
 
 
+def turn_token(turn_id) -> str:
+    """A ledger-safe reference to one turn, carried in ``code`` by a Laya private silence."""
+    return hashlib.sha256(str(turn_id).encode("utf-8")).hexdigest()[:32]
+
+
 def reset_reply_log() -> None:
     """Forget every reply window. Only a fresh process or a test needs this."""
     _WINDOWED.clear()

@@ -1,4 +1,4 @@
-"""Two background owners that declared 180 s and could not spend it.
+"""Separate provider waits and task leases for chat authoring and state maintenance.
 
 `content.authoring.draft` asked its provider for the same 180 s its own task declared,
 so the two layers expired at the same instant; the supervising task starts first and
@@ -31,6 +31,7 @@ from companion_v2.conversation.foreground import BackgroundPromptTrigger, Prompt
 from companion_v2.execution.models import TaskError, encode
 from companion_v2.execution.runner import RunResult
 from companion_v2.foundation.outcome import Outcome
+from companion_v2.model_gateway.management import ModelManagement
 from companion_v2.role_work.state.maintenance import (KIND as STATE_KIND, STATE_BUDGET_SECONDS,
     STATE_MARGIN_SECONDS, STATE_PROVIDER_TIMEOUT_SECONDS, StateMaintenance, state_profile)
 from companion_v2.role_work.state.service import FIELDS
@@ -153,6 +154,33 @@ class StateBudgetRoundTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["code"], "model_timeout")
         self.assertAlmostEqual(self.deadline_seconds(), STATE_BUDGET_SECONDS, delta=1)
+
+    async def test_a_saved_600_second_model_wait_fits_inside_the_lease(self):
+        app, context = await self.ready()
+        manager = ModelManagement(app, context)
+        status = manager.status(self.core, layer="role").unwrap()
+        task = next(task for task in status["tasks"] if task["kind"] == STATE_KIND)
+        saved = manager.configure(self.core, {"kind": STATE_KIND, "layer": "role",
+            "operation_key": "state-model-timeout", "edit_token": task["edit_token"],
+            "changes": {"timeout_seconds": 600}, "reset": []}).unwrap()
+        self.assertEqual(saved["task"]["fields"]["timeout_seconds"]["value"], 600)
+
+        async def respond(envelope):
+            self.assertEqual(envelope.transport_read_timeout, 600)
+            return answered(encode(state_data()))
+
+        self.model_behavior = respond
+        result = await app.state_maintenance.run(context, "原角色人格提示", "configured-round")
+
+        self.assertEqual(result["state"], "succeeded")
+        row = self.runtime.read_one("""SELECT t.task_id, t.created_at, a.lease_until
+            FROM execution_tasks t JOIN execution_attempts a USING (task_id)
+            WHERE t.kind = ?""", (STATE_KIND,))
+        plan = app.gateway.observe(context, row["task_id"]).unwrap()["plan"]
+        self.assertEqual(plan["timeout_seconds"], 600)
+        lease_seconds = (datetime.fromisoformat(row["lease_until"])
+                         - datetime.fromisoformat(row["created_at"])).total_seconds()
+        self.assertGreaterEqual(lease_seconds, 600 + STATE_MARGIN_SECONDS)
 
     async def test_a_fast_round_still_commits_its_state_update(self):
         app, context = await self.ready()

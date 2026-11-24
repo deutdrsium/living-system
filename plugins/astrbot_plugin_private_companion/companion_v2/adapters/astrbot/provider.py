@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from time import perf_counter
 from uuid import uuid4
 
+from httpx import Timeout
+
 from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.model_gateway.cache_diagnostics import signature_for_payload
 from companion_v2.model_gateway.failures import ModelFailure
@@ -25,7 +27,7 @@ from .native import check_version, native_id
 from .memory_output import capture, explicit_refusal, response_format, responses_text_format
 from .streaming import StreamTranscript
 from .response_diagnostics import observe_completion
-from .provider_transport import definitely_not_sent, rejected_before_generation
+from .provider_transport import definitely_not_sent, rejected_before_generation, upstream_timed_out
 
 
 # Reasoning models count hidden thinking tokens against the same completion budget.
@@ -832,6 +834,12 @@ class AstrBotTextProvider:
                 options = {"max_retries": 0}
                 if (envelope.model_override or self.model) == "deepseek-reasoner":
                     options["timeout"] = 240
+                if envelope.transport_read_timeout is not None:
+                    # Non-streamed relay responses can spend the entire task budget on one read.
+                    client_timeout = Timeout(options.get("timeout", getattr(self.client, "timeout", None)))
+                    if client_timeout.read is not None and client_timeout.read < envelope.transport_read_timeout:
+                        client_timeout.read = envelope.transport_read_timeout
+                        options["timeout"] = client_timeout
                 native.client = self.client.with_options(**options)
                 if native.client.max_retries != 0:
                     raise ValueError("client retry layer could not be disabled")
@@ -950,6 +958,8 @@ class AstrBotTextProvider:
                     payload["response_format"] = structured
             if structured_tool is not None:
                 payload["tool_choice"] = {"type": "tool", "name": structured_tool}
+            elif not envelope.allow_tool_calls and wire.tools and self.kind in ("openai", "openai_responses"):
+                payload["tool_choice"] = "none"
             logger.debug("[CompanionV2][开发者追踪] 实际模型请求 provider=%s model=%s payload=%s",
                          self.provider_id, payload.get("model", self.model), _developer_payload(payload))
             self._current()
@@ -1154,6 +1164,12 @@ class AstrBotTextProvider:
             diagnostics = replace(diagnostics, error_type=error_type,
                 error_code=task_error_code if task_error_code != "unavailable" else None,
                 status_code=status_code if type(status_code) is int else None)
+            if raw is None and (transcript is None or not transcript.chunks) and upstream_timed_out(error):
+                diagnostics = replace(diagnostics, failure=ModelFailure.TRANSPORT, error_code="upstream_timeout")
+                logger.warning("[CompanionV2] 上游超时，模型未生成 provider=%s status_code=%s error_type=%s",
+                               self.provider_id, status_code, error_type)
+                return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref=receipt,
+                                        failure=ModelFailure.TRANSPORT, diagnostics=diagnostics)
             if (raw is None and transcript is None
                     and (definitely_not_sent(error) or rejected_before_generation(error))):
                 logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s",

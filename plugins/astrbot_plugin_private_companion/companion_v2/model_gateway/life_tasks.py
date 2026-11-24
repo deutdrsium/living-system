@@ -15,9 +15,10 @@ from companion_v2.foundation.refs import OperationRef, VersionRef
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from companion_v2.integration.life_async_codec import plain
+from companion_v2.model_gateway.models import BACKGROUND_TASK_TIMEOUT_SECONDS
 
 PREFIX = "life.model.result.v1:"
-MODEL_TASK_TIMEOUT_SECONDS = 480
+MODEL_TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)

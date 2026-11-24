@@ -144,7 +144,7 @@ def calendar_inventory(app, context, *, role_global=False):
 
 
 def capture(planner, context, instruction, mode, slot, occurrence=None, *, weather=None, weather_location=None,
-            manual=False, refresh=False, role_global=False):
+            manual=False, refresh=False, role_global=False, life=False):
     app, at = planner.app, planner.tasks.now()
     app.calendar.access.check(context, "calendar.write", at=at)
     settings = planning_values(app.role_state.settings(context)[0])
@@ -169,6 +169,15 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
     coverage = {"calendar_partial": bool(inventory.get("partial", False)
                                            or inventory["next_cursor"] or inventory["skipped"])}
     used_chars = len(settings["planning_prompt"]) + 2048 + len(json.dumps(calendar_context, ensure_ascii=False))
+    wallet = app.calendar.planned_spending(context, at, timezone_name=zone.key) if life else None
+    protected_plans = set()
+    if wallet is not None:
+        wallet = dict(wallet)
+        protected_plans = set(wallet.pop("pending_plan_ids"))
+        used_chars += len(json.dumps(wallet, ensure_ascii=False, separators=(",", ":")))
+    classes = app.calendar.class_sessions(context, at, end)
+    if classes is not None:
+        used_chars += len(json.dumps(classes, ensure_ascii=False, separators=(",", ":")))
     current_weather = None
     if settings["planning_weather_enabled"]:
         location = configured_weather_location(settings["planning_weather_location"])
@@ -317,7 +326,7 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
         for item in inventory["items"]:
             basis = item.get("planning") or {}
             if (item["state"] == "accepted" and item["kind"] == "role_plan"
-                    and basis.get("mode") == "daily"
+                    and item["id"] not in protected_plans and basis.get("mode") == "daily"
                     and datetime.fromisoformat(item["schedule"]["anchor"]).astimezone(zone).date() == today):
                 refresh_plans.append({"id": item["id"], "revision": item["revision"]})
     refresh_ids = {item["id"] for item in refresh_plans}
@@ -332,6 +341,10 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
         "calendar": calendar, "confirmed_goals_and_skills": goals, "memories": memories,
         "coverage": coverage, "occurrence_to_refine": ({key: occurrence[key] for key in
             ("id", "revision", "sequence", "kind", "state", "title", "start", "end")} if occurrence else None)}
+    if wallet is not None:
+        material["wallet"] = wallet
+    if classes is not None:
+        material["classes"] = classes
     if current_weather is not None:
         material["current_weather"] = current_weather
     role_state = _role_state_summary(app, context, at)

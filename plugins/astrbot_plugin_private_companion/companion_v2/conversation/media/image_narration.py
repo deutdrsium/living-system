@@ -39,16 +39,15 @@ OWNER = "conversation.image_narration"
 PROFILE_KIND = KIND
 logger = getLogger(__name__)
 # One ceiling, three derived layers. A reply turn stalls for at most
-# `private_image_vision_wait_seconds` (1-30 s, default 8) while this sidecar
+# `private_image_vision_wait_seconds` (1-60 s, default 42) while this sidecar
 # reads the photos, so that wait is the ceiling and every inner layer derives
 # downward from it: the model round should expire first, the supervised task
 # second, the waiting reply last. The reply and the task follow the configured
-# wait on every call; the model round follows this profile's default (8 - 2 = 6)
-# or the saved ``model.conversation.image_narration.timeout_seconds``, so above
-# a 7 s wait the round expires first and below it the task does. Either way the
+# wait on every call; the model round follows this profile's default (42 - 2 = 40)
+# or the saved ``model.conversation.image_narration.timeout_seconds``. Either way the
 # inner layer records its own reason instead of being cancelled by the waiting
 # reply, which cannot name what it interrupted.
-IMAGE_NARRATION_WAIT_SECONDS = 8
+IMAGE_NARRATION_WAIT_SECONDS = 42
 IMAGE_NARRATION_MARGIN_SECONDS = 2
 IMAGE_NARRATION_HANDOFF_SECONDS = 1
 IMAGE_NARRATION_PROVIDER_TIMEOUT_SECONDS = IMAGE_NARRATION_WAIT_SECONDS - IMAGE_NARRATION_MARGIN_SECONDS

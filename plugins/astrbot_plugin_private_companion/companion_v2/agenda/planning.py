@@ -15,7 +15,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, VersionRef
 from companion_v2.identity_policy.interventions import (CALENDAR_INTERVENTION,
     REST_WAKE_INTERVENTION, require_capability)
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.role_work.state.ownership import role_schedule_key
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -23,19 +23,21 @@ from companion_v2.storage.versioned_records import owner_key
 from .planning_config import SCHEDULE_MODE_ORCHESTRATED, configured_weather_location, planning_values
 from .planning_inputs import capture, validate
 from . import planning_observation
-from .planning_output import INSTRUCTION, INTERVENTION_INSTRUCTION, MODE_INSTRUCTIONS, parse_output
+from .planning_output import (DAILY_SPENDING_INSTRUCTION, INSTRUCTION, INTERVENTION_INSTRUCTION,
+                              INTERVENTION_SPENDING_INSTRUCTION, MODE_INSTRUCTIONS, parse_output)
 from .models import AgendaError
 logger = logging.getLogger(__name__)
 
 
 KIND = "calendar.plan"
 OWNER = "calendar.planning"
+PLANNING_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 
 
 def planning_profile(provider, *, max_output_tokens=2048):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
         "沿原人格安排自己的生活；保留长期目标、当天小步和未完成事项，计划不是完成记录。",
-        max_output_tokens=max_output_tokens)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 class CalendarPlanning:
@@ -50,7 +52,7 @@ class CalendarPlanning:
         self.legacy_contexts = {}
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER, "calendar.write", Lane.BACKGROUND,
             side_effect=SideEffect.LOCAL, binding=ProviderBinding(OWNER, "local", "1", "planning-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=PLANNING_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, app):
         self.app, self.tasks, self.gateway = app, app.tasks, app.gateway
@@ -339,7 +341,7 @@ class CalendarPlanning:
                             "task_id": prior_task_id or identifier, "replayed": True}
             job = capture(self, context, instruction, mode, slot, occurrence,
                           weather=weather, weather_location=location, manual=manual, refresh=refresh,
-                          role_global=automatic)
+                          role_global=automatic, life=life)
             if life:
                 job["life"] = True
             if intervention:
@@ -355,7 +357,7 @@ class CalendarPlanning:
             self.pending[identifier] = job
             try:
                 require(self.tasks.submit(TaskSpec(identifier, context, KIND, digest(job), identifier,
-                    job["at"], min(job["end"], job["at"] + timedelta(seconds=480)))))
+                    job["at"], min(job["end"], job["at"] + timedelta(seconds=PLANNING_TIMEOUT_SECONDS)))))
             except BaseException:
                 self.pending.pop(identifier, None)
                 raise
@@ -380,16 +382,18 @@ class CalendarPlanning:
             self.pending.pop(identifier, None)
             self.committed.discard(identifier)
 
-    def _commit_life(self, run, job, items):
+    def _commit_life(self, run, job, items, spending):
         from companion_v2.integration.calendar_batch_handoff import CalendarBatchHandoff
 
         calendar, context, task_id = self.app.calendar, job["context"], run.task.task_id
         calendar._require_life_boundary()
-        changes, replaced = [], 0
+        changes, replaced, created = [], 0, {}
         if job.get("intervention"):
             for index, item in enumerate(items):
                 create = item["action"] == "create"
-                changes.append({"identifier": "planned-intervention-" + digest([task_id, index]) if create else item["id"],
+                if create:
+                    created[index] = "planned-intervention-" + digest([task_id, index])
+                changes.append({"identifier": created[index] if create else item["id"],
                     "action": "create" if create else {"move": "exception", "refine": "refine", "cancel": "cancel"}[item["action"]],
                     "expected_revision": 0 if create else item["expected_revision"], "operation_key": task_id + ":" + str(index),
                     "data": item["data"], "planning": {"mode": "intervention", "slot": job["slot"]} if create else None})
@@ -404,7 +408,8 @@ class CalendarPlanning:
                         "operation_key": task_id + ":replace:" + selected["id"], "data": None, "planning": None})
                     replaced += 1
             for index, (event, basis) in enumerate(items):
-                changes.append({"identifier": "planned-" + digest([task_id, index]), "action": "create", "expected_revision": 0,
+                created[index] = "planned-" + digest([task_id, index])
+                changes.append({"identifier": created[index], "action": "create", "expected_revision": 0,
                     "operation_key": task_id + ":" + str(index), "data": event, "planning": basis})
         with calendar._life_bridge_lock:
             calendar._resolve_life_bridge()
@@ -414,6 +419,7 @@ class CalendarPlanning:
             role_key, conversation_key = calendar._legacy_records.role_key(context), calendar._legacy_records.conversation_key(context)
             owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id, context.role_binding.role.subject_id)
             now, actor = self.tasks.now(), context.role_binding.role
+            timezone_name = job["settings"]["planning_timezone"]
             commands = []
             for change in changes:
                 key = change["operation_key"]
@@ -421,10 +427,15 @@ class CalendarPlanning:
                 command_id = "life-calendar-" + digest([context.key, key])
                 commands.append(bridge._request(context, role_key, conversation_key, digest(owner), command_id, operation_id,
                     change["identifier"], change["action"], change["expected_revision"], change["data"], job["sources"],
-                    actor, None, change["planning"], now))
+                    actor, None, change["planning"], now, timezone_name=timezone_name))
             request = {"command_id": "life-calendar-batch-" + digest([context.key, task_id]),
                 "owner_key": digest(owner), "context_key": context.key, "kind": "calendar.batch", "expected_revision": 0,
                 "payload": {"commands": commands, "storage_keys": sorted({item["payload"]["storage_key"] for item in commands})}}
+            if spending:
+                entries = [{**entry, "item": created[entry["item"]]} if type(entry.get("item")) is int else entry
+                           for entry in spending]
+                request["payload"]["spending"] = {"entries": entries, "now": now.isoformat(), "end": job["end"].isoformat(),
+                    "timezone": timezone_name, "calendar_keys": [role_key, conversation_key]}
             handoff = CalendarBatchHandoff(calendar, bridge.commands)
             keys = [item["operation_key"] for item in changes]
             handoff.prepare(context, request, operation_keys=keys, observed_at=now)
@@ -452,6 +463,11 @@ class CalendarPlanning:
         if ":review:" in job["slot"]:
             prompt_instruction += ("\n当前是新时段对剩余一天的重新观察：按 now 之后的最新日历与角色状态重新考虑，"
                 "跳过已经过去的时段和已存在安排，不补写旧请求、不补造完成记录。")
+        if "wallet" in job["material"]:
+            if job["mode"] == "daily":
+                prompt_instruction += "\n" + DAILY_SPENDING_INSTRUCTION
+            elif job["mode"] == "intervention":
+                prompt_instruction += "\n" + INTERVENTION_SPENDING_INSTRUCTION
         materials = [PromptMaterial(OWNER, "planning_material", encode_prompt(job["material"]))]
         if job.get("intervention"):
             materials.append(PromptMaterial("conversation.native", "intervention_dialogue", encode_prompt({
@@ -467,12 +483,13 @@ class CalendarPlanning:
         try:
             if completion.draft is None:
                 raise TaskError("planning_output_invalid", "planning needs a complete result")
-            items, rejected = parse_output(completion.draft.text, job)
+            spending = []
+            items, rejected = parse_output(completion.draft.text, job, spending=spending)
             await self.guard(context, job["instruction"])
             receipts = []
             replaced = 0
             if job.get("life"):
-                saved, replaced = self._commit_life(run, job, items)
+                saved, replaced = self._commit_life(run, job, items, spending)
                 receipts = [None] * saved
             else:
                 with self.runtime.transaction():

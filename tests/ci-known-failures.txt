@@ -1,10 +1,7 @@
 # Existing failures recorded in docs/architecture-next/w0-test-baseline.md.
 # pytest entries are exact node IDs; node entries are exact test names.
-# The test replaces astrbot.api with a non-package stub (baseline SDK error).
-pytest:tests/test_good_life_entry.py::GoodLifeEntryTests::test_dependency_discovery_handles_load_order_and_conflicts_without_running_life
+# Browser-backed fixture: not executed in the silent baseline run.
 node:嵌套工作区的确认层在插件视口内可见可操作，取消 0 写、确认 1 写
-node:reading pace settings are submitted as numbers
-node:maintenance shows connected external token ledgers without mixing their budgets
-node:environment summary points to the role weather settings below
+# Scale audits still expose CSS regressions across 13 files; not a small baseline fix.
 node:尺度审计通过：已迁移页面零写死、令牌单源、档位间距足够
 node:所有已迁移页面都在判定名单内且零写死

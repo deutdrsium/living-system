@@ -25,7 +25,7 @@ from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.memory.activity_receipts import RoleReceiptReader
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 
@@ -35,6 +35,7 @@ from .self_review_evidence import SelfReviewEvidenceCatalog, evidence_handles, w
 logger = logging.getLogger(__name__)
 
 KIND = "role.self_review"
+TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 OWNER = "role.self_review"
 # The host selects the prompt output format; every owner that builds a
 # PromptRequest must use a format registered by that boundary.
@@ -79,7 +80,7 @@ PROMPT = (
 def self_review_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
         "依据角色自己的近期行为证据，提出待审阅的自我复盘指导候选。",
-        max_output_tokens=max_output_tokens)
+        max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 def parse_output(raw, *, allowed_evidence, now):
@@ -115,7 +116,7 @@ class SelfReviewService:
         self.closed = False
         self.registrations = (TaskRegistration(TaskDefinition(KIND, OWNER, "role.self_review.read",
             Lane.BACKGROUND, side_effect=SideEffect.LOCAL, binding=ProviderBinding(OWNER, "local", "1", "review-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, app):
         self.app, self.tasks, self.gateway = app, app.tasks, app.gateway
@@ -185,7 +186,7 @@ class SelfReviewService:
             self.pending[identifier] = {**job, "request_key": request_key}
             try:
                 require(self.tasks.submit(TaskSpec(identifier, context, KIND, request_key, identifier,
-                    job["at"], job["at"] + timedelta(seconds=480))))
+                    job["at"], job["at"] + timedelta(seconds=TASK_TIMEOUT_SECONDS))))
             except BaseException:
                 self.pending.pop(identifier, None)
                 raise

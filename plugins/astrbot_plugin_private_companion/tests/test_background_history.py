@@ -256,11 +256,22 @@ class BackgroundHistoryTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
             task = (await self.contact(app, self.opportunity("auth-" + str(index)))).unwrap().task
             await self.delivery_state(app, task.task_id, "delivered")
         context = self.contact_context()
+        at = self.clock.now()
         with patch.object(app.tasks, "authorize_context", wraps=app.tasks.authorize_context) as guard:
-            snapshot = app.background_history.capture(context, self.clock.now())
-        self.assertGreaterEqual(len(snapshot["references"]), 3)
-        self.assertLessEqual(guard.call_count, 2,
-                             "one capture must not re-authorize every reference")
+            snapshot = app.background_history.capture(context, at)
+            self.assertGreaterEqual(len(snapshot["references"]), 3)
+            self.assertLessEqual(guard.call_count, 2,
+                                 "one capture must not re-authorize every reference")
+            first_pass = guard.call_count
+            self.assertGreater(first_pass, 0)
+            app.background_history.capture(context, at)
+            self.assertEqual(guard.call_count, 2 * first_pass,
+                             "a new capture at the same time must re-authorize")
+        with patch.object(app.tasks, "authorize_context",
+                          return_value=Outcome.failed("authorization_revoked", "original authority was revoked")):
+            with self.assertRaises(TaskError) as revoked:
+                app.background_history.read(snapshot, context, at)
+        self.assertEqual(revoked.exception.code, "authorization_revoked")
 
     async def test_unanswered_is_observed_background_and_resets_after_actual_input(self):
         host, _ = await self.scheduled(automatic=False)

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import cache
 import math
 import json
 import unicodedata
@@ -131,18 +132,37 @@ class InterestStore:
                                (key, activity.activity_id, now.isoformat()))
         return True
 
-    def list(self, context, now, *, visible, visible_contact=None, timezone="Asia/Shanghai", exposure=None):
+    def list(self, context, now, *, visible, visible_contact=None, timezone="Asia/Shanghai", exposure=None,
+             compact=False, interest_id=None):
         from .exposure import ExposureStore, familiarity
         key = scope_key(context)
         contact_visible = visible_contact or visible
         exposure = exposure or ExposureStore(self.runtime)
-        rows = self.runtime.read_all("SELECT * FROM role_interests WHERE scope_key = ? ORDER BY name", (key,))
+        rows = self.runtime.read_all("""SELECT * FROM role_interests WHERE scope_key = ?
+            AND (? IS NULL OR interest_id = ?) ORDER BY name""", (key, interest_id, interest_id))
+        reader = exposure.life_reader() if rows else None
+        contacts_by_topic = {}
+        if reader is not None:
+            # Host topic links are authoritative, but receipt bodies still come
+            # through the live provider and its identity/visibility validation.
+            references = self.runtime.read_all("""SELECT t.activity_id,t.platform,t.content_id,t.interest_id
+                FROM role_exposure_topics t JOIN role_interests i
+                  ON i.scope_key=t.scope_key AND i.interest_id=t.interest_id
+                WHERE t.scope_key=? AND (? IS NULL OR t.interest_id=?)""", (key, interest_id, interest_id))
+            for reference in references:
+                contact = reader.exposure(context, reference["activity_id"], reference["platform"], reference["content_id"])
+                if contact and contact["exposed_at"] and exposure.visible(context, contact["activity_id"]):
+                    contacts_by_topic.setdefault(reference["interest_id"], []).append(contact)
+            for contacts in contacts_by_topic.values():
+                contacts.sort(key=lambda contact: contact["exposed_at"])
         result = []
         for row in rows:
             records = self.runtime.read_all("""SELECT * FROM role_interest_evidence
                 WHERE scope_key = ? AND interest_id = ? ORDER BY occurred_at, activity_id""", (key, row["interest_id"]))
             records = [r for r in records if datetime.fromisoformat(r["occurred_at"]) <= now and visible(r["activity_id"])]
-            contacts = [r for r in exposure.topic_rows(context, row["interest_id"])
+            topic_contacts = (contacts_by_topic.get(row["interest_id"], []) if reader is not None
+                              else exposure.topic_rows(context, row["interest_id"]))
+            contacts = [r for r in topic_contacts
                         if datetime.fromisoformat(r["exposed_at"]) <= now and contact_visible(r["activity_id"])]
             if exposure.life_reader() is not None:
                 references = self.runtime.read_all("""SELECT * FROM role_exposure_feedback WHERE scope_key=?
@@ -185,9 +205,9 @@ class InterestStore:
             score, exposure_count, content_count = familiarity(contacts, now, coefficient["coefficient"] if coefficient else 1.0, timezone)
             summary = (negative[-1]["reason"] if negative else reactions[-1]["reason"] if reactions else
                        records[-1]["reason"] if records else "")
-            entries = [{"activity_id": r["activity_id"], "reason": r["reason"], "occurred_at": r["occurred_at"], "source": "旧版活动"} for r in records]
+            entries = [] if compact else [{"activity_id": r["activity_id"], "reason": r["reason"], "occurred_at": r["occurred_at"], "source": "旧版活动"} for r in records]
             entries.extend({"activity_id": r["activity_id"], "reason": r["reason"], "occurred_at": r["occurred_at"],
-                            "source": r["platform"], "reaction": r["reaction"], "active": bool(r["active"])} for r in all_reactions)
+                            "source": r["platform"], "reaction": r["reaction"], "active": bool(r["active"])} for r in ([] if compact else all_reactions))
             result.append({"interest_id": row["interest_id"], "name": row["name"], "summary": summary,
                            "next_question": records[-1]["next_question"] if records else "", "revision": row["revision"],
                            "evidence": sorted(entries, key=lambda item: item["occurred_at"]),
@@ -195,36 +215,49 @@ class InterestStore:
                            "coefficient": coefficient["coefficient"] if coefficient else 1.0,
                            "contacts": [{"activity_id": x["activity_id"], "platform": x["platform"],
                                          "title": x["title"], "source_url": x["source_url"],
-                                         "occurred_at": x["exposed_at"], "coverage": x["coverage"]} for x in contacts[-8:]],
+                                         "occurred_at": x["exposed_at"], "coverage": x["coverage"]} for x in ([] if compact else contacts[-8:])],
                            **projection})
+            if compact:
+                result[-1].pop("evidence")
+                result[-1].pop("contacts")
+                result[-1]["compact"] = True
         return result
 
 
-def visible_interests(app, context, now):
-    return visible_interests_for(app.role_life, app.role_journal, app.runtime, context, now)
+def visible_interests(app, context, now, **options):
+    return visible_interests_for(app.role_life, app.role_journal, app.runtime, context, now, **options)
 
 
-def visible_interests_for(life, journal, runtime, context, now):
+def visible_interests_for(life, journal, runtime, context, now, *, activities=None, source_check=None,
+                          compact=False, interest_id=None):
     from companion_v2.foundation.refs import RoleOwnerRef
     from companion_v2.execution.models import TaskError
     owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id, context.role_binding.role.subject_id)
+    context_key = context.key
+    def activity_for(activity_id):
+        # A management snapshot already scanned this owner's complete ledger.
+        return activities[activity_id] if activities is not None else life.activity(activity_id, owner=owner)
+    @cache
     def visible(activity_id):
         try:
-            activity = life.activity(activity_id, owner=owner)
+            activity = activity_for(activity_id)
             if (activity.scope != context.scope or activity.state.value != "completed"
-                    or not activity.work or activity.work.context_key != context.key):
+                    or not activity.work or activity.work.context_key != context_key):
                 return False
             if activity.reading:
+                if source_check is not None:
+                    return source_check(activity.reading.source).is_success
                 return journal.sources.validate_reference_for_audience(activity.reading.source,
                     recipient=context.actor.subject, observed_at=now).is_success
             return bool(activity.work and activity.work.kind == "social")
         except (KeyError, ValueError, TaskError):
             return False
+    @cache
     def visible_contact(activity_id):
         try:
-            activity = life.activity(activity_id, owner=owner)
+            activity = activity_for(activity_id)
             return bool(activity.scope == context.scope and activity.work and activity.work.kind == "social"
-                        and activity.work.context_key == context.key)
+                        and activity.work.context_key == context_key)
         except (KeyError, ValueError, TaskError):
             return False
     try:
@@ -233,10 +266,11 @@ def visible_interests_for(life, journal, runtime, context, now):
     except (KeyError, ValueError, TypeError):
         zone = "Asia/Shanghai"
     from .exposure import ExposureStore
+    reader = getattr(life, "browsing_reader", None)
     exposure = ExposureStore(runtime, visible=lambda _context, activity_id: visible_contact(activity_id),
-                             session_reader=getattr(life, "browsing_reader", None), life=life)
+                             session_reader=reader.for_projection() if reader is not None else None, life=life)
     return InterestStore(runtime).list(context, now, visible=visible, visible_contact=visible_contact, timezone=zone,
-                                       exposure=exposure)
+                                       exposure=exposure, compact=compact, interest_id=interest_id)
 
 
 def interest_materials(app, context, now):

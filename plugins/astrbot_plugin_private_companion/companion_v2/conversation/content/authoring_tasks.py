@@ -12,7 +12,7 @@ WRITING_KINDS = frozenset({DRAFT_KIND})
 # the same instant, the supervising task always won the race (it starts first), and a
 # slow writing model was reported as the supervisor's `timeout` instead of naming the
 # model-level stop it actually hit.
-AUTHORING_BUDGET_SECONDS = 180
+AUTHORING_BUDGET_SECONDS = 210
 AUTHORING_MARGIN_SECONDS = 30
 AUTHORING_PROVIDER_TIMEOUT_SECONDS = AUTHORING_BUDGET_SECONDS - AUTHORING_MARGIN_SECONDS
 

@@ -8,6 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "plugins" / "astrbot_plugin_private_companion"),
@@ -98,6 +99,21 @@ class ReadingExtractionFixture(StateFixture):
         return SimpleNamespace(**locals())
 
 class ReadingExtractionTests(ReadingExtractionFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_validates_each_exact_source_once_and_observes_revocation(self):
+        f = await self.fixture(start=False)
+        snapshot = f.api.life_host_capabilities(plugin=f.plugin, registration_id=f.token)["reading_snapshot"]
+        sources = f.app.role_journal.sources
+        duplicate = replace(f.activity, activity_id="second-chunk")
+        other_ref = replace(f.source, owner="different-owner")
+        mismatched = replace(f.activity, activity_id="different-reference", work=replace(f.activity.work, source=other_ref))
+        with patch.object(f.routine, "activities", return_value=[f.activity, duplicate, mismatched]), \
+                patch.object(sources, "validate_reference_for_audience", wraps=sources.validate_reference_for_audience) as validate:
+            self.assertEqual(snapshot(f.context.key)["authorized_sources"], [f.source.source_id] * 2)
+            self.assertEqual([args.args[0] for args in validate.call_args_list], [f.source, other_ref])
+            sources.revoke(f.source, expected_governance_revision=1, observed_at=self.clock.now()).unwrap()
+            self.assertEqual(snapshot(f.context.key)["authorized_sources"], [])
+            self.assertEqual(validate.call_count, 4)
+
     async def test_new_path_matches_legacy_proposal_progress_notes_events_and_task_id(self):
         f = await self.fixture()
         expected_task_id = f.app.role_reader.task_id(f.context, f.started)
@@ -279,10 +295,9 @@ class ReadingExtractionTests(ReadingExtractionFixture, unittest.IsolatedAsyncioT
         self.assertNotIn(f.context.key, scheduler.workers)
         self.assertEqual(scheduler.slots[f.context.key]["retry"], 0)
         self.clock.advance(timedelta(seconds=31))
-        scheduler.advance({f.context.key: f.routine.owner.persona_id}, self.clock.now(), planner)
-        self.assertEqual(scheduler.slots[f.context.key]["retry"], 1)
         self.model_behavior = lambda _env: asyncio.sleep(0, result=answered('{"choice":"1","reason":"继续"}'))
         scheduler.advance({f.context.key: f.routine.owner.persona_id}, self.clock.now(), planner)
+        self.assertEqual(scheduler.slots[f.context.key]["retry"], 1)
         self.assertEqual((await scheduler.workers[f.context.key])["state"], "committed")
         self.assertEqual(len(self.called), 3)
 
@@ -304,7 +319,8 @@ class ReadingExtractionTests(ReadingExtractionFixture, unittest.IsolatedAsyncioT
             return receipt
         f.ports.execute_platform_action = withdraw_after_commit
         capabilities = f.api.life_host_capabilities(plugin=f.plugin, registration_id=f.token)
-        scheduler = ReadingScheduler(f.life, capabilities, executor=f.executor)
+        scheduler = ReadingScheduler(f.life, capabilities, executor=f.executor,
+                                     monotonic_clock=lambda: (self.clock.now() - NOW).total_seconds())
         self.addAsyncCleanup(scheduler.close)
         contexts, planner = {f.context.key: digest(f.routine.owner)}, SimpleNamespace(_windows={})
         scheduler.advance(contexts, self.clock.now(), planner)

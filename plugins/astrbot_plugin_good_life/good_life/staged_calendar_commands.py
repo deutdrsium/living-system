@@ -32,7 +32,7 @@ def _timestamp(value):
 
 def _proposal(reader, request, *, prior=None, inspect_store=True):
     payload = request["payload"]
-    if type(payload) is not dict or set(payload) != FIELDS:
+    if type(payload) is not dict or set(payload) - {"planning_timezone"} != FIELDS:
         raise ValueError("calendar command fields are invalid")
     for name in ("storage_key", "record_id", "operation_id"):
         value = payload[name]
@@ -84,15 +84,15 @@ class StagedCalendarCommands:
     OPERATIONS = frozenset({"prepare", "status", "recover", "find_request", "verify_prepared", "resolve",
                             "verify_commit", "acknowledge", "adoption_certificate"})
 
-    def __init__(self, storage):
-        self.storage = storage
+    def __init__(self, storage, *, spending=None):
+        self.storage, self.spending = storage, spending
         self.reader = StorageReader(storage)
         self.commands = PreparedCommands(storage)
 
     def dispatch(self, operation, *args, **kwargs):
         if type(operation) is str and operation.startswith("batch."):
             from .calendar_batch_commands import CalendarBatchCommands
-            return CalendarBatchCommands(self.storage).dispatch(operation, *args, **kwargs)
+            return CalendarBatchCommands(self.storage, spending=self.spending).dispatch(operation, *args, **kwargs)
         if type(operation) is not str or operation not in self.OPERATIONS:
             raise ValueError("unknown calendar command operation")
         return getattr(self, operation)(*args, **kwargs)
@@ -164,7 +164,7 @@ class StagedCalendarCommands:
     def resolve(self, decision, *, verify_host_decision):
         return self.commands.resolve(decision, verify_host_decision=verify_host_decision, apply=self.apply)
 
-    def apply(self, connection, request):
+    def apply(self, connection, request, *, batch_command_id=None):
         self._validate(self.reader, request)
         result = _proposal(self.reader, request)
         payload, record = request["payload"], result["record"]
@@ -182,6 +182,9 @@ class StagedCalendarCommands:
                            (payload["storage_key"], payload["record_id"], record["revision"], payload["operation_id"], encoded))
         connection.execute("INSERT INTO staged_calendar_receipts VALUES (?, ?, ?, ?)",
                            (payload["operation_id"], payload["storage_key"], payload["record_id"], _encode(result["receipt"])))
+        if self.spending is not None:
+            self.spending.calendar_changed(connection, payload, record, result["previous"],
+                                           command_id=batch_command_id or request["command_id"])
         return result
 
     def verify_commit(self, decision):

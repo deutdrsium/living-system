@@ -316,7 +316,7 @@ test('switching a provider inline raises one queued change and posting saves tha
   assert.doesNotMatch(node.innerHTML, /项改动待保存/);
 });
 
-test('an explicit fallback equal to the primary is normalized instead of blocking the save', async () => {
+test('an explicit fallback equal to the primary is kept as a same-route retry', async () => {
   const {page, requests, root} = harness();
   const node = root();
   page.mount(node);
@@ -330,7 +330,7 @@ test('an explicit fallback equal to the primary is normalized instead of blockin
   assert.match(node.innerHTML, /项改动待保存/);
   node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'memory.reflect'});
   const post = requests.find(request => request.method === 'POST');
-  assert.equal(post.values.changes.fallback, '', 'a duplicate fallback must be cleared explicitly');
+  assert.ok(!Object.hasOwn(post.values.changes, 'fallback'), 'a same-route fallback is not rewritten');
   assert.equal(post.values.changes.prompt, '保持简短');
 });
 
@@ -1770,16 +1770,20 @@ test('Laya page exposes official local install, first-run download, and SystemOn
 
   node.change('[data-laya-decision]', {layaDecision: 'tool_need', checked: false});
   node.change('[data-laya-field]', {layaField: 'followup_confidence_threshold', value: 55});
+  node.change('[data-laya-field]', {layaField: 'private_silence_confidence_threshold', value: 70});
   node.change('[data-laya-field]', {layaField: 'local_model_path', value: 'C:/models/laya-finetuned'});
   assert.deepEqual(Array.from(page.changedFields()).sort(),
-    ['Laya · 判断能力需求', 'Laya · 连续接话置信阈值', 'Laya · 本地模型路径'].sort());
+    ['Laya · 判断能力需求', 'Laya · 连续接话置信阈值', 'Laya · 私聊沉默置信阈值', 'Laya · 本地模型路径'].sort());
   node.click('[data-laya-save]');
   const saveRequest = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
   assert.equal(saveRequest.values.changes.decision_fields.tool_need, false);
   assert.equal(saveRequest.values.changes.local_model_path, 'C:/models/laya-finetuned');
   assert.equal(saveRequest.values.changes.followup_confidence_threshold, 55);
+  assert.equal(saveRequest.values.changes.private_silence_confidence_threshold, 70);
+  assert.equal(saveRequest.values.changes.private_silence_enabled, undefined);
   saveRequest.resolve({enabled: false, mode: 'local', endpoint: '', default_model: 'multilingual',
     local_model_path: 'C:/models/laya-finetuned', followup_confidence_threshold: 55,
+    private_silence_enabled: true, private_silence_confidence_threshold: 70,
     api_key_set: false, timeout_seconds: 20, decision_fields: {...saveRequest.values.changes.decision_fields},
     package_installed: true, package_version: '0.4.0', model_cache_ready: false,
     model_cache_path: 'C:/cache/huggingface/hub', python_executable: 'C:/AstrBot/python.exe',

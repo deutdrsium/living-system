@@ -81,6 +81,7 @@ from .group_settings import GroupTarget
 from .group_admission import group_trigger_facts, mentioned_account_ids
 from .voice import NativeVoiceReply
 from .relay_tools import RelayToolPort
+from .desktop_presence import DESKTOP_PLATFORM
 
 
 logger = logging.getLogger(__name__)
@@ -610,6 +611,45 @@ class MultiHostSession:
             self.core_reply_observations = CoreReplyObservations(self)
         except Exception as error:
             logger.warning("[CompanionV2] 原生聊天观察初始化降级 error_type=%s", type(error).__name__)
+
+    desktop_presence = None
+
+    def attach_desktop_presence(self, presence):
+        """Route proactive contact by desktop presence (see ``window_hold``)."""
+        from companion_v2.proactive.configuration import GROUP as CONTACT_OWNER
+        self.desktop_presence = presence
+        self.application.contact_schedule.window_gate = self.window_hold
+        self.application.outbound.hold = (
+            lambda request: self.window_hold(request.context) if request.owner == CONTACT_OWNER else None)
+
+    def _desktop_owners(self):
+        """The human each desktop belongs to: the primary QQ target of its role link.
+
+        Desktop pairing (``DesktopAPI.setup``) records the desktop as an alias in
+        a ``role`` window link whose primary is the owner's QQ private target,
+        and the authority already resolves the desktop to that same subject.
+        """
+        owners = set()
+        for target in self.settings.targets:
+            link = self.settings.window_link_for_target(target.target_id)
+            if target.platform_id == DESKTOP_PLATFORM and link is not None and link.mode == "role":
+                owners.add(self.authority.subject(self.settings.target(link.primary_target_id)))
+        return owners
+
+    def window_hold(self, context):
+        """Why this window gets no proactive contact now, or None.
+
+        Desktop open: it is its owner's only proactive window, so the owner's QQ
+        private windows are held. Desktop closed: the desktop is held and the QQ
+        windows run as usual. Other people's windows are never affected.
+        """
+        presence, scope = self.desktop_presence, context.scope
+        if scope.platform == DESKTOP_PLATFORM:
+            return None if presence.present else "window_absent"
+        if (presence.present and scope.kind is ScopeKind.PRIVATE
+                and context.actor.subject in self._desktop_owners()):
+            return "desktop_preferred"
+        return None
 
     def scope(self, target, conversation_id):
         return ScopeRef(self.runtime.installation_id, target.platform_id, ScopeKind.PRIVATE, target.participant_id,
@@ -1539,6 +1579,12 @@ class MultiHostSession:
 
     async def send(self, envelope):
         # 正式版：不再有"预览/草稿"这一档，也不再需要投递授权——一律真发。
+        # Desktop replies are sent by AstrBot's own WebChat stream, not here; what
+        # reaches this sender for the desktop window is background output
+        # (proactive drafts, reminders, image fallbacks), dropped while the app is
+        # closed; it is never queued for later replay.
+        if self.desktop_presence is not None and not self.desktop_presence.allows(envelope.context.scope):
+            raise TaskError("desktop_absent", "the desktop app is closed; unprompted output is not sent there")
         group = envelope.context.scope.kind is ScopeKind.GROUP
         platform_name = self.bridge.platform_name(envelope.context.scope)
         if platform_name == "aiocqhttp":

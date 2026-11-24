@@ -34,6 +34,12 @@ aside { border-right: 1px solid var(--line); } .journal-link { display: block; t
 #journal-detail { padding: 30px; min-width: 0; } .prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 2; font-size: 15px; margin-top: 22px; } .afterglow { border-left: 2px solid var(--accent-strong); padding-left: 16px; margin-top: 20px; white-space: pre-wrap; } .journal-summary { background: var(--surface-muted); padding: 16px; margin-top: 24px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; } .badge { color: var(--success); background: var(--success-soft); padding: 2px 9px; border-radius: 4px; font-size: 12px; } .activity { padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); margin-bottom: 14px; min-width: 0; overflow-wrap: anywhere; box-shadow: var(--shadow); }
 .activity h3 { margin-bottom: 6px; } .activity .prose { font-size: 14px; } .activity .code { font-size: 11px; color: var(--ink-soft); margin-top: 8px; } .pagination { display: flex; justify-content: space-between; gap: 10px; padding: 14px; } .empty { padding: 34px 20px; color: var(--muted); text-align: center; } .retry-form { max-width: 640px; padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+/* 阅读按书归组：每本书一个原生折叠组，摘要行是书名与篇数、进度、最近时间。 */
+.book-group { margin: 0 0 14px; box-shadow: none; } .book-group > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 14px 18px; list-style: none; } .book-group > summary::-webkit-details-marker { display: none; }
+.book-group > summary::before { content: ""; flex: none; align-self: center; width: 7px; height: 7px; margin-right: 2px; border-right: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent); transform: rotate(-45deg); transition: transform .16s; } .book-group[open] > summary::before { transform: rotate(45deg); }
+.book-group > summary strong { font-weight: 600; overflow-wrap: anywhere; } .book-group > summary small { color: var(--muted); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.book-group-body { padding: 0 14px 14px; } .book-group-body > .activity:last-child { margin-bottom: 0; }
+#journal-list .book-group { margin: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; } #journal-list .book-group > summary { padding: 14px 18px; } #journal-list .book-group-body { padding: 0; border-top: 1px solid var(--line); } #journal-list .book-group-body .journal-link { padding-left: 34px; } #journal-list .book-group-body .journal-link:last-child { border-bottom: 0; }
 dialog { width: min(680px,calc(100% - 28px)); max-height: 90dvh; padding: 28px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: var(--surface); overflow-y: auto; box-shadow: 0 22px 80px var(--shadow); } dialog::backdrop { background: var(--backdrop); } .dialog-actions { display: flex; justify-content: flex-end; margin-top: 22px; }
 @media (max-width:760px) { main { padding: 22px 16px; } h1 { font-size: 25px; } .scope { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; } .sleep-plan,.sleep-physiology { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; } .config-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .archive-layout { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--line); } #journal-list { max-height: 220px; overflow-y: auto; } #journal-detail { padding: 22px; } summary span { display: block; margin: 6px 0 0 16px; } .tabs { gap: 0; } .tabs button { padding: 10px 12px; } .section-head { align-items: flex-start; } .form-footer { flex-wrap: wrap; } }
 @media (max-width:430px) { .config-grid { grid-template-columns: 1fr; gap: 0; } header { align-items: flex-start; } .section-head { flex-wrap: wrap; } .activity { padding: 18px; } dialog { padding: 20px; } .tabs button { padding: 10px; } }
@@ -233,6 +239,17 @@ html[data-life-section="settings"] #settings label:has(#derive_enabled) { displa
 :root[data-theme="walnut"] #journal-detail > h3 { margin-top:var(--sp-4); font-size:14px; color:var(--accent-ink); }
 :root[data-theme="walnut"] #journal-detail .prose { margin-top:var(--sp-2); font-size:14px; line-height:1.95; }
 :root[data-theme="walnut"] .journal-summary { border:1px solid var(--line); background:var(--surface); }
+:root[data-theme="walnut"] .book-group { margin:0; border:1px solid var(--line); border-radius:6px; background:transparent; box-shadow:none; }
+:root[data-theme="walnut"] .book-group > summary { padding:var(--sp-3) var(--sp-4); }
+:root[data-theme="walnut"] .book-group > summary::before { border-color:var(--accent-ink); }
+:root[data-theme="walnut"] .book-group > summary strong { font-size:15px; color:var(--text-strong); }
+:root[data-theme="walnut"] .book-group > summary small { color:var(--ink-soft); }
+:root[data-theme="walnut"] .book-group > summary:hover strong { color:var(--accent-ink); }
+:root[data-theme="walnut"] .book-group-body { display:grid; gap:var(--sp-2); padding:0 var(--sp-3) var(--sp-3); }
+:root[data-theme="walnut"] #journal-list .book-group { border:0; border-bottom:1px solid var(--line); border-radius:0; }
+:root[data-theme="walnut"] #journal-list .book-group > summary strong { font-size:14px; }
+:root[data-theme="walnut"] #journal-list .book-group-body { display:block; padding:0; }
+:root[data-theme="walnut"] #journal-list .book-group-body .journal-link { padding-left:calc(var(--sp-4) + 18px); }
 
 /* 执行记录重试表单与对话框。 */
 :root[data-theme="walnut"] .retry-form { max-width:none; margin-top:var(--sp-3); padding:var(--sp-4); border-radius:6px; background:var(--surface-muted); box-shadow:none; }

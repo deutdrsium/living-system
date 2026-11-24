@@ -167,7 +167,13 @@ class WardrobeController:
             self._wake.set()
             return True
 
+    def _desktop_owns_wardrobe(self):
+        desktop = getattr(getattr(self.runtime, "controller", None), "desktop_api", None)
+        return desktop is not None and desktop.owns_wardrobe()
+
     async def _apply(self, items):
+        if self._desktop_owns_wardrobe():
+            return False
         selection = normalize(self._selection, items)
         wanted = {expression(value if value is not None else f"none_{layer}")
                   for layer, value in selection.items()}
@@ -175,13 +181,15 @@ class WardrobeController:
         by_file = {row.get("file"): row for row in available if isinstance(row, dict)}
         if not wanted.issubset(by_file):
             raise RuntimeError("模型缺少衣柜表达式，请重新加载模型")
-        for filename, row in by_file.items():
-            if (row.get("active") and filename not in wanted
-                    and (str(filename).startswith(PREFIX) or filename in SEASONAL)):
-                await self.runtime.vts.set_expression(filename, active=False, fade_time=0)
-        for filename in sorted(wanted):
-            if not by_file[filename].get("active"):
-                await self.runtime.vts.set_expression(filename, active=True, fade_time=0)
+        changes = [(filename, False) for filename, row in by_file.items()
+                   if row.get("active") and filename not in wanted
+                   and (str(filename).startswith(PREFIX) or filename in SEASONAL)]
+        changes += [(filename, True) for filename in sorted(wanted) if not by_file[filename].get("active")]
+        for filename, active in changes:
+            if self._desktop_owns_wardrobe():
+                return False
+            await self.runtime.vts.set_expression(filename, active=active, fade_time=0)
+        return True
 
     async def _run(self):
         while True:
@@ -189,7 +197,7 @@ class WardrobeController:
             try:
                 async with self._lock:
                     model_id, items = self._read()
-                    connected = await self.runtime._check_and_reconnect()
+                    connected = not self._desktop_owns_wardrobe() and await self.runtime._check_and_reconnect()
                     if connected:
                         info = await self.runtime.vts.get_model_info()
                         active_id = info.get("modelID") if info.get("modelLoaded") else ""
@@ -199,8 +207,7 @@ class WardrobeController:
                                     or isinstance(age, (int, float)) and self._last_model_age is not None
                                     and age < self._last_model_age)
                         if active_id == model_id and (self._dirty or reloaded):
-                            await self._apply(items)
-                            self._dirty = False
+                            self._dirty = not await self._apply(items)
                             self._last_error = ""
                         elif active_id != model_id:
                             self._dirty = True

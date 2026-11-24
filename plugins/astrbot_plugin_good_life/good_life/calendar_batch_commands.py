@@ -10,10 +10,11 @@ from .storage import StorageReader
 class CalendarBatchCommands:
     OPERATIONS = frozenset({"prepare", "status", "verify_prepared", "resolve", "verify_commit", "acknowledge"})
 
-    def __init__(self, storage):
+    def __init__(self, storage, *, spending=None):
         self.reader = StorageReader(storage)
         self.commands = PreparedCommands(storage)
-        self.single = StagedCalendarCommands(storage)
+        self.spending = spending
+        self.single = StagedCalendarCommands(storage, spending=spending)
 
     def dispatch(self, operation, *args, **kwargs):
         name = operation.removeprefix("batch.")
@@ -24,7 +25,8 @@ class CalendarBatchCommands:
     @staticmethod
     def _items(request):
         if (type(request) is not dict or request.get("kind") != "calendar.batch" or request.get("expected_revision") != 0
-                or type(request.get("payload")) is not dict or set(request["payload"]) != {"commands", "storage_keys"}):
+                or type(request.get("payload")) is not dict
+                or set(request["payload"]) - {"spending"} != {"commands", "storage_keys"}):
             raise ValueError("invalid calendar batch")
         items = request["payload"]["commands"]
         if type(items) is not list or len(items) > 200:
@@ -86,7 +88,11 @@ class CalendarBatchCommands:
 
     def apply(self, connection, request):
         self._validate(self.reader, request)
-        return {"proposals": [self.single.apply(connection, item) for item in self._items(request)]}
+        proposals = [self.single.apply(connection, item, batch_command_id=request["command_id"])
+                     for item in self._items(request)]
+        if self.spending is not None:
+            self.spending.add(connection, request)
+        return {"proposals": proposals}
 
     def verify_commit(self, decision):
         with self.reader.locked():

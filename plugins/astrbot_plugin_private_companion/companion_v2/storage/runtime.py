@@ -885,6 +885,10 @@ class StorageRuntime:
                     )
                 else:
                     self._initialize_schema()
+                    # Additive optimization indexes are allowed by shape validation;
+                    # keep the pinned schema/migration chain and all source rows intact.
+                    connection.execute("CREATE INDEX IF NOT EXISTS sources_governance_idx ON sources("
+                                       "source_id,lineage_id,source_revision,owner,state,issued_at,expires_at)")
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
         except sqlite3.Error as error:

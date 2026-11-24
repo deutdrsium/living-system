@@ -16,10 +16,12 @@ from ..kernel.codec import digest, freeze, integer, name, require, wire
 class AcademicsConfig:
     enabled: bool = False
     study_enabled: bool = False
+    grades_enabled: bool = False
 
     def __post_init__(self):
         require(type(self.enabled) is bool, "academics.enabled must be boolean")
         require(type(self.study_enabled) is bool, "academics.study_enabled must be boolean")
+        require(type(self.grades_enabled) is bool, "academics.grades_enabled must be boolean")
 
 
 def fields(value, expected, label):

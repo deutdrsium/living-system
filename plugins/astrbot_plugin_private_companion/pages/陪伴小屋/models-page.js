@@ -39,7 +39,7 @@ window.CompanionModelsPage = (() => {
     model_configuration_invalid: "请核对任务配置、模型提供方和输出上限。", model_task_unavailable: "此任务已不再注册，请刷新列表。",
     model_provider_unavailable: "所选 AstrBot 模型未加载或暂不可用于 V2。", model_capability_mismatch: "所选模型提供方不支持这项任务。", model_output_limit: "输出上限超过所选模型提供方能力。",
     model_catalog_unavailable: "无法读取已加载的 AstrBot 文本模型提供方。",
-    model_fallback_duplicate: "备用模型提供方必须与主模型提供方不同。", core_access_required: "当前账号没有管理权限。", dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开小屋。",
+    core_access_required: "当前账号没有管理权限。", dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开小屋。",
     staging_not_initialized: "角色数据尚未就绪。请先在「账号与会话」完成角色映射并准备启动；共享启动模型会自动跟随 AstrBot 当前模型，也可在账号页固定。", staging_host_terminated: "插件已停止，请重新打开插件。", bridge_timeout: "连接超时，请核对原保存结果。",
     model_route_invalid: "替换规则未通过校验：请检查规则默认模型提供方、匹配方式与时段。",
     model_refused: "所选模型提供方拒绝了这次请求。",
@@ -232,12 +232,7 @@ window.CompanionModelsPage = (() => {
   function patchFor(task, draft) { const changes = {}, reset = [];
     for (const name of taskFields(task)) { const field = task.fields[name]; if (draft.inherited[name]) { if (field.explicit) reset.push(name); }
       else if (!field.explicit || draft.values[name] !== field.value) changes[name] = draft.values[name]; }
-    // A fallback identical to the primary provider is not a fallback.  Keeping
-    // it explicit makes every later edit fail the page's duplicate check and
-    // the host's model_fallback_duplicate guard; normalize it to "no fallback".
-    const primary = draft.inherited.provider ? task.fields.provider.inherited_value : draft.values.provider;
-    const fallback = draft.inherited.fallback ? task.fields.fallback.inherited_value : draft.values.fallback;
-    if (!draft.inherited.fallback && fallback && fallback === primary) changes.fallback = "";
+    // A saved fallback identical to the primary provider retries the same route once.
     return { changes, reset }; }
   const dirty = (task, draft) => { const p = patchFor(task, draft); return Object.keys(p.changes).length > 0 || p.reset.length > 0; };
   const sameField = (a, b) => JSON.stringify([a?.value, !!a?.explicit, a?.inherited_value, a?.source, a?.inherited_source])
@@ -321,7 +316,7 @@ window.CompanionModelsPage = (() => {
   function validatePatch(task, draft, p) { if (!Object.keys(p.changes).length && !p.reset.length) return false;
     if (Object.hasOwn(p.changes, "prompt") && (typeof p.changes.prompt !== "string" || p.changes.prompt.length > 8000)) return false;
     if (Object.hasOwn(p.changes, "max_output_tokens") && (!Number.isInteger(p.changes.max_output_tokens) || p.changes.max_output_tokens < 1 || p.changes.max_output_tokens > MAX_MODEL_OUTPUT_TOKENS)) return false;
-    if (Object.hasOwn(p.changes, "timeout_seconds") && (!Number.isInteger(p.changes.timeout_seconds) || p.changes.timeout_seconds < 1 || p.changes.timeout_seconds > 600)) return false;
+    if (Object.hasOwn(p.changes, "timeout_seconds") && (!Number.isInteger(p.changes.timeout_seconds) || p.changes.timeout_seconds < 1 || p.changes.timeout_seconds > 900)) return false;
     if (Object.hasOwn(p.changes, "replacement_scope") && !["plugin", "conversation", "all"].includes(p.changes.replacement_scope)) return false;
     if (Object.hasOwn(p.changes, "fallback_on_refusal") && typeof p.changes.fallback_on_refusal !== "boolean") return false;
     if (Object.hasOwn(p.changes, "replacement_rules") && (typeof p.changes.replacement_rules !== "string" || p.changes.replacement_rules.length > 24000)) return false;
@@ -329,16 +324,13 @@ window.CompanionModelsPage = (() => {
     if (coreReply(task)) return Object.keys(p.changes).concat(p.reset).every(name => name === "prompt" || name === "replacement_rules");
     const primary = projected(task, p, "provider"), fallback = projected(task, p, "fallback"), limit = projected(task, p, "max_output_tokens");
     const picked = [primary, ...(fallback ? [fallback] : [])], providers = picked.map(id => state.status.providers.find(provider => provider.id === id));
-    const fallbackExplicit = Object.hasOwn(p.changes, "fallback")
-      || (!p.reset.includes("fallback") && task.fields.fallback.explicit);
     /* A registry default is clamped by routing at send time, so a task may keep
        following it even when the selected provider is smaller: the save only
        carries the provider, and the sent envelope fits. */
     const limitDefault = !Object.hasOwn(p.changes, "max_output_tokens")
       && (p.reset.includes("max_output_tokens") || !task.fields.max_output_tokens.explicit)
       && limitIsDefault(task);
-    return (!fallbackExplicit || !fallback || fallback !== primary)
-      && providers.every(provider => provider && task.capabilities.every(cap => provider.capabilities.includes(cap)))
+    return providers.every(provider => provider && task.capabilities.every(cap => provider.capabilities.includes(cap)))
       && (limitDefault || limit <= limitFor(state, task, draft)); }
   /* ---------- functional markup (design alignment: MODEL_CONFIG_UI_UX_DESIGN_20260926) ---------- */
   /* Stable per-provider hue for the colored routing pills and map dots. */
@@ -466,7 +458,7 @@ window.CompanionModelsPage = (() => {
           <span class="model-msel"><i style="background:${pillColor(fallback)}"></i><select data-model-field="fallback" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 备用模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "fallback")}</select></span></label>
         <div class="model-duo">
           <label class="model-fd"><span class="model-cap">请求超时</span>
-            <span class="model-unit"><input type="number" min="1" max="600" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(effective(task, draft, "timeout_seconds"))}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></label>
+            <span class="model-unit"><input type="number" min="1" max="900" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(effective(task, draft, "timeout_seconds"))}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></label>
           <label class="model-fd"><span class="model-cap">单次输出上限</span>
             <span class="model-unit"><input type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(effective(task, draft, "max_output_tokens"))}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></label>
         </div>
@@ -1105,13 +1097,18 @@ window.CompanionModelsPage = (() => {
     endpoint: data.endpoint || "", local_model_path: data.local_model_path || "",
     api_key: "", proxy: data.proxy || "", timeout_seconds: Number(data.timeout_seconds) || 20,
     followup_confidence_threshold: Math.max(0, Math.min(100, Number(data.followup_confidence_threshold) || 0)),
+    private_silence_enabled: data.private_silence_enabled !== false,
+    private_silence_confidence_threshold: Math.max(0, Math.min(100, Number.isFinite(Number(data.private_silence_confidence_threshold)) ? Number(data.private_silence_confidence_threshold) : 80)),
     decision_fields: Object.fromEntries(LAYA_DECISION_FIELDS.map(([key]) => [key, data.decision_fields?.[key] !== false]))});
   const layaProxyValue = l => String(l.draft?.proxy ?? "").trim();
   const layaChanges = l => { const changes = {};
-    ["enabled", "mode", "request_format", "remote_model", "endpoint", "timeout_seconds", "local_model_path", "followup_confidence_threshold"].forEach(key => {
+    ["enabled", "mode", "request_format", "remote_model", "endpoint", "timeout_seconds", "local_model_path", "followup_confidence_threshold",
+     "private_silence_enabled", "private_silence_confidence_threshold"].forEach(key => {
       const current = key === "request_format" ? l.data[key] || "native"
         : key === "remote_model" || key === "local_model_path" ? l.data[key] || ""
         : key === "followup_confidence_threshold" ? Math.max(0, Math.min(100, Number(l.data[key]) || 0))
+        : key === "private_silence_enabled" ? l.data[key] !== false
+        : key === "private_silence_confidence_threshold" ? Math.max(0, Math.min(100, Number.isFinite(Number(l.data[key])) ? Number(l.data[key]) : 80))
         : l.data[key];
       if (l.draft[key] !== current) changes[key] = l.draft[key]; });
     if (LAYA_DECISION_FIELDS.some(([key]) => l.draft.decision_fields[key] !== (l.data.decision_fields?.[key] !== false)))
@@ -1313,12 +1310,12 @@ window.CompanionModelsPage = (() => {
     const torchText = [l.data.torch_version, l.data.cuda_version ? `CUDA ${l.data.cuda_version}` : "无 CUDA"]
       .filter(Boolean).join(" · ");
     return `<div class="model-subpane model-laya-pane">
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、远程 HTTP 服务、OpenAI 兼容网关与 Cloudflare Workers AI，四者共用同一份决策合同；Laya 与 TypeSafe 官方 Jev 都走 SystemOne。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；群聊候选与每条私聊都进入 Laya 判断。私聊只用它决定是否不回：对话已自然收住（例如双方都道过晚安）且沉默概率达到下方阈值时不回复，其余情况照常回复。模型不输出时间、段数等数值；行动概率只用于下方的连续接话阈值与私聊沉默阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、远程 HTTP 服务、OpenAI 兼容网关与 Cloudflare Workers AI，四者共用同一份决策合同；Laya 与 TypeSafe 官方 Jev 都走 SystemOne。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
         <div class="model-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(packageKpi, mode === "local" ? "Python 包" : "依赖来源")}${kpi(modelKpi, mode === "jev" || mode === "workers_ai" ? "判断模型" : "模型权重")}${kpi(runtimeLabel, "接入方式", gpuUnavailable ? "r" : "")}</div>
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
-        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "远程 HTTP 服务走 SystemOne；OpenAI 兼容网关仅用于只提供 /v1/chat/completions 的第三方中转，TypeSafe 官方 Jev 请选「远程 HTTP 服务」", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "OpenAI 兼容网关"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "网关地址", "仅用于只提供 /v1/chat/completions 的第三方中转；可填服务根地址、/v1 或完整路径") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "proxy", "代理地址", proxyHint, "text", proxyBadge) : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "远程 HTTP 服务走 SystemOne；OpenAI 兼容网关仅用于只提供 /v1/chat/completions 的第三方中转，TypeSafe 官方 Jev 请选「远程 HTTP 服务」", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "OpenAI 兼容网关"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "网关地址", "仅用于只提供 /v1/chat/completions 的第三方中转；可填服务根地址、/v1 或完整路径") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "proxy", "代理地址", proxyHint, "text", proxyBadge) : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}${layaField(l, "private_silence_enabled", "私聊收住时不回", "关闭后私聊每条都回复", "bool")}${layaPercentField(l, "private_silence_confidence_threshold", "私聊沉默置信阈值", "Laya 判断对话已自然收住且沉默概率不低于此值时本轮不回复；低于此值照常回复")}</div>
         ${mode === "remote" ? `<div class="model-editor-actions"><button type="button" class="button small" data-laya-preset="laya" ${l.loading || l.busy ? "disabled" : ""}>填入 Laya 官方</button><button type="button" class="button small" data-laya-preset="typesafe" ${l.loading || l.busy ? "disabled" : ""}>填入 TypeSafe Jev 官方</button></div>` : ""}
         ${layaProtocolAlert(l, mode)}
 ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cloudflare" ? '<p class="model-note">Cloudflare Workers AI：服务地址填到 <code>/ai/run</code>；请求体会自动包成 <code>{"model": "...", "input": {"state": "...", "questions": {...}}}</code>，HTTP 200 的 <code>result</code> 会自动拆开。模型名按 Workers AI 的模型标识填写。</p>' : ""}
@@ -1347,7 +1344,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (t.matches("[data-laya-decision]") && l.draft) { l.draft.decision_fields[t.dataset.layaDecision] = t.checked; if (event.type === "change") { l.bad = false; render(); } return; }
     const key = t.dataset.layaField; if (!key || !l.draft || l.loading || l.busy) return;
     const value = t.type === "checkbox" ? t.checked : t.type === "number" ? t.valueAsNumber : t.value;
-    l.draft[key] = key === "followup_confidence_threshold"
+    l.draft[key] = key === "followup_confidence_threshold" || key === "private_silence_confidence_threshold"
       ? Math.max(0, Math.min(100, Number.isFinite(Number(value)) ? Math.round(Number(value)) : 0))
       : value;
     // request_format only applies to the remote slot; a hidden cloudflare
@@ -2612,7 +2609,8 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.image && imageConfigDirty(s.image)) changed.push(...imageChangedFields(s.image));
     if (s.laya && layaDirty(s.laya)) {
       const labels = {enabled:'启用决策', mode:'运行方式', endpoint:'服务地址', local_model_path:'本地模型路径',
-        remote_model:'判断模型名', api_key:'API Key', proxy:'代理地址', timeout_seconds:'请求超时', followup_confidence_threshold:'连续接话置信阈值'};
+        remote_model:'判断模型名', api_key:'API Key', proxy:'代理地址', timeout_seconds:'请求超时', followup_confidence_threshold:'连续接话置信阈值',
+        private_silence_enabled:'私聊收住时不回', private_silence_confidence_threshold:'私聊沉默置信阈值'};
       for (const name of Object.keys(layaChanges(s.laya))) {
         if (name === 'decision_fields') changed.push(...LAYA_DECISION_FIELDS.filter(([key]) =>
           s.laya.draft.decision_fields[key] !== (s.laya.data.decision_fields?.[key] !== false)).map(([, label]) => `Laya · ${label}`));

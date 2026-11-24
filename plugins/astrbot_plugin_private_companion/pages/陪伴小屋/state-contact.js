@@ -142,6 +142,8 @@ window.CompanionStateContact = (() => {
     activity_curve_skipped:["当前时段被活跃度曲线跳过","检查本地时区和按小时活跃曲线，或等待下一时段。"],
     screen_observation_pending:["正在等待屏幕观察结果","观察完成后再判断是否形成主动消息。"],
     platform_circuit_open:["平台发送通道暂时冷却","检查 AstrBot 平台连接；冷却结束后会恢复评估。"],
+    window_absent:["桌面陪伴未打开","桌面端关闭时不在这里主动联系，改由 QQ 私聊窗口按自己的对话评估。"],
+    desktop_preferred:["桌面陪伴已打开","桌面端打开期间只在桌面主动联系；关闭后这个 QQ 私聊窗口恢复正常评估。"],
     conversation_busy:["角色当前处于忙碌时段","忙碌状态结束后会恢复联系评估。"],
     opportunity_found:["已找到主动联系候选","继续查看后台任务与模型决策结果。"],
     candidate_queued:["候选已进入后台执行","若没有发出，请查看任务执行和投递回执诊断。"],

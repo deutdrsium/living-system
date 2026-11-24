@@ -12,6 +12,11 @@
       }
     }
   },
+  "desktop_session_enabled": {
+    "description": "启用桌面设备会话",
+    "type": "bool",
+    "default": false
+  },
   "storage": {
     "description": "资料存储与清理",
     "hint": "存储位置变更会在重启插件时迁移 V2 资料；清理策略只管理已完成的备份快照。",

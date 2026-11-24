@@ -242,10 +242,9 @@ class ReadingFollowupTests(ReadingExtractionFixture, unittest.IsolatedAsyncioTes
         scheduler.advance(contexts, self.clock.now(), planner)
         self.assertNotIn(f.context.key, scheduler.workers)
         self.clock.advance(timedelta(seconds=30))
-        scheduler.advance(contexts, self.clock.now(), planner)
-        self.assertEqual(scheduler.slots[f.context.key]["retry"], 1)
         self.model_behavior = lambda _env: asyncio.sleep(0, result=answered('{"choice":"1","reason":"retry"}'))
         scheduler.advance(contexts, self.clock.now(), planner)
+        self.assertEqual(scheduler.slots[f.context.key]["retry"], 1)
         self.assertEqual((await scheduler.workers[f.context.key])["state"], "committed")
         self.assertEqual(len(self.called), 1)
 

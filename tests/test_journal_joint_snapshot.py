@@ -369,7 +369,12 @@ class JournalJointSnapshotTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         async def model(envelope):
             entered.set()
             await release.wait()
-            return await self.model(envelope)
+            response = await self.model(envelope)
+            # Revoke at the response boundary, before the journal can commit.
+            # Revoking while still waiting can cancel the provider and correctly
+            # leave usage unknown instead of producing the receipt tested here.
+            self.assertTrue(self.snapshot_registry.unregister(self.snapshot_token))
+            return response
         self.model_behavior = model
         job = asyncio.create_task(routine.dream(completed))
         try:
@@ -378,7 +383,6 @@ class JournalJointSnapshotTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
                 with self.snapshot_life.transaction() as db:
                     db.execute("INSERT INTO life_metadata VALUES ('test-model-wait', 'available')")
             await asyncio.wait_for(asyncio.to_thread(unrelated_life_write), 5)
-            self.assertTrue(self.snapshot_registry.unregister(self.snapshot_token))
         finally:
             release.set()
         result = await job

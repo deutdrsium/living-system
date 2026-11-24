@@ -3,7 +3,6 @@ import asyncio
 from datetime import timedelta
 import json
 from pathlib import Path
-from random import Random
 import sys
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
@@ -21,7 +20,8 @@ from astrbot.api.star import StarTools
 from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 from astrbot_plugin_good_life import main as life_entry
-from astrbot_plugin_good_life.good_life.academics import attendance
+from astrbot_plugin_good_life.good_life.academics import attendance, grades
+from astrbot_plugin_good_life.good_life.academics.models import zone
 from astrbot_plugin_good_life.good_life.academics.service import timestamp
 from astrbot_plugin_good_life.good_life.activity_import import stage_activities
 from astrbot_plugin_good_life.good_life.city import amap
@@ -36,10 +36,11 @@ from astrbot_plugin_good_life.good_life.storage import LifeStorage, StorageReade
 from astrbot_plugin_good_life.good_life.travel import propose_walk
 from astrbot_plugin_good_life.good_life.web_api import PREFIX
 from astrbot_plugin_private_companion import main as host_entry
-from companion_v2.execution.models import digest
+from companion_v2.execution.models import digest, encode, stamp
 from companion_v2.foundation.clock import DeterministicClock
+from companion_v2.integration.life_event_inbox import ACADEMIC_NOTICES, academic_notice_ids
 from companion_v2.integration.life_ledger_router import LIFE_ACTIVITY_OWNER_KEY
-from companion_v2.role_work.models import RoleActivity, RoleActivityState
+from companion_v2.role_work.models import RoleActivity, RoleActivityState, RoleSleepReceipt
 from companion_v2.role_work.state.ownership import role_owner
 from companion_v2.role_work.work_models import RoleWorkSpec
 from tests.multi_host_support import MultiFixture, multi_config
@@ -217,6 +218,147 @@ class W6Scenario(MultiFixture, IsolatedAsyncioTestCase):
     def tables(self, storage):
         return {row[0] for row in StorageReader(storage).all("SELECT name FROM sqlite_master WHERE type='table'", ())}
 
+    async def test_grades_are_flag_gated_and_reach_private_role_context_once(self):
+        await self.restart(grades_enabled=True)
+        self.assertNotIn("life_term_grades", self.tables(self.storage))
+        await self.restart(academics_enabled=True, grades_enabled=False)
+        page = self.ok(await self.request("life"))
+        self.ok(await self.request("life/command", body={"action": "configure", "operation_key": "grade-life",
+            "view_token": page["view_token"], "edit_token": page["edit_token"],
+            "changes": {"enabled": True, "sleep_enabled": False}}))
+        school_term = term(academic_year="2026-2027 学年秋季学期")
+        await self.write("term", school_term)
+        await self.write("timetable", entry())
+        owner = digest(role_owner(self.context))
+        last = timestamp("2026-11-23T08:20:00Z")
+        release = grades.release_time(owner, "fall", "ethics", last, zone(school_term["timezone"]))
+        self.clock.set(release - timedelta(seconds=1))
+        self.assertNotIn("life_term_grades", self.tables(self.storage))
+        self.assertEqual((await self.request("academics/grades", query="term_id=fall"))["message"], "missing_dependency")
+
+        await self.restart(grades_enabled=True)
+        self.assertIsNone(self.runtime.kernel)
+        self.assertEqual(self.ok(await self.request("academics/grades", query="term_id=fall"))["grades"], [])
+        self.clock.set(release)
+        await self.runtime.bind(self.api)
+        self.assertFalse(self.runtime.optional_diagnostics)
+        grade, = self.ok(await self.request("academics/grades", query="term_id=fall"))["grades"]
+        event, = self.storage.pending_events(ACADEMIC_NOTICES)
+
+        events = self.app.life_runtime.events
+        await self.restart(grades_enabled=False)
+        events._academic_notices_at = 0
+        self.app.life_runtime.advance()
+        self.assertEqual(academic_notice_ids(self.app.runtime, self.context, release), [])
+        self.assertEqual(self.storage.pending_events(ACADEMIC_NOTICES), (event,))
+
+        await self.restart(grades_enabled=True, kernel_enabled=True, class_enabled=True)
+        await self.tick(release)
+        with patch.object(self.storage, "acknowledge", side_effect=ValueError("interrupted before ack")):
+            events._academic_notices_at = 0
+            self.app.life_runtime.advance()
+        self.assertEqual(self.storage.pending_events(ACADEMIC_NOTICES), (event,))
+        self.assertEqual(academic_notice_ids(self.app.runtime, self.context, release), [event["event_id"]])
+        self.assertEqual(events.active_handles, ())
+        life_context = self.app.messages.life_context
+        snapshot = life_context.capture(self.context, release)
+        self.assertEqual(snapshot.get("academic_notices"), [event["event_id"]], snapshot)
+        notice, = [item for item in life_context.contributions(snapshot, self.context, release)
+                   if item.purpose == "academic_grade_notice"]
+        self.assertEqual(json.loads(notice.payload), event["payload"])
+
+        await self.restart()
+        await self.tick(release + timedelta(minutes=2))
+        events._academic_notices_at = 0
+        self.app.life_runtime.advance()
+        self.assertEqual(self.ok(await self.request("academics/grades", query="term_id=fall"))["grades"], [grade])
+        self.assertEqual(self.storage.pending_events(ACADEMIC_NOTICES), ())
+        self.assertEqual(academic_notice_ids(self.app.runtime, self.context, release), [event["event_id"]])
+
+    async def test_monthly_wallet_allowance_pays_once_per_local_month_across_restarts(self):
+        await self.restart(kernel_enabled=True, wallet_enabled=False, wallet_monthly_allowance=2000)
+        page = self.ok(await self.request("life"))
+        self.ok(await self.request("life/command", body={"action": "configure", "operation_key": "allowance-life",
+            "view_token": page["view_token"], "edit_token": page["edit_token"],
+            "changes": {"enabled": True, "timezone": "Asia/Shanghai"}}))
+        at = timestamp("2026-11-20T04:00:00Z")
+        await self.tick(at)
+        self.assertNotIn("life_wallet_transactions", self.tables(self.storage))
+
+        await self.restart(wallet_enabled=True, wallet_monthly_allowance=0)
+        await self.tick(at)
+        self.assertEqual(self.ok(await self.request("life/wallet"))["transactions"], [])
+
+        await self.restart(wallet_monthly_allowance=2000)
+        await self.tick(at)
+        first = self.ok(await self.request("life/wallet"))
+        self.assertEqual(first["balance_minor"], 200_000)
+        self.assertEqual(len(first["transactions"]), 1)
+        credit = first["transactions"][0]
+        self.assertEqual((credit["kind"], credit["currency"], credit["activity_label"], credit["occurred_at"]),
+                         ("income", "CNY", "每月生活费", at.isoformat()))
+        self.assertEqual(self.wallet().transactions(self.scope().owner_key)[0].operation_id, "monthly-allowance:2026-11")
+
+        later = at + timedelta(minutes=1)
+        await self.tick(later)
+        await self.restart()
+        await self.tick(later)
+        await self.restart(wallet_monthly_allowance=2500)
+        await self.tick(later)
+        self.assertEqual(self.ok(await self.request("life/wallet")), first)
+
+        await self.tick(timestamp("2026-11-30T16:00:00Z"))
+        next_month = self.ok(await self.request("life/wallet"))
+        self.assertEqual(next_month["balance_minor"], 450_000)
+        self.assertEqual([tx["amount_minor"] for tx in next_month["transactions"]], [250_000, 200_000])
+        self.assertEqual([tx.operation_id for tx in self.wallet().transactions(self.scope().owner_key)],
+                         ["monthly-allowance:2026-11", "monthly-allowance:2026-12"])
+
+    async def test_monthly_wallet_allowance_waits_for_configured_local_day(self):
+        await self.restart(kernel_enabled=True, wallet_enabled=True, wallet_monthly_allowance=2000,
+                           wallet_allowance_day=20)
+        page = self.ok(await self.request("life"))
+        self.ok(await self.request("life/command", body={"action": "configure", "operation_key": "allowance-day",
+            "view_token": page["view_token"], "edit_token": page["edit_token"],
+            "changes": {"enabled": True, "timezone": "America/Los_Angeles"}}))
+        await self.tick(timestamp("2026-11-20T07:59:00Z"))
+        self.assertEqual(self.ok(await self.request("life/wallet"))["balance_minor"], 0)
+        await self.tick(timestamp("2026-11-20T08:00:00Z"))
+        self.assertEqual(self.ok(await self.request("life/wallet"))["balance_minor"], 200_000)
+
+    async def test_monthly_allowance_funds_planned_expense_in_the_same_tick(self):
+        await self.restart(kernel_enabled=True, wallet_enabled=True, wallet_monthly_allowance=100,
+                           planned_spending_enabled=True)
+        page = self.ok(await self.request("life"))
+        self.ok(await self.request("life/command", body={"action": "configure", "operation_key": "spending-allowance-life",
+            "view_token": page["view_token"], "edit_token": page["edit_token"],
+            "changes": {"enabled": True, "timezone": "Asia/Shanghai"}}))
+        midnight = timestamp("2026-11-30T16:00:00Z")
+        before = midnight - timedelta(seconds=1)
+        await self.tick(before)
+        self.assertEqual(self.ok(await self.request("life/wallet"))["balance_minor"], 10_000)
+
+        # Seed an acknowledged plan so this test can exercise the production spending tick directly.
+        command = self.runtime.handlers["calendar_command"]
+        request = {"command_id": "month-boundary-expense", "owner_key": self.scope().owner_key,
+            "context_key": self.context.key, "kind": "calendar.batch", "expected_revision": 0,
+            "payload": {"commands": [], "storage_keys": [], "spending": {"timezone": "Asia/Shanghai",
+                "now": before.isoformat(), "end": (midnight + timedelta(hours=1)).isoformat(), "calendar_keys": [],
+                "entries": [{"label": "日用品", "amount_minor": 15_000, "at": midnight.isoformat()}]}}}
+        prepared = command("batch.prepare", request, prepared_at=before)
+        decision = {"command_id": request["command_id"], "request_hash": prepared["request_hash"], "decision": "commit",
+                    "decision_id": "month-boundary-expense-decision"}
+        command("batch.resolve", decision, verify_host_decision=lambda _: True)
+        command("batch.acknowledge", request["command_id"], verify_host_completion=lambda _: True)
+
+        self.clock.set(midnight)
+        await self.runtime.scheduler.tick(now=midnight)
+        page = self.ok(await self.request("life/wallet"))
+        self.assertEqual(page["balance_minor"], 5_000)
+        self.assertCountEqual([(row["kind"], row["amount_minor"], row["activity_label"]) for row in page["transactions"]],
+                              [("income", 10_000, "每月生活费"), ("income", 10_000, "每月生活费"),
+                               ("spend", 15_000, "日用品")])
+
     async def test_management_wallet_cursor_paginates_after_flags_off_rollback(self):
         await self.restart(kernel_enabled=True, wallet_enabled=True)
         owner = digest(role_owner(self.context))
@@ -287,21 +429,22 @@ class W6Scenario(MultiFixture, IsolatedAsyncioTestCase):
 
         scope = self.scope()
         early = self.runtime.academics.next_sessions(owner, scope.context_key, now=START)[0]
-        # Two draws from a fixed seed yield a severe wake slip through the real attendance policy.
-        rng = Random(31)
-        draws = {"slip": rng.random(), "severity": rng.random()}
-        wake_at = timestamp(early["start_at"]) - timedelta(minutes=25)
-        with patch.object(attendance, "_draw", side_effect=lambda _owner, _session, purpose: draws[purpose]) as draw:
-            await self.tick(wake_at)
-            self.assertEqual(draw.call_count, 2)
+        wake_at = timestamp(early["start_at"]) - timedelta(minutes=5)
+        # The role wakes too late to finish preparing before this short class ends.
+        night = RoleActivity("night-fixture", "role-a", self.context.scope, wake_at - timedelta(hours=8),
+            RoleActivityState.COMPLETED, updated_at=wake_at,
+            work=RoleWorkSpec("sleep", self.context.key, "night-fixture", due_at=wake_at),
+            sleep=RoleSleepReceipt("night", 480, 480, slept_seconds=8 * 3600))
+        with self.storage.transaction() as connection:
+            connection.execute("INSERT INTO staged_role_activities VALUES (?,?,?,?,?,?,?)",
+                (owner, night.activity_id, encode(night.owner), night.revision, night.state.value, stamp(wake_at), encode(night)))
+        await self.tick(wake_at)
         wake_sql = "SELECT record_json FROM life_class_attendance_wakes WHERE owner_key=? AND session_id=?"
         wake_args = (owner, early["session_id"])
         wake = StorageReader(self.storage).one(wake_sql, wake_args)[0]
-        self.assertEqual(json.loads(wake)["wake_delay_s"], 7200)
+        self.assertEqual(timestamp(json.loads(wake)["ready_at"]), wake_at + timedelta(minutes=20))
         await self.restart()
-        with patch.object(attendance, "_draw", side_effect=AssertionError("wake re-rolled")) as draw:
-            await self.tick(wake_at + timedelta(seconds=1))
-            draw.assert_not_called()
+        await self.tick(wake_at + timedelta(seconds=1))
         self.assertEqual(StorageReader(self.storage).one(wake_sql, wake_args)[0], wake)
 
         end = timestamp(early["end_at"])
@@ -418,7 +561,7 @@ class W6Scenario(MultiFixture, IsolatedAsyncioTestCase):
         self.assertEqual(self.wallet().quote_available(owner).balance_minor, 82)
         requests = self.http.await_count
         await self.restart(**dict.fromkeys(("kernel_enabled", "campus_enabled", "academics_enabled", "class_enabled",
-            "attendance_enabled", "study_enabled", "wallet_enabled", "city_enabled", "amap_navigation_enabled",
+            "attendance_enabled", "study_enabled", "grades_enabled", "wallet_enabled", "city_enabled", "amap_navigation_enabled",
             "amap_poi_search_enabled"), False))
         await self.tick(self.clock.now() + timedelta(seconds=1))
         self.assertFalse(self.kernel.repo.foreground_busy(owner))

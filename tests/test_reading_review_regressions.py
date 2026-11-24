@@ -217,7 +217,8 @@ class ReadingReviewRegressions(ReadingExtractionFixture, unittest.IsolatedAsynci
         f = await self.fixture(start=False)
         setup = self.choice_scheduler(f, f.executor)
         self.model_behavior = lambda _env: asyncio.sleep(0, result=answered('{"choice":"1","reason":"continue"}'))
-        with patch.object(f.ports, "asset", side_effect=TimeoutError("temporary recheck failure")):
+        with patch.object(f.ports, "asset", side_effect=TimeoutError("temporary recheck failure")), \
+                patch.object(setup.scheduler, "monotonic_clock", return_value=100):
             for attempt in range(1, 4):
                 self.assertEqual(await self.choose_tick(f, setup), {"state": "unknown"})
                 state = f.executor.store.get(f.context.key, choice_key(setup.slot))
@@ -232,12 +233,14 @@ class ReadingReviewRegressions(ReadingExtractionFixture, unittest.IsolatedAsynci
         state = f.executor.store.get(f.context.key, choice_key(setup.slot))
         self.assertEqual(state["phase"], "failed")
         self.assertEqual(len(self.called), 1)
-        self.clock.advance(timedelta(seconds=30))
-        setup.scheduler.advance(setup.contexts, self.clock.now(), setup.planner)
-        self.assertEqual(setup.scheduler.slots[f.context.key]["retry"], 0)
-        self.clock.advance(timedelta(seconds=30))
-        setup.scheduler.advance(setup.contexts, self.clock.now(), setup.planner)
-        self.assertEqual(setup.scheduler.slots[f.context.key]["retry"], 1)
+        with patch.object(setup.scheduler, "monotonic_clock", return_value=130):
+            self.clock.advance(timedelta(seconds=30))
+            setup.scheduler.advance(setup.contexts, self.clock.now(), setup.planner)
+            self.assertEqual(setup.scheduler.slots[f.context.key]["retry"], 0)
+            self.clock.advance(timedelta(seconds=30))
+            setup.scheduler.advance(setup.contexts, self.clock.now(), setup.planner)
+            self.assertEqual(setup.scheduler.slots[f.context.key]["retry"], 1)
+            self.assertEqual((await setup.scheduler.workers[f.context.key])["state"], "committed")
 
     async def test_choice_retry_recovers_original_and_publishes_without_resubmission(self):
         f = await self.fixture(start=False)
@@ -277,13 +280,16 @@ class ReadingReviewRegressions(ReadingExtractionFixture, unittest.IsolatedAsynci
         self.assertEqual(datetime.fromisoformat(interrupted_state["result_check_after"]), self.clock.now() + timedelta(seconds=60))
         # Disabling A3 after a crash still recovers life-owned choices.
         recovered = ReadingExecutor(f.life, f.ports, enabled=False)
+        self.clock.advance(timedelta(seconds=50))
         restarted = self.choice_scheduler(f, recovered)
-        with patch.object(f.ports, "inspect_task", side_effect=AssertionError("backoff must survive restart")):
-            restarted.scheduler.advance(restarted.contexts, self.clock.now(), restarted.planner)
-        self.assertNotIn(f.context.key, restarted.scheduler.workers)
-        self.clock.advance(timedelta(seconds=60))
-        with patch.object(f.ports, "run_model_task", side_effect=AssertionError("must inspect original")):
-            self.assertEqual((await self.choose_tick(f, restarted))["state"], "committed")
+        with patch.object(restarted.scheduler, "monotonic_clock", return_value=100) as elapsed:
+            with patch.object(f.ports, "inspect_task", side_effect=AssertionError("backoff must survive restart")):
+                restarted.scheduler.advance(restarted.contexts, self.clock.now(), restarted.planner)
+                self.assertNotIn(f.context.key, restarted.scheduler.workers)
+            self.clock.advance(timedelta(seconds=10))
+            elapsed.return_value = 110  # Only 10 seconds since the restart's snapshot.
+            with patch.object(f.ports, "run_model_task", side_effect=AssertionError("must inspect original")):
+                self.assertEqual((await self.choose_tick(f, restarted))["state"], "committed")
         state = recovered.store.get(f.context.key, choice_key(setup.slot))
         self.assertEqual((state["phase"], state["task_id"]), ("completed", original["task_id"]))
         self.assertEqual(len(self.called), 1)

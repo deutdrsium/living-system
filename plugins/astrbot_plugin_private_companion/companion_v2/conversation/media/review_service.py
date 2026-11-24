@@ -25,7 +25,8 @@ from companion_v2.foundation.refs import ScopeKind
 from companion_v2.model_gateway.models import ModelTaskProfile
 
 from .models import CapturedImage, ImageDescriptor, PromptImage
-from .review import GroupImageReview, check_verdict, decide, merge_answers, parse_answer, review_prompt, verdict_document
+from .review import (REVIEW_WAIT_SECONDS, GroupImageReview, check_verdict, decide,
+                     merge_answers, parse_answer, review_prompt, verdict_document)
 
 
 KIND = "conversation.image_review"
@@ -33,12 +34,12 @@ OWNER = "conversation.image_review"
 # An internal check of an already authorized group reply, like context captions.
 ACTION = "conversation.reply"
 PROFILE_KIND = KIND
-TIMEOUT_SECONDS = 75
+TIMEOUT_SECONDS = 2 * REVIEW_WAIT_SECONDS + 15
 MAX_OUTPUT_TOKENS = 80
 CONCURRENCY = 1
 
 
-def image_review_profile(provider, *, max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=70):
+def image_review_profile(provider, *, max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=90):
     """The background vision profile, using the window provider by default."""
     return ModelTaskProfile(PROFILE_KIND, Lane.BACKGROUND, provider,
         "对群聊成图做可见内容安全分类，只返回固定 JSON 标签与置信度。",

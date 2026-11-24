@@ -13,18 +13,19 @@ from companion_v2.execution.runner import ExactTaskRunner, RunResult
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef
-from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.model_gateway.models import BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelTaskProfile
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from .interests import InterestStore, visible_interests
 from .models import RoleActivityState
 
 KIND = "role.interests.observe"
+TASK_TIMEOUT_SECONDS = BACKGROUND_TASK_TIMEOUT_SECONDS
 
 
 def interest_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(KIND, Lane.BACKGROUND, provider,
-        "从角色真实活动及其感想中谨慎提取兴趣线索。", max_output_tokens=max_output_tokens)
+        "从角色真实活动及其感想中谨慎提取兴趣线索。", max_output_tokens=max_output_tokens, timeout_seconds=BACKGROUND_MODEL_WAIT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class InterestTasks:
         self.registrations = (TaskRegistration(TaskDefinition(KIND, "role.interests", "role.life.run",
             Lane.BACKGROUND, side_effect=SideEffect.LOCAL,
             binding=ProviderBinding("role.interests", "local", "1", "interests-1"),
-            timeout_seconds=480, max_attempts=1, concurrency=1), self.validate),)
+            timeout_seconds=TASK_TIMEOUT_SECONDS, max_attempts=1, concurrency=1), self.validate),)
 
     def attach(self, gateway, *, waiting=None):
         self.gateway, self.tasks = gateway, gateway.tasks
@@ -77,7 +78,7 @@ class InterestTasks:
         self.pending[task_id] = job
         try:
             require(self.tasks.submit(TaskSpec(task_id, job.context, KIND, digest(job), task_id,
-                                               now, now + timedelta(seconds=480))))
+                                               now, now + timedelta(seconds=TASK_TIMEOUT_SECONDS))))
             return await self.runner.run(job.context, task_id)
         finally:
             self.pending.pop(task_id, None)

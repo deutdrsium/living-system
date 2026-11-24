@@ -3,6 +3,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from contextlib import closing
+import sqlite3
 from datetime import timedelta
 from threading import get_ident
 from types import SimpleNamespace
@@ -111,6 +113,35 @@ class SourceValidationTraversalTests(ManagementFixture, unittest.IsolatedAsyncio
                                  "source_owner_unavailable")
         self.assertEqual(checked, ["batched-original", "batched-original"])
         self.assertFalse(any("FROM source_dependencies" in call.args[0] for call in read_all.call_args_list))
+
+    def test_batch_overlapping_roots_reuse_rows_but_keep_live_guards_and_expiry(self):
+        from companion_v2.sources.dependencies import _BATCH
+        checked = []
+        self.guard("review.shared", lambda record, at: checked.append(record.reference.source_id))
+        shared = self.publish("shared", "review.shared")
+        first, second = self.publish("first-root"), self.publish("second-root")
+        link(self.runtime, first.reference, (shared.reference,), NOW)
+        link(self.runtime, second.reference, (shared.reference,), NOW)
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE sources SET expires_at=? WHERE source_id='shared'",
+                               ((NOW + timedelta(seconds=1)).isoformat(),))
+        checked.clear()
+        with validation_batch(self.runtime, NOW):
+            self.sources.validate_reference(first.reference, observed_at=NOW).unwrap()
+            row = _BATCH.get().rows[key(shared.reference)]
+            self.sources.validate_reference(second.reference, observed_at=NOW).unwrap()
+            self.assertIs(_BATCH.get().rows[key(shared.reference)], row)
+            self.assertEqual(checked, ["shared", "shared"])
+        with validation_batch(self.runtime, NOW + timedelta(seconds=1)):
+            self.assertEqual(self.sources.validate_reference(second.reference,
+                observed_at=NOW + timedelta(seconds=1)).failure.code, "source_dependency_expired")
+        # Simulate persisted damage outside the runtime's FK-enforced writer.
+        with closing(sqlite3.connect(self.runtime.database_path)) as connection:
+            connection.execute("INSERT INTO source_dependencies VALUES (?, ?, ?, 'missing', 'missing', 1)", key(first.reference))
+            connection.commit()
+        with validation_batch(self.runtime, NOW):
+            self.assertEqual(self.sources.validate_reference(first.reference, observed_at=NOW).failure.code,
+                             "source_dependency_unavailable")
 
     def test_failed_nested_checks_are_not_cached_when_the_owner_catches_them(self):
         failures, checks = [], []

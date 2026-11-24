@@ -84,6 +84,23 @@ def test_followup_confidence_threshold_is_validated_and_persisted(tmp_path):
     assert store.raw()["followup_confidence_threshold"] == 55
 
 
+def test_private_silence_settings_default_on_and_are_validated(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    assert store.read()["private_silence_enabled"] is True
+    assert store.read()["private_silence_confidence_threshold"] == 80
+    for changes in ({"private_silence_confidence_threshold": 101}, {"private_silence_enabled": "yes"}):
+        with pytest.raises(LayaSettingsError):
+            store.update(store.raw()["revision"], changes)
+    status = store.update(store.read()["revision"], {"private_silence_enabled": False,
+                                                    "private_silence_confidence_threshold": 65})
+    assert (status["private_silence_enabled"], status["private_silence_confidence_threshold"]) == (False, 65)
+    # A settings file saved before these keys existed reads them as defaults.
+    store.path.write_text(json.dumps({"enabled": True, "mode": "remote", "endpoint": "http://laya/v1/systemone"}),
+                          encoding="utf-8")
+    assert store.raw()["private_silence_enabled"] is True
+    assert store.raw()["private_silence_confidence_threshold"] == 80
+
+
 def test_cloudflare_request_format_is_validated_and_persisted(tmp_path):
     store = LayaSettingsStore(tmp_path, "target", "role")
     assert store.read()["request_format"] == "native"

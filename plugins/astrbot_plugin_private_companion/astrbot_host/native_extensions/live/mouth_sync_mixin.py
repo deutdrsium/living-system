@@ -20,7 +20,13 @@ class MouthSyncMixin:
 
     def _desktop_owns_mouth(self) -> bool:
         desktop = getattr(getattr(self, "controller", None), "desktop_api", None)
-        return getattr(desktop, "playing", None) is not None
+        if getattr(desktop, "playing", None) is not None:
+            return True
+        owned = desktop.owned_avatar_inputs() if hasattr(desktop, "owned_avatar_inputs") else ()
+        return any(parameter in owned for parameter in (
+            str(self.config.get("mouth_sync_open_parameter") or "MouthOpen").strip(),
+            str(self.config.get("mouth_sync_form_parameter") or "").strip(),
+        ))
 
     def _is_mouth_sync_enabled(self) -> bool:
         return bool(self.config.get("mouth_sync_enabled", False))
