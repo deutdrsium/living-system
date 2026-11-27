@@ -147,11 +147,10 @@ def specification(action, required, optional=(), description="Use the original r
         "required": sorted(required), "additionalProperties": False,
     }
     if action == "reminder.create":
-        # 两种合法用法：直接给时间提醒，或关联一条已经有时间的便签。
-        # 不把 required 写死成其中一种，否则另一种调用会被 schema 直接拒绝。
+        # Gemini resolves required names inside each branch, independently of the parent object.
         schema["anyOf"] = [
-            {"required": ["schedule", "message"]},
-            {"required": ["memo_id", "expected_memo_revision"]},
+            {"type": "object", "properties": {name: properties[name] for name in fields}, "required": list(fields)}
+            for fields in (("schedule", "message"), ("memo_id", "expected_memo_revision"))
         ]
     return ToolSpec(action, description, encode(schema))
 

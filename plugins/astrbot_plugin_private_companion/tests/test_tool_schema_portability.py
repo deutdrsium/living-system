@@ -32,6 +32,29 @@ def has_non_string_enum(node):
     return None
 
 
+def assert_gemini_compatible(test, schema, path):
+    if isinstance(schema, bool):
+        return
+    missing = set(schema.get("required", ())) - schema.get("properties", {}).keys()
+    test.assertFalse(missing, f"{path}: required properties missing from this schema: {sorted(missing)}")
+    if "enum" in schema:
+        values = schema["enum"]
+        test.assertIsInstance(values, list, path)
+        test.assertTrue(values and all(isinstance(value, str) for value in values),
+                        f"{path}: Gemini enum needs nonempty list[str], got {values!r}")
+    for keyword in ("properties", "patternProperties", "definitions", "$defs", "dependentSchemas"):
+        for name, child in schema.get(keyword, {}).items():
+            assert_gemini_compatible(test, child, f"{path}.{keyword}.{name}")
+    for keyword in ("items", "anyOf", "oneOf", "allOf", "prefixItems", "not", "additionalProperties", "if", "then", "else"):
+        if keyword in schema:
+            child = schema[keyword]
+            if isinstance(child, list):
+                for index, item in enumerate(child):
+                    assert_gemini_compatible(test, item, f"{path}.{keyword}[{index}]")
+            else:
+                assert_gemini_compatible(test, child, f"{path}.{keyword}")
+
+
 class PortableToolSchemaTests(unittest.TestCase):
     def test_integer_enum_is_dropped_and_its_values_move_into_the_description(self):
         cleaned = portable_tool_schema({

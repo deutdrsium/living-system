@@ -27,7 +27,7 @@ def _data_root():
     return root
 
 
-@register("astrbot_plugin_good_life", "menglimi", "我会去好好生活", "0.1.12")
+@register("astrbot_plugin_good_life", "menglimi", "我会去好好生活", "0.1.15")
 class GoodLifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context, config)

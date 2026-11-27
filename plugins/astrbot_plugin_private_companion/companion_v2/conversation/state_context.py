@@ -9,6 +9,7 @@ from companion_v2.conversation.foreground import ContextContribution, Contributi
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
+from companion_v2.role_work.life.prompt_facts import activity_facts, state_facts
 from companion_v2.role_work.state import humanized, mood
 from companion_v2.role_work.state.cycle_prompts import reply_instruction
 from companion_v2.sources.dependencies import link
@@ -165,8 +166,9 @@ class ConversationStateContext:
         calendar_items = self._calendar_items(calendar)
         if calendar_items:
             self._authorize_calendar_items(calendar_items, context, at)
+        prompt_activities = {**activities, "items": [activity_facts(item) for item in activities["items"]]}
         result = (ContextContribution("role-state", "role.state", "role_state", ContributionState.READY,
-                                      encode({"simulation": state, "activities": activities,
+                                      encode({"simulation": state_facts(state), "activities": prompt_activities,
                                               **({"observed_at": snapshot["captured_at"]}
                                                  if snapshot.get("projection_version") in (2, 3) else {})}), source),
                 # The sealed dial travels next to the state it applies to; the

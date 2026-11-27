@@ -42,7 +42,8 @@ class PreparedReply:
         return speech_decisions(self.visible, self.parts, self.spans, policy, candidates=candidates)
 
 
-def prepare_reply(text, segmentation, presentation, voice=None, *, statements=(), split=None):
+def prepare_reply(text, segmentation, presentation, voice=None, *, statements=(), split=None,
+                  banned_phrases=None):
     raw_text = text
     text = strip_internal_expression_protocol(text)
     protocol_text = text
@@ -67,6 +68,10 @@ def prepare_reply(text, segmentation, presentation, voice=None, *, statements=()
     # Presentation removes only empty edge lines; keep the source parts and
     # authored speech offsets intact, including indentation inside code.
     cleaned = tuple(trim_blank_edges(part) for part in cleaned)
+    if banned_phrases:
+        cleaned = banned_phrases.segments(cleaned, surface="local_reply")
+        spans = tuple((offset, banned_phrases.text(speech, surface="local_reply_voice", preserve_reply=False))
+                      for offset, speech in spans)
     indices = tuple(index for index, part in enumerate(cleaned) if part.strip())
     if not indices:
         logger.debug("[CompanionV2][开发者追踪] 正文流水线 stage=empty_after_cleanup raw=%r protocol=%r framework=%r replaced=%r visible=%r spans=%r parts=%r cleaned=%r",

@@ -88,7 +88,7 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         await self.seed_group_observation(text="今晚吃什么", speaker="201", identifier="seed-1")
 
         async def model_behavior(payload, tools):
-            return completion(final_text("来了来了，锅底我都想好了。"))
+            return completion(final_text("来了来了，慢悠悠地想好了锅底。"))
 
         self.native.provider.client.state.behavior = model_behavior
         result = (await self.controller.receive_notice(
@@ -98,7 +98,7 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         api = self.native.platform.client._api._wsr_api
         self.assertEqual([action for action, _ in api.calls], ["send_group_msg"])
         self.assertEqual(api.calls[0][1]["message"], [{"type": "text",
-            "data": {"text": "来了来了，锅底我都想好了。"}}])
+            "data": {"text": "来了来了，想好了锅底。"}}])
 
 
     async def test_failed_context_reply_is_reported_instead_of_looking_like_a_skip(self):

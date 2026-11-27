@@ -15,7 +15,7 @@ class StagedActivityRecords:
     OPERATIONS = frozenset({"activity", "activity_revision", "activity_revision_evidence", "activity_revision_coverage", "activity_receipt",
                             "scan_activity_receipts", "recent_activity_receipts", "activity_revisions",
                             "activities_for_role", "context_activities", "work_activities", "artifact", "artifacts",
-                            "timeline_activity_ceiling", "timeline_activity_candidates"})
+                            "timeline_activity_ceiling", "timeline_activity_candidates", "recent_activities_for_scope"})
 
     def __init__(self, source):
         self._reader = StorageReader(source)
@@ -114,6 +114,16 @@ class StagedActivityRecords:
         rows = self._reader.all("""SELECT record_json FROM staged_role_activities
             WHERE owner_key=? AND (? IS NULL OR state=?) AND (? IS NULL OR activity_id > ?)
             ORDER BY activity_id LIMIT ?""", (owner_key, state, state, after_id, after_id, limit))
+        return tuple(row[0] for row in rows)
+
+    def recent_activities_for_scope(self, *, owner_key, scope_json, kind, limit=50, before=None):
+        self._page(limit)
+        continuation = "" if before is None else " AND (updated_at, activity_id) < (?, ?)"
+        rows = self._reader.all("""SELECT record_json FROM staged_role_activities
+            WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?)
+            AND json_extract(record_json, '$.work.kind') = ?""" + continuation + """
+            ORDER BY updated_at DESC, activity_id DESC LIMIT ?""",
+            (owner_key, scope_json, kind, *(before or ()), limit))
         return tuple(row[0] for row in rows)
 
     def context_activities(self, *, owner_key, scope_json, observed_at, limit=32):

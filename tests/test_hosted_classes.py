@@ -169,6 +169,39 @@ class HostedClasses(IsolatedAsyncioTestCase):
         self.assertEqual(self.participation(session)["attendance"]["outcome"], "on_time")
         self.assertEqual(self.participation(session)["attended_s"], 600)
 
+    async def test_jittered_class_ticks_store_linear_history_and_replay_old_progress(self):
+        self.confirm_graph()
+        await self.bind()
+        self.write("term", term())
+        self.write("timetable", entry(place_id="home"))
+        session = self.session()
+        start = timestamp(session["start_at"])
+        await self.tick(start - timedelta(minutes=20))
+        await self.tick(start)
+        kernel = self.runtime.kernel
+        original = self.running()
+
+        def archive_bytes():
+            return sum(kernel.repo.reader.one(
+                f"SELECT COALESCE(SUM(length(CAST({column} AS BLOB))),0) FROM life_kernel_{table}", ())[0]
+                for table, column in (("revisions", "record_json"), ("commands", "response_json"), ("effects", "effect_json")))
+
+        baseline = archive_bytes()
+        for tick in range(1, 129):
+            await self.tick(start + timedelta(seconds=tick, microseconds=tick * 100))
+            if tick == 1:
+                first = self.running()
+            if tick == 64:
+                first_half = archive_bytes() - baseline
+        latest = self.running()
+        self.assertGreaterEqual(len(latest.checkpoint["intervals"]), 120)
+        self.assertLessEqual(archive_bytes() - baseline, first_half * 2.2)
+        self.assertLess(archive_bytes() - baseline, 120_000)
+        self.assertEqual(kernel.advance(self.scope, original.instance_id, expected_revision=original.revision,
+            command_id=f"tick-{original.instance_id}-{original.revision}", now=start + timedelta(seconds=1, microseconds=100)), first)
+        self.assertEqual(self.running(), latest)
+        self.assertEqual(self.participation(session)["attended_s"], latest.checkpoint["attended_s"])
+
     async def test_material_backed_a5_proposal_binds_ports_on_demand(self):
         ref = m.SourceRef("text", "v1", "hash", 0, 20, NOW, None, "permission-private")
         bound = self.access.audience(self.scope)

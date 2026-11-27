@@ -7,6 +7,11 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from astrbot.core.agent.message import Message, TextPart
+from astrbot.core.message.components import Image, Plain
+from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.provider.entities import LLMResponse
+from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.conversation.private_debounce import Policy
@@ -52,6 +57,27 @@ class CoreReplyEvent:
 
 
 class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_phrase_filter_updates_native_output_and_existing_history_part(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = NS()
+        event = CoreReplyEvent()
+        event.set_extra(ENTRY.FILTER_EXTRA, BannedPhraseFilter(DEFAULT_PATTERNS))
+        image = Image(file="test.png")
+        chain = MessageChain(chain=[Plain("慢吞吞。"), image, Plain("慢悠悠的对话")])
+        response = LLMResponse(role="assistant", result_chain=chain)
+        user = Message(role="user", content=[TextPart(text="慢吞吞。")])
+        assistant = Message(role="assistant", content=[TextPart(text=response.completion_text)])
+        context = NS(messages=[user, assistant])
+
+        await plugin.observe_companion_model_session(event, response)
+        await plugin.observe_companion_core_agent_done(event, context, response)
+
+        self.assertEqual(chain.chain[0], image)
+        self.assertEqual([part.text for part in chain.chain[1:]], ["对话"])
+        self.assertEqual(response.completion_text, "对话")
+        self.assertEqual(assistant.content[0].text, "对话")
+        self.assertEqual(user.content[0].text, "慢吞吞。")
+
     async def test_same_native_message_id_is_suppressed_before_a_second_turn(self):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         target = NS(target_id="target")
@@ -163,8 +189,8 @@ class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
                 "prompt_instruction": "Reply conversationally.",
                 "stable_prompt_instruction": "Use the configured companion voice.",
                 "target_id": "target", "channel": "private", "event_id": "native-face",
-                "event_ref": "event-face", "text": "",
-                "native_input": NS(text="", event_id="native-face"),
+                "event_ref": "event-face", "text": "[表情]",
+                "native_input": NS(text="[表情]", event_id="native-face"),
             },
             "native-text": {
                 "context": object(), "instruction": "Use this companion persona.",

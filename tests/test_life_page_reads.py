@@ -30,10 +30,17 @@ from companion_v2.execution.models import digest, encode
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.integration.life_activity_control_proxy import LifeActivityTransitionProxy
+from companion_v2.integration.life_ledger_proxy import LifeLedgerReadProxy
+from companion_v2.integration.life_ledger_router import LIFE_ACTIVITY_OWNER_KEY
 from companion_v2.role_work.life.management import RoleLifeManagement
 from companion_v2.role_work.models import RoleActivity, RoleActivityState as State
 from companion_v2.role_work.work_models import RoleWorkSpec
 from companion_v2.sources.models import SourceRecord
+from good_life.activity_control import ActivityControl
+from good_life.activity_import import stage_activities
+from good_life.activity_records import StagedActivityRecords
+from good_life.storage import LifeStorage
 from good_life.web_api import LifePageAPI, PREFIX
 from tests.multi_life_support import MultiLifeFixture
 from tests.test_management_access import NOW
@@ -71,6 +78,73 @@ class LifePageReadTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
         context = context or self.context()
         return self.app.calendar.command(context, identifier=identifier, expected_revision=0, action="create",
             operation_key="create-" + identifier, data=data or calendar_data(), sources=sources)
+
+    async def test_activity_pages_include_recent_entries_of_each_kind(self):
+        page = await self.setup_page()
+        context = self.context()
+        ledger = self.app.role_life
+        source = SourceRef("book", "role.reading", context.scope, VersionRef("book", 1), NOW)
+        records = []
+        for n in range(37):
+            records.append(RoleActivity(f"book-part-{n:02}", "role-a", context.scope, NOW, State.PLANNED,
+                updated_at=NOW + timedelta(seconds=50 + n),
+                work=RoleWorkSpec("reading", context.key, f"read-{n}", source, "hash", n, n + 1)))
+        for n in range(12):
+            records.append(RoleActivity(f"social-activity-{n:02}", "role-a", context.scope, NOW, State.COMPLETED,
+                updated_at=NOW + timedelta(seconds=120), work=RoleWorkSpec("social", context.key, f"browse-{n}")))
+        records.append(RoleActivity("sleep-01", "role-a", context.scope, NOW, State.COMPLETED,
+            work=RoleWorkSpec("sleep", context.key, "sleep", due_at=NOW + timedelta(hours=8))))
+        other_scope = replace(context.scope, native_scope_id="elsewhere", conversation_id="elsewhere")
+        ledger.add_activity(replace(records[-2], scope=other_scope, activity_id="social-other-scope"))
+        for activity in records:
+            ledger.add_activity(activity)
+
+        def ids(payload):
+            return [item["activity_id"] for item in payload["activities"]]
+
+        query = {"compact": "1", "view": "reading"}
+        first = self.ok(await self.call(page.life, query=urlencode(query)))
+        self.assertEqual(ids(first), [f"social-activity-{n:02}" for n in range(11, 1, -1)]
+                         + [f"book-part-{n:02}" for n in range(36, 26, -1)] + ["sleep-01"])
+        self.assertEqual(ids(self.ok(await self.request(query=urlencode(query)))), ids(first))
+        self.assertTrue(first["next_activity"])
+        older_query = urlencode({**query, "after_activity": first["next_activity"]})
+
+        newer = replace(records[-2], activity_id="social-new", updated_at=NOW + timedelta(seconds=121))
+        ledger.add_activity(newer)
+        second = self.ok(await self.call(page.life, query=older_query))
+        self.assertEqual(ids(second)[:2], ["social-activity-01", "social-activity-00"])
+        seen = ids(first) + ids(second)
+        current = second
+        while current["next_activity"]:
+            current = self.ok(await self.call(page.life,
+                query=urlencode({**query, "after_activity": current["next_activity"]})))
+            self.assertTrue(ids(current))
+            seen.extend(ids(current))
+        self.assertCountEqual(seen, [activity.activity_id for activity in records])
+        latest = self.ok(await self.call(page.life, query=urlencode(query)))
+        self.assertEqual(ids(latest)[0], newer.activity_id)
+        self.assertEqual(ledger.activities_for_role(records[0].owner, limit=1)[0], records[0])
+
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        runtime = self.app.runtime
+        version = runtime.read_one("SELECT value FROM runtime_metadata WHERE key='schema_version'", ())["value"]
+        stage_activities(runtime.database_path, expected_version=version, destination=temporary.name)
+        life = LifeStorage.open(temporary.name)
+        self.addCleanup(life.close)
+        staged = StagedActivityRecords(life)
+        handlers = {"activity_read": staged.dispatch, "activity_control": ActivityControl(life).dispatch}
+        registry = SimpleNamespace(dispatch=lambda handler, operation, **kwargs: handlers[handler](operation, **kwargs),
+                                   snapshot=lambda _handler, operation: staged.snapshot(operation))
+        ledger.bind_reader(LifeLedgerReadProxy(runtime, registry), transition_provider=LifeActivityTransitionProxy(registry))
+        with runtime.transaction() as db:
+            db.execute("INSERT INTO runtime_metadata VALUES (?, 'good_life')", (LIFE_ACTIVITY_OWNER_KEY,))
+        staged_latest = self.ok(await self.call(page.life, query=urlencode(query)))
+        self.assertEqual(ids(staged_latest), ids(latest))
+        self.assertEqual(staged_latest["next_activity"], latest["next_activity"])
+        self.assertEqual(ids(self.ok(await self.request(query=older_query))), ids(second))
+        self.assertEqual(ledger.activities_for_role(records[0].owner, limit=1)[0], records[0])
 
     async def test_life_whitelist_removes_private_fields_without_changing_host_response(self):
         page = await self.setup_page()

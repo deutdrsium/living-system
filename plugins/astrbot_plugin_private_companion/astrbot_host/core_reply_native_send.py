@@ -10,6 +10,7 @@ from astrbot.core.tools.message_tools import SendMessageToUserTool
 
 from companion_v2.execution.models import TaskError, digest
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA, sent_core_text
+from .core_reply_banned_phrases import FILTER_EXTRA, filter_chain
 from .core_reply_presentation import present_core_reply_message
 from .core_reply_media_delivery import native_reply_messages, native_wire_message
 
@@ -49,6 +50,9 @@ class _CurrentReplyContext:
             await author_core_voice_message(tool._event, message_chain)
             from .core_reply_voice import capture_core_voice_message
             message_chain = capture_core_voice_message(tool._event, message_chain)
+            phrases = tool._event.get_extra(FILTER_EXTRA)
+            if phrases:
+                filter_chain(message_chain, phrases, surface="astrbot_send_tool")
         voice_source = message_chain.get_plain_text()
         message_chain = present_core_reply_message(tool._event, message_chain)
         if message_chain is None:

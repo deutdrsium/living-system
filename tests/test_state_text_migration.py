@@ -35,6 +35,8 @@ class StateTextMigrationTests(unittest.TestCase):
         actual = self.provider.dispatch("maintenance_instruction", owner_key="role", settings=settings, mood_round=mood,
             has_growth_refs=True, skills_partial=False, intervention=True)
         self.assertEqual(actual, expected)
+        self.assertIn("busy 和 mood.description 用简短的日常措辞", actual)
+        self.assertIn("避免沿用自己在旧状态或对话里反复使用的自我形容", actual)
 
     def test_chat_state_text_is_unchanged_through_the_life_provider(self):
         simulation = {"values": {"energy": 33, "hunger": "有点饿", "mood": None},

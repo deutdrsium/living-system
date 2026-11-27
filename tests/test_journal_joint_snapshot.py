@@ -393,7 +393,6 @@ class JournalJointSnapshotTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) AS n FROM execution_attempts WHERE slot_held=1", ())["n"], 0)
         self.assertEqual(self.sent, [])
 
-    @pytest.mark.timing
     async def test_old_model_task_cannot_follow_a_reloaded_provider(self):
         routine, completed = await self.setup_life_snapshot()
         entered, release = asyncio.Event(), asyncio.Event()
@@ -401,23 +400,33 @@ class JournalJointSnapshotTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
             entered.set()
             await release.wait()
             return await self.model(envelope)
-        self.model_behavior = model
-        job = asyncio.create_task(routine.dream(completed))
-        try:
-            await asyncio.wait_for(entered.wait(), 10)
+
+        ledger = self.app.gateway.ledger
+        settle = ledger.settle
+        def reload_and_settle(call_id, provider, response, **kwargs):
+            # The gateway has received the response but has not recorded usage
+            # or rechecked its life snapshot. Reload before either can happen.
             self.assertTrue(self.snapshot_registry.unregister(self.snapshot_token))
             self.assertTrue(self.app.role_life.unbind_reader(self.snapshot_reader))
             replacement = self.snapshot_registry.register(plugin=self.snapshot_plugin, api_version=API_VERSION,
                                                            handlers=self.snapshot_handlers)
+            self.addCleanup(self.snapshot_registry.unregister, replacement)
             self.app.role_life.bind_reader(LifeLedgerReadProxy(self.runtime, self.snapshot_registry.lease()))
+            return settle(call_id, provider, response, **kwargs)
+
+        self.model_behavior = model
+        job = asyncio.create_task(routine.dream(completed))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
         finally:
             release.set()
-        result = await job
+        with patch.object(ledger, "settle", side_effect=reload_and_settle):
+            result = await job
         self.assertTrue(not result.is_success or result.unwrap().state != "written", result)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) AS n FROM role_journals WHERE kind='dream'", ())["n"], 0)
-        calls = self.runtime.read_all("SELECT actual_tokens FROM model_calls", ())
-        self.assertTrue(any(row["actual_tokens"] == 15 for row in calls))
-        self.assertTrue(self.snapshot_registry.unregister(replacement))
+        calls = self.runtime.read_all("SELECT actual_tokens, state FROM model_calls", ())
+        self.assertTrue(any(row["actual_tokens"] == 15 and row["state"] == "discarded" for row in calls),
+                        tuple(dict(row) for row in calls))
 
     async def test_host_shutdown_cancels_inflight_joint_dream_without_saving(self):
         routine, completed = await self.setup_life_snapshot()

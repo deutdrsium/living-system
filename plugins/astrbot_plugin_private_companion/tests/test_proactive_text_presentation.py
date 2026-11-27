@@ -4,6 +4,7 @@ import json
 import unittest
 from dataclasses import replace
 
+from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
 from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.execution.models import TaskError
 from companion_v2.model_gateway.models import Amount
@@ -43,6 +44,21 @@ class ProactiveTextPresentationTests(ContactFixture, unittest.IsolatedAsyncioTes
         self.assertNotIn("正文呈现偏好", self.called[0].original.instruction)
         self.assertEqual((await self.contact(app)).unwrap().task.task_id, task.task_id)
         self.assertEqual((len(self.called), len(self.sent)), (1, 1))
+
+    async def test_banned_phrases_are_removed_from_contact_storage_and_delivery(self):
+        app = await self.enabled()
+        app.proactive.banned_phrases = BannedPhraseFilter(DEFAULT_PATTERNS)
+
+        async def model(envelope):
+            return answered('{"decision":"send","text":"慢慢悠悠地喝完这杯茶了。"}')
+
+        self.model_behavior = model
+        task = (await self.contact(app)).unwrap().task
+        self.assertEqual(task.state, "succeeded")
+        await self.delivery_state(app, task.task_id, "delivered")
+        row = self.runtime.read_one("SELECT body FROM proactive_contacts WHERE task_id = ?", (task.task_id,))
+        self.assertEqual(row["body"], "喝完这杯茶了。")
+        self.assertEqual(self.sent[0].text, row["body"])
 
     async def test_humanized_expression_reaches_the_contact_prompt_only_when_enabled(self):
         app = await self.enabled()

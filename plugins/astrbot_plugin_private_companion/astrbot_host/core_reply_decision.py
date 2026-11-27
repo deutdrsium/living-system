@@ -8,6 +8,7 @@ from time import perf_counter
 from companion_v2.decision.conversation import decision_advice
 from companion_v2.decision.store import DEFAULTS, LayaSettingsError
 from companion_v2.execution.models import require, stamp
+from companion_v2.role_work.life.prompt_facts import laya_state_facts
 from .group_admission import group_trigger_facts
 
 
@@ -108,23 +109,7 @@ def _role_state_summary(application, context):
         view = role_state.read(context)
     except Exception:
         return None
-    values = view.get("values") if isinstance(view, dict) else None
-    if not isinstance(values, dict):
-        return None
-    summary = {}
-    if isinstance(values.get("energy"), int):
-        summary["energy"] = values["energy"]
-    for key in ("sleep", "busy"):
-        if isinstance(values.get(key), str) and values[key].strip():
-            summary[key] = values[key].strip()[:80]
-    mood_val = values.get("mood")
-    if isinstance(mood_val, str) and mood_val.strip():
-        summary["mood"] = mood_val.strip()[:80]
-    elif isinstance(mood_val, dict):
-        desc = mood_val.get("description")
-        if isinstance(desc, str) and desc.strip():
-            summary["mood"] = desc.strip()[:80]
-    return summary or None
+    return (laya_state_facts(view) or None) if isinstance(view, dict) else None
 
 
 def core_decision_facts(event, prepared, application, *, at):

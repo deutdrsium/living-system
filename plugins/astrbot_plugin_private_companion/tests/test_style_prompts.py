@@ -434,17 +434,13 @@ if __name__ == "__main__":
 
 class PromptGuardTests(unittest.TestCase):
     def test_generic_proactive_state_is_tone_only(self):
-        summary = {
-            "energy": 77, "sleep": "已休息", "hunger": "有点饿",
-            "health": "良好", "location": "家中", "mood": "平稳",
-        }
-        generic = role_state_for_prompt(summary, "play")
-        self.assertEqual(generic, {"energy": 77, "sleep": "已休息", "location": "家中", "mood": "平稳"})
-        self.assertNotIn("hunger", generic)
-        self.assertNotIn("health", generic)
-        meal = role_state_for_prompt(summary, "meal")
-        self.assertEqual(meal["hunger"], "有点饿")
-        self.assertEqual(meal["health"], "良好")
+        tone = {"energy": 77, "sleep_execution": {"state": "awake"}, "mood": {"joy": 6}}
+        hunger = {"kind": "hunger", "expires_at": None}
+        health = {"kind": "health", "expires_at": None}
+        summary = {**tone, "conditions": [hunger, health]}
+        self.assertEqual(role_state_for_prompt(summary, "play"), tone)
+        self.assertEqual(role_state_for_prompt(summary, "care"), {**tone, "conditions": [health]})
+        self.assertEqual(role_state_for_prompt(summary, "meal"), summary)
         self.assertEqual(role_state_for_prompt(summary, None), summary)
 
     def test_proactive_prompt_rejects_status_reports_and_invented_habits(self):

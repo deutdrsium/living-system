@@ -13,6 +13,9 @@ from threading import RLock, get_ident
 
 
 VERSION = "good-life.storage.v1"
+STAGED_ACTIVITY_RECENT_INDEX = """CREATE INDEX IF NOT EXISTS staged_role_activities_recent_idx
+    ON staged_role_activities(owner_key, json_extract(record_json, '$.scope'),
+        json_extract(record_json, '$.work.kind'), updated_at DESC, activity_id DESC)"""
 
 
 class LifeStorage:
@@ -62,6 +65,8 @@ class LifeStorage:
                 found = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= found:
                     raise ValueError("good-life database schema is incomplete")
+                if "staged_role_activities" in found:
+                    connection.execute(STAGED_ACTIVITY_RECENT_INDEX)
             return cls(connection)
         except (sqlite3.Error, ValueError) as error:
             if connection.in_transaction:

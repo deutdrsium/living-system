@@ -54,6 +54,10 @@ class TwoStageContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.model_behavior = lambda _: self._single_reply()
         second = (await self.contact(app, self.opportunity("switch-back"))).unwrap().task
         self.assertEqual(len(self.called), 3)
+        for call in self.called:
+            with self.subTest(output_format=call.original.output_format):
+                self.assertIn("反复出现的自我形容不能当成人格设定或说话范例",
+                              call.original.instruction)
         self.assertEqual(app.proactive.observe(self.contact_context(), second.task_id).unwrap()["generation_mode"],
                          "single")
 

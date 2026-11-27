@@ -37,10 +37,11 @@ class LifeContextFixture(MessageFixture):
         self.life, self.journal = self.reader.life, self.reader.journal
         self.owner = self.reader.owner(self.context)
 
-    def activity(self, identifier="activity", *, context=None, state=State.ACTIVE, **values):
+    def activity(self, identifier="activity", *, context=None, state=State.ACTIVE,
+                 description="正在整理读书笔记。", **values):
         context = context or self.context
         return self.life.add_activity(RoleActivity(identifier, context.role_binding.role.subject_id,
-            context.scope, NOW, state, description="正在整理读书笔记。", **values))
+            context.scope, NOW, state, description=description, **values))
 
     def diary(self, *, context=None, kind=JournalKind.DIARY, day=None, body="今天的阅读让我感到很轻松。", **values):
         context = context or self.context
@@ -54,7 +55,8 @@ class LifeContextFixture(MessageFixture):
         event = self.event(identifier, expires_at=expires_at)
         receipt = RoleReadingReceipt(event.source, event.input_hash, len("private input " + identifier),
                                      start, end, NOW, "这让我想到傍晚的风。")
-        return self.activity(identifier, state=State.COMPLETED, reading=receipt)
+        return self.activity(identifier, state=State.COMPLETED, reading=receipt,
+                             description=f"测试读物 · {start}–{end} / {receipt.text_length} 字符")
 
     def revise(self, entry):
         return self.journal.save(replace(entry.draft, body="更正后的日记。"),
@@ -121,7 +123,9 @@ class LifeContextTests(LifeContextFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items["sleep"]["state"], "active")
         self.assertEqual(items["reading"]["reading"]["end_offset"], 5)
         self.assertFalse(items["reading"]["reading"]["covers_source"])
-        self.assertEqual(items["reading"]["reading"]["reflection"], reading.reading.reflection)
+        self.assertNotIn("reflection", items["reading"]["reading"])
+        self.assertNotIn("description", items["sleep"])
+        self.assertEqual(self.life.activity(reading.activity_id, owner=self.owner).reading, reading.reading)
         self.assertEqual(items["dream"]["basis"], "subjective_dream")
         self.assertEqual((items["dream"]["recall"], items["dream"]["body"]), ("afterglow", ""))
         self.assertEqual(items["diary"]["basis"], "subjective_diary")
@@ -130,6 +134,26 @@ class LifeContextTests(LifeContextFixture, unittest.IsolatedAsyncioTestCase):
         for item in ("整理", "傍晚", "轻松", "蓝色"):
             self.assertNotIn(item, saved)
             self.assertNotIn(item, json.dumps(self.messages.observe(self.context, batch).unwrap(), ensure_ascii=False))
+
+    async def test_stored_reading_choice_reason_stays_out_of_compiled_prompt(self):
+        from companion_v2.adapters.astrbot.model_wire import build_wire
+
+        reading = self.reading()
+        key = "life.reading.choice.evidence.v1:reading-choice-test"
+        reason = "想在傍晚慢悠悠地读完这段，给脑袋留一点空白。"
+        record = json.dumps({"context_key": self.context.key, "slot": "test:0", "value": {
+            "source_id": reading.reading.source.source_id, "reason": reason, "starts": 0, "next_at": None,
+        }}, ensure_ascii=False)
+        with self.runtime.transaction() as db:
+            db.execute("INSERT INTO runtime_metadata (key, value) VALUES (?, ?)", (key, record))
+        await self.generate()
+        wire = build_wire(self.called[0][1])
+        prompt = json.dumps(wire.messages, ensure_ascii=False)
+        self.assertIn("completed_reading_receipt", prompt)
+        self.assertIn("测试读物", prompt)
+        self.assertNotIn(reason, prompt)
+        self.assertNotIn(reading.reading.reflection, prompt)
+        self.assertEqual(self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?", (key,))["value"], record)
 
     async def test_plans_pauses_and_elapsed_wake_time_do_not_create_completion(self):
         event = self.event("unread")

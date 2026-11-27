@@ -86,7 +86,7 @@ class MultiHostPokeTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.configure(group="onebot_group", back=1.0, model_reply=True, model_probability=1.0)
         await self.start_host()
         async def model_behavior(payload, tools):
-            return completion(final_text("群里的戳戳收到啦。"))
+            return completion(final_text("慢吞吞地收到群里的戳戳啦。"))
 
         self.native.provider.client.state.behavior = model_behavior
         original = self.group_event(identifier="701", sender="201", unique=True)
@@ -97,7 +97,7 @@ class MultiHostPokeTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["response_kind"], "model")
         self.assertEqual([action for action, _ in api.calls], ["send_group_msg", "group_poke"])
         self.assertEqual((api.calls[0][1]["group_id"], api.calls[1][1]["user_id"]), (300, 201))
-        self.assertEqual(api.calls[0][1]["message"], [{"type": "text", "data": {"text": "群里的戳戳收到啦。"}}])
+        self.assertEqual(api.calls[0][1]["message"], [{"type": "text", "data": {"text": "收到群里的戳戳啦。"}}])
 
         other_group = poke_notice(self.group_event("group-b", identifier="702"),
                                   time=int(NOW.timestamp()) + 2)

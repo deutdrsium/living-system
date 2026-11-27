@@ -1,6 +1,7 @@
 import json
 import unittest
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from companion_v2.role_work.life.smart_reading import choice_slot, reading_window
 from tests.test_role_life_runtime import LifeFixture
@@ -26,12 +27,18 @@ class SmartReadingTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
             return await self.model(envelope)
         self.model_behavior = model
         await self.configure(reading_enabled=True)
-        await self.until(lambda: len([a for a in self.manager._activities() if a.reading]) == 4)
+        routine = self.manager.life
+        for completed in range(1, 5):
+            await self.until(lambda: sum(a.reading is not None for a in self.manager._activities()) == completed)
+            if completed < 4:
+                pace_until = routine.reading_pace_until()
+                self.advance(self.app, (pace_until - self.clock.now()).total_seconds())
         await self.settle()
         readings = [a for a in self.manager._activities() if a.reading]
         self.assertEqual(len([a for a in readings if "诗集" in a.description]), 3)
         self.assertEqual(len([a for a in readings if "另一本" in a.description]), 1)
-        self.assertEqual(self.clock.now(), now)
+        zone = ZoneInfo(routine.settings["timezone"])
+        self.assertEqual(self.clock.now().astimezone(zone).date(), now.astimezone(zone).date())
         calls = [e for e in self.called if e.original.output_format == "role_reading"]
         self.assertTrue(any(m.purpose == "previous_reading_reflections" for m in calls[1].original.context.materials))
         self.assertTrue(all(e.original.response_format == "json_object" for e in calls))
@@ -41,6 +48,25 @@ class SmartReadingTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(notes), 4)
         self.assertEqual(len({n["activity_id"] for n in notes}), 4)
         self.assertEqual(len([e for e in self.called if e.original.output_format == "role_book_selection"]), 4)
+
+    async def test_persisted_book_choice_reason_is_filtered(self):
+        from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
+
+        await self.setup_life()
+        self.app.role_reader.banned_phrases = BannedPhraseFilter(DEFAULT_PATTERNS)
+        await self.add_text("一段文字")
+        self.allow_reading_window()
+
+        async def model(envelope):
+            if envelope.original.output_format == "role_book_selection":
+                return answered('{"choice":"none","reason":"想慢悠悠的休息一会儿"}')
+            return await self.model(envelope)
+
+        self.model_behavior = model
+        await self.configure(reading_enabled=True)
+        await self.until(lambda: self.status()["reading_plan"]["state"] == "declined")
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key LIKE 'role.reading.choice:%'", ())
+        self.assertEqual(json.loads(row["value"])["reason"], "想休息一会儿")
 
     async def test_other_plans_block_reading_and_bad_choice_is_not_replayed(self):
         await self.setup_life()
@@ -112,7 +138,6 @@ class SmartReadingTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         withdrawn = (await self.command("add_text", text="第一本", title="第一本")).unwrap()["activity_ids"][0]
         await self.command("add_text", text="第二本", title="第二本")
         old = next(a for a in self.manager._activities() if a.activity_id == withdrawn)
-        from zoneinfo import ZoneInfo
         day = self.clock.now().astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
         slot = choice_slot(list(self.manager._activities()), day) + ":0"
         with self.runtime.transaction() as connection:

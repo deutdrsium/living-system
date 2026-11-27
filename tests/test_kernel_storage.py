@@ -1,13 +1,16 @@
 from dataclasses import replace
 from datetime import timedelta
 import json
+from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from test_kernel_support import Access, KernelCase, NOW, ROOT, SimulationClock, m
 from good_life.activities.local_order import register_local_order
 from good_life.event_delivery import LifeEventDelivery
 from good_life.kernel import ActivityKernel, ComponentRegistry, KernelConfig, KernelError
+from good_life.kernel import history
 from good_life.kernel.codec import freeze
 from good_life.kernel.repository import KernelRepository
 from good_life.runtime import LifeRuntime
@@ -57,7 +60,7 @@ class KernelMigrationTests(unittest.TestCase):
             self.assertEqual(after_rows[table], before_rows[table])
         self.assertTrue(set(before_rows["life_metadata"]) <= set(after_rows["life_metadata"]))
         extra = set(after_rows["life_metadata"]) - set(before_rows["life_metadata"])
-        self.assertEqual(extra, {("kernel_schema_version", "2"), ("local_order_schema_version", "1")})
+        self.assertEqual(extra, {("kernel_schema_version", "3"), ("local_order_schema_version", "1")})
         snapshot = self.snapshot()
         ActivityKernel(self.storage, self.registry, config=KernelConfig(enabled=True), access=self.access)
         self.assertEqual(self.snapshot(), snapshot)
@@ -89,6 +92,78 @@ class KernelMigrationTests(unittest.TestCase):
         with self.assertRaises(KernelError):
             ActivityKernel(self.storage, self.registry, config=KernelConfig(enabled=True))
         self.assertEqual(self.snapshot(), before)
+
+
+class KernelHistoryUpgradeTests(KernelCase):
+    def test_schema_two_history_survives_interrupted_migration_and_replays_once(self):
+        self.assertEqual(self.storage._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        with self.storage.transaction() as db:
+            db.execute("UPDATE life_metadata SET value='2' WHERE key='kernel_schema_version'")
+            db.execute("INSERT INTO life_metadata VALUES ('unrelated', 'keep')")
+        self.kernel.repo = KernelRepository(self.storage)
+        with patch.object(self.domain, "apply_effect", wraps=self.domain.apply_effect) as apply_effect:
+            instance = self.running()
+            step = {"expected_revision": instance.revision, "command_id": "progress", "now": NOW + timedelta(seconds=60)}
+            progressed = self.kernel.advance(self.scope, instance.instance_id, **step)
+            effect = apply_effect.call_args.args[-1]
+            finish = {"expected_revision": progressed.revision, "command_id": "finish", "now": NOW + timedelta(seconds=180)}
+            with patch.object(self.kernel, "commit_result", side_effect=RuntimeError("interrupted before result commit")):
+                with self.assertRaisesRegex(RuntimeError, "before result commit"):
+                    self.kernel.advance(self.scope, instance.instance_id, **finish)
+        self.kernel.close()
+        reader = self.kernel.repo.reader
+        hashes_before = tuple(reader.one(sql, ())[:] for sql in (
+            "SELECT request_hash FROM life_kernel_commands WHERE command_id='progress'",
+            "SELECT effect_hash FROM life_kernel_effects"))
+        events_before = self.storage.pending_events("kernel.audit.v1")
+        memo = reader.one("SELECT proposal_json FROM life_kernel_results", ())[0]
+        compact_revision = history._compact_legacy_revision
+
+        def interrupt(db, key, raw):
+            if key[-1] == progressed.revision:
+                raise RuntimeError("interrupted during archive rewrite")
+            return compact_revision(db, key, raw)
+
+        with (patch.object(history, "BATCH_ROWS", 1), patch.object(history, "_compact_legacy_revision", interrupt),
+              self.assertRaisesRegex(RuntimeError, "during archive rewrite")):
+            KernelRepository(self.storage).install()
+        self.assertEqual(reader.one("SELECT value FROM life_metadata WHERE key='kernel_schema_version'", ())[0], "3-compacting")
+        self.assertEqual(reader.one("SELECT COUNT(*) FROM life_kernel_revisions WHERE record_json LIKE '[%'", ())[0], 1)
+        self.assertEqual((Path(self.temporary.name) / "good-life.sqlite3-wal").stat().st_size, 0)
+        self.assertIn(history.REVISION_REF, reader.one(
+            "SELECT response_json FROM life_kernel_commands WHERE command_id='progress'", ())[0])
+        disabled = ActivityKernel(self.storage, self.registry, access=self.access)
+        with self.assertRaisesRegex(KernelError, "no supported persisted kernel"):
+            disabled.recover_pending(self.scope, now=finish["now"])
+
+        self.reopen()
+        db = self.storage._connection
+        self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
+        self.assertEqual(db.execute("SELECT value FROM life_metadata WHERE key='unrelated'").fetchone()[0], "keep")
+        self.assertEqual(db.execute("SELECT proposal_json FROM life_kernel_results").fetchone()[0], memo)
+        self.assertEqual(hashes_before, (db.execute("SELECT request_hash FROM life_kernel_commands WHERE command_id='progress'").fetchone()[:],
+                                         db.execute("SELECT effect_hash FROM life_kernel_effects").fetchone()[:]))
+        self.assertNotIn("payload", json.loads(db.execute("SELECT effect_json FROM life_kernel_effects").fetchone()[0]))
+        with self.storage.transaction() as tx:
+            self.kernel.repo.commit_effect(tx, progressed, effect, self.domain)
+        with self.assertRaisesRegex(KernelError, "effect ID conflicts"), self.storage.transaction() as tx:
+            self.kernel.repo.commit_effect(tx, progressed, replace(effect, payload=freeze({"unit": 2})), self.domain)
+        self.assertEqual(self.units(), 1)
+        self.assertEqual(self.storage.pending_events("kernel.audit.v1"), events_before)
+
+        advances = self.executor.advances
+        self.assertEqual(self.kernel.advance(self.scope, instance.instance_id, **step), progressed)
+        with self.assertRaisesRegex(KernelError, "command ID conflicts"):
+            self.kernel.advance(self.scope, instance.instance_id, **{**step, "now": step["now"] + timedelta(seconds=1)})
+        completed = self.kernel.advance(self.scope, instance.instance_id, **finish)
+        self.assertEqual(completed.status, m.ActivityStatus.COMPLETED)
+        self.assertEqual(self.kernel.advance(self.scope, instance.instance_id, **finish), completed)
+        self.assertEqual((self.executor.advances, self.units(), self.count("life_kernel_effects")), (advances, 3, 3))
+        self.assertEqual(self.count("life_events"), len(events_before) + 1)
+        before = tuple(db.iterdump())
+        self.reopen()
+        self.assertEqual(tuple(self.storage._connection.iterdump()), before)
+        self.assertEqual(self.kernel.advance(self.scope, instance.instance_id, **step), progressed)
 
 
 class KernelEventTests(KernelCase):

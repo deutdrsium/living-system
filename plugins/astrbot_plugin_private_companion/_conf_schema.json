@@ -12,6 +12,34 @@
       }
     }
   },
+  "phrase_overuse": {
+    "description": "避免重复口头禅",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "按近期消息提示角色换用措辞",
+        "type": "bool",
+        "default": true
+      },
+      "threshold": {
+        "description": "至少在几条独立消息中出现（2–30）",
+        "type": "int",
+        "default": 3
+      },
+      "max_phrases": {
+        "description": "每轮最多提示几个短语（1–5）",
+        "type": "int",
+        "default": 4
+      }
+    }
+  },
+  "banned_phrases": {
+    "description": "陪伴回复禁用短语",
+    "hint": "每项为一条 Python 正则表达式，按列表顺序移除匹配的短语。留空列表可关闭过滤，保存后重载插件。",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": ["慢吞吞", "慢慢悠悠", "慢悠悠", "不紧不慢"]
+  },
   "desktop_session_enabled": {
     "description": "启用桌面设备会话",
     "type": "bool",

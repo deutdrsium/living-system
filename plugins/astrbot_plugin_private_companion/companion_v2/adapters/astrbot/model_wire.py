@@ -8,6 +8,7 @@ from types import MappingProxyType
 from uuid import uuid4
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
+from companion_v2.conversation.phrase_overuse import with_material_hint
 from companion_v2.execution.models import digest, encode, encode_prompt
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
@@ -118,7 +119,7 @@ class ModelWire:
                 + 16384 * self.image_count + 256 * ((self.audio_duration_ms + 999) // 1000))
 
 
-def build_wire(envelope, *, model_name=""):
+def build_wire(envelope, *, model_name="", phrase_overuse_settings=None):
     request = envelope.original
     reply_actions = request.reply_actions
     if request.reply_images and "image" not in reply_actions:
@@ -172,8 +173,11 @@ def build_wire(envelope, *, model_name=""):
             "要求空 text、空 claims、无 images；silent 不发送任何内容，也要求空 text、空 claims、无 images。"
             "只有自然适合时才使用非文字动作；沉默不可用于回避明确问题、请求或需要回应的情绪。")
     perception = capability_instruction(envelope, model_name=model_name)
+    instruction = request.instruction
+    if request.output_format in ("conversation", "proactive_contact"):
+        instruction = with_material_hint(request, settings=phrase_overuse_settings)
     composition = compose_prompt(role_instruction=request.role_instruction,
-        request_instruction=request.instruction, task_prompt=envelope.task_prompt,
+        request_instruction=instruction, task_prompt=envelope.task_prompt,
         output_contract=contract, capability_instruction=perception,
         terminal_output_instruction=(
             "最终面向用户只输出一个 JSON 对象，必须含 action、text、claims；action 只能取本轮声明的能力之一："

@@ -654,7 +654,9 @@ class AstrBotTextProvider:
         return estimated
 
     def reserve(self, envelope):
-        estimate = self._estimate(envelope, build_wire(envelope, model_name=envelope.model_override or self.model))
+        wire = build_wire(envelope, model_name=envelope.model_override or self.model,
+                          phrase_overuse_settings=getattr(self.bridge, "phrase_overuse_settings", None))
+        estimate = self._estimate(envelope, wire)
         # No assumed cache hit; reserve using the larger of the two input rates.
         rate = max(self.tariff.input, self.tariff.cached_input)
         return UsageTariff(rate, rate, self.tariff.output).amount(estimate, 0, envelope.max_output_tokens)
@@ -788,7 +790,8 @@ class AstrBotTextProvider:
         response = None
         diagnostics = ResponseDiagnostics()
         try:
-            wire = build_wire(envelope, model_name=envelope.model_override or self.model)
+            wire = build_wire(envelope, model_name=envelope.model_override or self.model,
+                          phrase_overuse_settings=getattr(self.bridge, "phrase_overuse_settings", None))
             logger.debug("[CompanionV2][开发者追踪] 模型提示词组装 provider=%s output_format=%s messages=%s tools=%s",
                          self.provider_id, wire.output_format, _developer_content(wire.messages),
                          _developer_content(wire.tools))
