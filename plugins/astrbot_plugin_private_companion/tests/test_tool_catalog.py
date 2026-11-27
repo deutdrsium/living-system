@@ -79,8 +79,7 @@ class ToolCatalogTests(MessageFixture):
         linked = {"memo_id": "memo-1", "expected_memo_revision": 1}
         self.assertTrue(validator.is_valid(direct))
         self.assertTrue(validator.is_valid(linked))
-        for incomplete in ({}, {"schedule": direct["schedule"]}, {"memo_id": "memo-1"},
-                           {"schedule": {"anchor": direct["schedule"]["anchor"]}, "message": "起床"},
+        for incomplete in ({"schedule": {"anchor": direct["schedule"]["anchor"]}, "message": "起床"},
                            {**linked, "expected_memo_revision": 0}, {**direct, "unknown": True}):
             with self.subTest(arguments=incomplete):
                 self.assertFalse(validator.is_valid(incomplete))

@@ -7,13 +7,24 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import is_dataclass
 from inspect import isawaitable
 import json
+import random
 from typing import Any
+
+from astrbot.api import logger
+from astrbot.core.message.components import Plain
 
 from companion_v2.execution.models import TaskContext, TaskError, encode, require
 from companion_v2.foundation.outcome import Outcome
 
 
 CORE_REPLY_CONTEXT_EXTRA = "_companion_v2_core_reply_context"
+CORE_ERROR_FALLBACK_EXTRA = "_companion_v2_core_error_fallback"
+CORE_ERROR_RESPONSE_EXTRA = "_companion_v2_core_error_response"
+CORE_ERROR_FALLBACK_LINES = (
+    "我这边网有点卡，等下回你",
+    "刚刚卡了一下，等我缓缓",
+    "我这边卡住了，咱们等会儿再聊",
+)
 
 
 Authorize = Callable[[Any], Awaitable[Any]]
@@ -91,6 +102,31 @@ def is_core_reply_stream(event: Any) -> bool:
     get_result = getattr(event, "get_result", None)
     result = get_result() if callable(get_result) else None
     return getattr(getattr(result, "result_content_type", None), "name", None) == "STREAMING_RESULT"
+
+
+def replace_core_error_reply(event: Any, message: Any, *, runner_error: bool = False) -> bool:
+    chain = getattr(message, "chain", None)
+    if not chain or not all(isinstance(part, Plain) for part in chain):
+        return False
+    original = "".join(part.text for part in chain)
+    if not original.strip() or original == event.get_extra("persona_custom_error_message"):
+        return False
+    if not runner_error and not (
+        original.startswith(("LLM 响应错误: ", "All chat models failed: ",
+                             "Error occurred while processing agent request: "))
+        or (original.startswith("Error occurred during AI execution.\nError Type: ")
+            and "\nError Message: " in original)
+    ):
+        return False
+    fallback = event.get_extra(CORE_ERROR_FALLBACK_EXTRA)
+    if fallback is None:
+        fallback = random.choice(CORE_ERROR_FALLBACK_LINES)
+        event.set_extra(CORE_ERROR_FALLBACK_EXTRA, fallback)
+        logger.warning("[CompanionV2] AstrBot 框架回复失败 session_ref=%s\n%s",
+                       getattr(event, "unified_msg_origin", "unknown"), original)
+    message.chain = [Plain(fallback)]
+    message.use_t2i_ = False
+    return True
 
 
 def _is_core_reply_result(event: Any) -> bool:
@@ -186,6 +222,9 @@ def prepare_core_reply_event(
             if getattr(message, "type", None) in {"tool_call", "tool_result", "agent_stats", "reasoning", "break"}:
                 return await state["_original_send"](message, *args, **kwargs)
             if not state.get("delivery_guard_active"):
+                if getattr(message, "chain", None) and _plain_text(message).startswith(
+                        "Error occurred while processing agent request: "):
+                    replace_core_error_reply(event, message)
                 from .core_reply_presentation import strip_internal_expression_message
                 message = strip_internal_expression_message(message)
                 if message is None:
@@ -325,6 +364,21 @@ def prepare_core_reply_event(
                         else getattr(getattr(event, "platform_meta", None), "name", None))
             native_bubbles = presentation is not None and platform == "aiocqhttp"
             if stream is not None and hasattr(stream, "__aiter__"):
+                from .core_reply_tool_dispatch import CORE_TOOL_DISPATCH_EXTRA
+
+                async def replace_stream_errors(source):
+                    async for chunk in source:
+                        dispatch = event.get_extra(CORE_TOOL_DISPATCH_EXTRA)
+                        runner = dispatch.get("runner") if isinstance(dispatch, dict) else None
+                        get_final_response = getattr(runner, "get_final_llm_resp", None)
+                        final_response = get_final_response() if callable(get_final_response) else None
+                        if (getattr(final_response, "role", None) == "err"
+                                or event.get_extra(CORE_ERROR_RESPONSE_EXTRA)
+                                or event.get_extra("_third_party_runner_error")):
+                            replace_core_error_reply(event, chunk, runner_error=True)
+                        yield chunk
+
+                stream = replace_stream_errors(stream)
                 stream = strip_internal_expression_stream(stream)
             prepared_stream = (presentation if not managed_group_stream and not native_bubbles
                                and hasattr(stream, "__aiter__") else None)

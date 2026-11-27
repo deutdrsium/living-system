@@ -32,9 +32,11 @@ def has_non_string_enum(node):
     return None
 
 
-def assert_gemini_compatible(test, schema, path):
+def assert_gemini_compatible(test, schema, path, *, nested=False):
     if isinstance(schema, bool):
         return
+    if not nested:
+        test.assertFalse({"anyOf", "oneOf", "allOf"} & schema.keys(), path)
     missing = set(schema.get("required", ())) - schema.get("properties", {}).keys()
     test.assertFalse(missing, f"{path}: required properties missing from this schema: {sorted(missing)}")
     if "enum" in schema:
@@ -44,15 +46,15 @@ def assert_gemini_compatible(test, schema, path):
                         f"{path}: Gemini enum needs nonempty list[str], got {values!r}")
     for keyword in ("properties", "patternProperties", "definitions", "$defs", "dependentSchemas"):
         for name, child in schema.get(keyword, {}).items():
-            assert_gemini_compatible(test, child, f"{path}.{keyword}.{name}")
+            assert_gemini_compatible(test, child, f"{path}.{keyword}.{name}", nested=True)
     for keyword in ("items", "anyOf", "oneOf", "allOf", "prefixItems", "not", "additionalProperties", "if", "then", "else"):
         if keyword in schema:
             child = schema[keyword]
             if isinstance(child, list):
                 for index, item in enumerate(child):
-                    assert_gemini_compatible(test, item, f"{path}.{keyword}[{index}]")
+                    assert_gemini_compatible(test, item, f"{path}.{keyword}[{index}]", nested=True)
             else:
-                assert_gemini_compatible(test, child, f"{path}.{keyword}")
+                assert_gemini_compatible(test, child, f"{path}.{keyword}", nested=True)
 
 
 class PortableToolSchemaTests(unittest.TestCase):
@@ -77,22 +79,52 @@ class PortableToolSchemaTests(unittest.TestCase):
             "properties": {
                 "pick": {"type": "array", "items": {"type": "integer", "enum": [1, 2]}},
                 "count": {"type": "integer", "minimum": 1},
+                "nested": {
+                    "anyOf": [{"type": "string", "enum": [3, 4]}],
+                    "oneOf": [{"type": "number", "enum": [5]}],
+                    "allOf": [{"type": "object", "properties": {"flag": {"type": "integer", "enum": [0, 1]}}}],
+                },
             },
-            "anyOf": [{"type": "string", "enum": [3, 4]}],
-            "oneOf": [{"type": "number", "enum": [5]}],
-            "allOf": [{"type": "object", "properties": {"flag": {"type": "integer", "enum": [0, 1]}}}],
         }
 
         cleaned = portable_tool_schema(source)
 
         self.assertIsNone(has_non_string_enum(cleaned))
         self.assertEqual(cleaned["properties"]["pick"]["items"]["description"], "可选值：1、2")
-        self.assertEqual(cleaned["anyOf"][0]["description"], "可选值：3、4")
-        self.assertEqual(cleaned["oneOf"][0]["description"], "可选值：5")
-        self.assertEqual(cleaned["allOf"][0]["properties"]["flag"]["description"], "可选值：0、1")
+        nested = cleaned["properties"]["nested"]
+        self.assertEqual(nested["anyOf"][0]["description"], "可选值：3、4")
+        self.assertEqual(nested["oneOf"][0]["description"], "可选值：5")
+        self.assertEqual(nested["allOf"][0]["properties"]["flag"]["description"], "可选值：0、1")
         self.assertEqual(cleaned["properties"]["count"], {"type": "integer", "minimum": 1})
         # The cleaner works on a copy: the stored business schema is not rewritten.
         self.assertEqual(source["properties"]["pick"]["items"], {"type": "integer", "enum": [1, 2]})
+
+    def test_top_level_combinators_merge_properties_and_keep_only_common_required_fields(self):
+        for keyword, requirement in (("anyOf", "至少一组"), ("oneOf", "恰好一组"), ("allOf", "每一组")):
+            with self.subTest(keyword=keyword):
+                source = {
+                    "description": "Choose arguments.",
+                    "properties": {"shared": {"type": "string"}},
+                    "required": ["shared", "left"],
+                    keyword: [
+                        {"properties": {"left": {"type": "integer", "enum": [1]}}, "required": ["shared", "left"]},
+                        {"properties": {"right": {"type": "boolean"}}, "required": ["shared", "right"]},
+                    ],
+                }
+                cleaned = portable_tool_schema(source)
+
+                self.assertEqual(cleaned, {
+                    "type": "object",
+                    "description": f"Choose arguments. 必填字段（{requirement}）：shared + left / shared + right。",
+                    "properties": {
+                        "shared": {"type": "string"},
+                        "left": {"type": "integer", "description": "可选值：1"},
+                        "right": {"type": "boolean"},
+                    },
+                    "required": ["shared"],
+                })
+                self.assertEqual(portable_tool_schema(cleaned), cleaned)
+                self.assertEqual(source["properties"], {"shared": {"type": "string"}})
 
     def test_cleaning_an_already_portable_schema_changes_nothing(self):
         clean = {"type": "object", "properties": {"mode": {"type": "string", "enum": ["a"]}},

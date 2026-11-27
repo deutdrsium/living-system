@@ -9,12 +9,13 @@ folder = Path(sys.argv[1])
 folder.mkdir(parents=True, exist_ok=True)
 shard = os.environ.get("CI_SHARD_INDEX")
 if shard is not None:
-    (folder / f"shard-{shard}-status.txt").write_text(os.environ.get("TEST_OUTCOME", "unknown") + "\n", encoding="utf-8")
+    (folder / f"shard-{shard}-status.txt").write_text(
+        os.environ.get("TEST_OUTCOME", "unknown") + "\n", encoding="utf-8", newline="\n")
 
 failures = defaultdict(set)
 durations = defaultdict(float)
 corrupt = []
-for source in sorted(folder.glob("shard-*.jsonl")):
+for source in sorted(folder.glob("shard-*.jsonl")) + sorted(folder.glob("python-shard-*/shard-*.jsonl")):
     for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
         try:
             entry = json.loads(line)
@@ -27,8 +28,8 @@ for source in sorted(folder.glob("shard-*.jsonl")):
         except (ValueError, KeyError, TypeError):
             corrupt.append(f"{source.name}:{number}")
 
-lines = ["## Companion Python report", "", "This suite is informational and does not block CI.", ""]
-statuses = sorted(folder.glob("shard-*-status.txt"))
+lines = ["## Companion Python report", ""]
+statuses = sorted(folder.glob("shard-*-status.txt")) + sorted(folder.glob("python-shard-*/shard-*-status.txt"))
 lines += [f"- {p.stem}: {p.read_text(encoding='utf-8').strip()}" for p in statuses]
 if not statuses:
     lines.append("- No shard status was available.")
@@ -47,7 +48,7 @@ if corrupt:
     lines += ["", "Incomplete report records: " + ", ".join(corrupt)]
 text = "\n".join(lines) + "\n"
 name = f"shard-{shard}-report.md" if shard is not None else "report.md"
-(folder / name).write_text(text, encoding="utf-8")
+(folder / name).write_text(text, encoding="utf-8", newline="\n")
 print(text)
 if os.environ.get("GITHUB_STEP_SUMMARY"):
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as output:

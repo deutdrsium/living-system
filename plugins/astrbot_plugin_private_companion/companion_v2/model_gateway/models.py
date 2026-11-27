@@ -223,11 +223,11 @@ _CHILD_NODE_KEYWORDS = ("items", "not", "additionalProperties")
 _CHILD_LIST_KEYWORDS = ("anyOf", "oneOf", "allOf", "prefixItems")
 
 
-def portable_tool_schema(schema):
+def portable_tool_schema(schema, *, _nested=False):
     """Return a copy of one tool JSON Schema that every provider client can build."""
 
     if isinstance(schema, list):
-        return [portable_tool_schema(item) for item in schema]
+        return [portable_tool_schema(item, _nested=True) for item in schema]
     if not isinstance(schema, dict):
         return schema
     # Start from every other keyword unchanged and replace the nested positions
@@ -236,18 +236,44 @@ def portable_tool_schema(schema):
     for key in _CHILD_MAP_KEYWORDS:
         children = schema.get(key)
         if isinstance(children, dict):
-            result[key] = {name: portable_tool_schema(child) for name, child in children.items()}
+            result[key] = {name: portable_tool_schema(child, _nested=True) for name, child in children.items()}
     for key in _CHILD_LIST_KEYWORDS:
         children = schema.get(key)
         if isinstance(children, list):
-            result[key] = [portable_tool_schema(child) for child in children]
+            result[key] = [portable_tool_schema(child, _nested=True) for child in children]
     for key in _CHILD_NODE_KEYWORDS:
         child = schema.get(key)
-        if isinstance(child, dict):
-            result[key] = portable_tool_schema(child)
-        elif isinstance(child, list):
-            result[key] = [portable_tool_schema(item) for item in child]
+        if isinstance(child, (dict, list)):
+            result[key] = portable_tool_schema(child, _nested=True)
     result.update(_portable_enum(schema))
+    if _nested:
+        return result
+
+    notes = []
+    required_groups = []
+    for key, requirement in (("anyOf", "至少一组"), ("oneOf", "恰好一组"), ("allOf", "每一组")):
+        branches = result.pop(key, None)
+        if not isinstance(branches, list):
+            continue
+        properties = result.setdefault("properties", {})
+        groups = []
+        for branch in branches:
+            if isinstance(branch, dict):
+                for name, child in branch.get("properties", {}).items():
+                    properties.setdefault(name, child)
+            groups.append(branch.get("required", []) if isinstance(branch, dict) else [])
+        required_groups.extend(set(fields) for fields in groups)
+        fields_text = " / ".join(" + ".join(fields) or "无必填字段" for fields in groups)
+        notes.append(f"必填字段（{requirement}）：{fields_text}。")
+    if notes:
+        result["type"] = "object"
+        result.pop("required", None)
+        if required_groups:
+            required = sorted(set.intersection(*required_groups))
+            if required:
+                result["required"] = required
+        description = result.get("description", "").rstrip()
+        result["description"] = " ".join(filter(None, (description, *notes)))
     return result
 
 

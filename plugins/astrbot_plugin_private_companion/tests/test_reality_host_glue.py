@@ -217,7 +217,10 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
         return next(iter(self.user["reality_touch_reminders"].values()))
 
     async def drain(self):
-        jobs = [job for job in self.runtime._background_tasks if job is not self.runtime._alarm_task]
+        jobs = [
+            job for job in self.runtime._background_tasks
+            if job.get_name() == "companion_v2.reality:host-event"
+        ]
         if jobs:
             await asyncio.gather(*jobs)
 

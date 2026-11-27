@@ -127,7 +127,7 @@ class WardrobeValidatorTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "wardrobe_configuration_invalid")
 
     def test_refuses_out_of_range_counts_and_wrong_types(self):
-        for values in ({"prompt_max_items": 0}, {"prompt_max_items": 25},
+        for values in ({"prompt_max_items": 0}, {"prompt_max_items": 65},
                        {"image_max_count": 9}, {"enabled": "yes"}, {"tendency": 12}):
             with self.subTest(values=values):
                 with self.assertRaises(ConfigurationError) as caught:

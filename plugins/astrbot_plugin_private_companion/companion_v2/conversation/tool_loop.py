@@ -147,7 +147,6 @@ def specification(action, required, optional=(), description="Use the original r
         "required": sorted(required), "additionalProperties": False,
     }
     if action == "reminder.create":
-        # Gemini resolves required names inside each branch, independently of the parent object.
         schema["anyOf"] = [
             {"type": "object", "properties": {name: properties[name] for name in fields}, "required": list(fields)}
             for fields in (("schedule", "message"), ("memo_id", "expected_memo_revision"))

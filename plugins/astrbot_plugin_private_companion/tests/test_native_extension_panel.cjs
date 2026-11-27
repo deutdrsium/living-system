@@ -128,6 +128,17 @@ test("four packaged schemas expose every scalar setting and usable template list
   for (const name of Object.keys(records)) {
     const page = await harness(name);
     try {
+      await page.evaluate(async () => {
+        const {schema, settings} = window.records[window.panel.name];
+        function satisfyConditions(fields, values) {
+          for (const [key, field] of Object.entries(fields)) {
+            Object.assign(values, field.condition);
+            if (field.type === "object") satisfyConditions(field.items, values[key]);
+          }
+        }
+        satisfyConditions(schema, settings);
+        await window.panel.load();
+      });
       const result = await page.evaluate(() => {
         function leaves(schema, prefix = []) {
           return Object.entries(schema).flatMap(([key, field]) => field.type === "object"
@@ -304,7 +315,7 @@ test("mobile pairing generates and reveals a token once, while rotation is expli
     assert.equal(await token.inputValue(), "synthetic-mobile-token");
     assert.equal(await page.getByRole("button", {name:"轮换配对令牌", exact:true}).isVisible(), true);
     assert.match(await page.locator("[data-mobile-token-result]").textContent(), /复制令牌/);
-    assert.match(await page.locator(".mobile-gateway-status").textContent(), /health/);
+    assert.match(await page.locator(".mobile-gateway-facts").textContent(), /\/health/);
     await page.getByRole("button", {name:"轮换配对令牌", exact:true}).click();
     await page.waitForFunction(() => window.confirmationRequests.length === 1);
     await page.waitForFunction(() => !window.panel.actionBusy);
@@ -397,6 +408,8 @@ test("audio and wakeup controls keep real confirmation separate and preserve unr
   try {
     await page.locator("[data-native-audio-details] > summary").click();
     await page.locator("[data-native-alarm-time]").fill("08:15");
+    await page.locator("[data-native-alarm-deadline]").fill("08:45");
+    await page.locator("[data-native-alarm-mode]").selectOption("gentle");
     await page.locator("[data-native-alarm-message]").fill("早餐做好了，快起床呀");
     await page.getByRole("button", {name:"准备本人音频授权", exact:true}).click();
     await page.locator("[data-native-action-notice]").filter({hasText:"请本人在私聊发送"}).waitFor();
@@ -407,23 +420,16 @@ test("audio and wakeup controls keep real confirmation separate and preserve unr
     await page.getByRole("button", {name:"保存语音策略", exact:true}).click();
     await page.locator("[data-native-action-notice]").filter({hasText:"保存语音策略已完成"}).waitFor();
     assert.equal(await page.locator("[data-native-alarm-time]").inputValue(), "08:15");
-    await page.locator('[data-native-alarm-day="4"]').uncheck();
     await page.locator("[data-native-alarm-enabled]").check();
-    await page.getByRole("button", {name:"保存叫醒安排", exact:true}).click();
-    await page.locator("[data-native-action-notice]").filter({hasText:"保存叫醒安排已完成"}).waitFor();
+    await page.getByRole("button", {name:"保存早晨照料", exact:true}).click();
+    await page.locator("[data-native-action-notice]").filter({hasText:"保存早晨照料已完成"}).waitFor();
     const requests = await page.evaluate(() => window.requests.filter(item => item.endpoint === "extensions/action"));
     assert.equal(requests[0].body.action, "request_audio_consent");
     assert.deepEqual(requests[0].body.payload, {user_id:"42"});
     assert.deepEqual(requests[1].body.payload, {user_id:"42", proactive_voice_enabled:true, playback_volume:28});
     const alarm = requests[2].body.payload;
-    assert.equal(alarm.user_id, "42");
-    assert.equal(alarm.enabled, true);
-    assert.equal(alarm.time, "08:15");
-    assert.equal(alarm.message, "早餐做好了，快起床呀");
-    assert.deepEqual(alarm.days, [0,1,2,3]);
-    assert.equal(alarm.delivery_mode, "chat_on_failure");
-    assert.equal(typeof alarm.repeat_count, "number");
-    assert.equal(alarm.require_acknowledgement, true);
+    assert.deepEqual(alarm, {user_id:"42", enabled:true, time:"08:15", deadline:"08:45",
+      mode:"gentle", message:"早餐做好了，快起床呀"});
     await page.getByRole("button", {name:"取消这条提醒", exact:true}).click();
     await page.locator("[data-native-action-notice]").filter({hasText:"取消提醒已完成"}).waitFor();
     assert.deepEqual(await page.evaluate(() => window.requests.at(-1).body.payload), {user_id:"42", reminder_id:"reminder-1"});

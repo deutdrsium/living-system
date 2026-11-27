@@ -8,13 +8,16 @@ from astrbot_host.audio.loader import load_native_audio
 from astrbot_host.media import load_native_image
 from astrbot_host.video.loader import load_native_video
 from companion_v2.adapters.astrbot.group_quotes import read_group_quote
-from companion_v2.execution.models import TaskContext
+from companion_v2.adapters.astrbot.quotes import NativeQuoteLocator
+from companion_v2.execution.models import TaskContext, TaskError
+from companion_v2.foundation.refs import ScopeKind, ScopeRef
 import json
 from tests.animation_support import animation_bytes
 from tests.audio_support import audio_bytes
 from tests.forward_support import node_raw
 from tests.group_quote_media_support import GroupQuoteMediaFixture, Forward, Reply, FakeRecord, FakeVideo
-from tests.group_media_support import Plain, sdk_image
+from tests.group_media_support import Plain, group_raw, sdk_image
+from tests.native_adapter_support import FakePlatform
 from tests.staging_bootstrap_support import wait_for_batch
 from tests.test_conversation_images import image_bytes
 from tests.video_support import video_bytes
@@ -25,6 +28,26 @@ def current_request_text(wire):
     materials = json.loads(message["content"])["materials"]
     return "\n".join(item["text"] for item in materials
                      if item["content_class"] == "current_user_request")
+
+
+class ReadGroupQuoteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canonical_account_is_verified_and_noncanonical_account_is_rejected(self):
+        client = FakePlatform().client
+        api = client._api._wsr_api
+        scope = ScopeRef("install", "aiocqhttp", ScopeKind.GROUP, "300",
+                         bot_id="bot", account_id="100", conversation_id="conversation", session_id="session")
+        raw = group_raw(count=0, text="原群消息")
+        api.result = {"messages": [raw]}
+        read = partial(read_group_quote, NativeQuoteLocator(0, "345"), client=client, scope=scope,
+                       reverse_api_type=type(api), image_loader=AsyncMock())
+
+        quote = await read()
+        self.assertEqual((quote.message_id, quote.sender_id, quote.text), ("345", "201", "原群消息"))
+
+        raw["self_id"] = "0100"
+        with self.assertRaises(TaskError) as rejected:
+            await read()
+        self.assertEqual(rejected.exception.code, "host_quote_unavailable")
 
 
 class AstrBotGroupQuoteMediaTests(GroupQuoteMediaFixture, unittest.IsolatedAsyncioTestCase):

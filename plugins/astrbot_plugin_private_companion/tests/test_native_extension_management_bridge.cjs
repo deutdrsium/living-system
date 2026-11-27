@@ -177,7 +177,8 @@ test("audio refresh adopts persisted values and preserves only edited fields bef
     assert.equal(await page.locator('[data-native-audio-input="policy_volume"]').inputValue(), "47");
     assert.equal(await page.locator("[data-native-audio-proactive]").isChecked(), true);
     assert.equal(await page.locator("[data-native-alarm-time]").inputValue(), "08:45");
-    assert.equal(await page.locator('[data-native-audio-input="repeat_count"]').inputValue(), "3");
+    assert.equal(await page.locator("[data-native-alarm-deadline]").inputValue(), "09:00");
+    assert.equal(await page.locator("[data-native-alarm-mode]").inputValue(), "gentle");
     assert.equal(await page.evaluate(() => window.management.audioDraft), null);
     await page.locator("[data-native-alarm-message]").fill("未保存的话题");
     await page.locator("[data-native-alarm-message]").dispatchEvent("change");
@@ -185,15 +186,15 @@ test("audio refresh adopts persisted values and preserves only edited fields bef
     await page.getByRole("button", {name:"刷新管理状态", exact:true}).click();
     await page.waitForFunction(() => window.management.record.management.users.find(row => row.user_id === "200").alarm.time === "09:20");
     assert.equal(await page.locator("[data-native-alarm-time]").inputValue(), "09:20");
-    assert.equal(await page.locator('[data-native-audio-input="repeat_count"]').inputValue(), "4");
+    assert.equal(await page.locator("[data-native-alarm-deadline]").inputValue(), "09:40");
+    assert.equal(await page.locator("[data-native-alarm-mode]").inputValue(), "persistent");
     assert.equal(await page.locator("[data-native-alarm-message]").inputValue(), "未保存的话题");
     assert.deepEqual(await page.evaluate(() => window.management.audioDraft), {alarm:{message:"未保存的话题"}});
-    await page.getByRole("button", {name:"保存叫醒安排", exact:true}).click();
-    await page.locator("[data-native-action-notice]").filter({hasText:"保存叫醒安排已完成"}).waitFor();
+    await page.getByRole("button", {name:"保存早晨照料", exact:true}).click();
+    await page.locator("[data-native-action-notice]").filter({hasText:"保存早晨照料已完成"}).waitFor();
     const payload = await page.evaluate(() => window.requests.findLast(row => row.endpoint === "extensions/action").body.payload);
-    assert.equal(payload.time, "09:20");
-    assert.equal(payload.repeat_count, 4);
-    assert.equal(payload.message, "未保存的话题");
+    assert.deepEqual(payload, {user_id:"200", enabled:true, time:"09:20", deadline:"09:40",
+      mode:"persistent", message:"未保存的话题"});
     assert.equal(await page.locator("[data-native-alarm-message]").inputValue(), "未保存的话题");
     assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "api:post").length), 1);
   } finally { await page.close(); }

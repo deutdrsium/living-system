@@ -38,12 +38,15 @@ _CORE_PATH_INSERTED = activate_plugin_imports(_PLUGIN_ROOT, __name__)
 from .astrbot_host.multi_controller import AstrBotMultiController
 from .astrbot_host.conversation_reset import install_native_reset_marker
 from .astrbot_host.core_reply import (
+    CORE_ERROR_FALLBACK_EXTRA,
+    CORE_ERROR_RESPONSE_EXTRA,
     CORE_REPLY_CONTEXT_EXTRA,
     activate_core_reply_delivery_guard,
     adopt_core_reply_event,
     inject_core_reply_prompt,
     prepare_core_reply_event,
     repair_tool_call_history,
+    replace_core_error_reply,
     restore_core_reply_event,
     restore_core_reply_prepared,
 )
@@ -1906,6 +1909,8 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_llm_response()
     async def observe_companion_model_session(self, event: AstrMessageEvent, response):
+        if getattr(response, "role", None) == "err":
+            event.set_extra(CORE_ERROR_RESPONSE_EXTRA, True)
         history_original = getattr(response, "completion_text", None)
         from .astrbot_host.core_reply_reaction_delivery import observe_core_reaction_response
         observe_core_reaction_response(event, response)
@@ -1935,6 +1940,15 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_decorating_result(priority=-999999)
     async def observe_companion_native_presentation(self, event: AstrMessageEvent):
+        getter = getattr(event, "get_result", None)
+        result = getter() if callable(getter) else None
+        kind = getattr(getattr(result, "result_content_type", None), "name", None)
+        if kind in {"GENERAL_RESULT", "AGENT_RUNNER_ERROR"}:
+            if replace_core_error_reply(event, result, runner_error=kind == "AGENT_RUNNER_ERROR"):
+                return
+        if kind == "STREAMING_FINISH" and event.get_extra(CORE_ERROR_FALLBACK_EXTRA):
+            if replace_core_error_reply(event, result, runner_error=True):
+                return
         observe_native_host_result(self.staging, event)
 
     @filter.on_decorating_result(priority=100000)

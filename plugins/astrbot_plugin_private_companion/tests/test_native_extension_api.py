@@ -128,7 +128,7 @@ class NativeExtensionAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_camera_confirmation_persists_for_only_the_selected_eligible_user(self):
         service = await self.enable("reality")
-        service.authorized_user_ids.add("200")
+        service._relationship_owner_user_ids = lambda: {"200"}
         for user_id, confirmed in (("200", True), ("200", False)):
             result = await self.call(PREFIX + "/action", body={"extension_id": "reality",
                 "action": "consent_camera", "payload": {"user_id": user_id, "confirmed": confirmed}})
@@ -169,7 +169,7 @@ class NativeExtensionAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_camera_policy_errors_keep_codes_through_message_only_bridge(self):
         service = await self.enable("reality")
-        service.authorized_user_ids.add("200")
+        service._relationship_owner_user_ids = lambda: {"200"}
         command = {"extension_id": "reality", "action": "update_camera_policy",
                    "payload": {"user_id": "200", "camera_enabled": True}}
         missing = await self.call(PREFIX + "/action", body=command)

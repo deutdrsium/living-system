@@ -426,7 +426,7 @@ class DesktopAPI:
                                                     check_current, payload.get("session"))
             if self.device_sessions is None:
                 claims_path = Path(self.controller.data_root) / "desktop" / "session-turn-claims.sqlite3"
-                timeout = max(TURN_TIMEOUT_SECONDS, self.controller.settings.policy.turn_timeout_seconds + 30)
+                timeout = max(TURN_TIMEOUT_SECONDS, self.controller.settings.common.policy.turn_timeout_seconds + 30)
                 self._session_state.host = SessionHost(turn_claims_path=claims_path, turn_timeout_seconds=timeout)
 
             def snapshots(capabilities):

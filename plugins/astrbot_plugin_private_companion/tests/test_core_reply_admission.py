@@ -166,6 +166,7 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(self.app.runtime.read_all("SELECT batch_id FROM conversation_batches", ()), ())
 
     async def test_configured_expression_preferences_apply_and_disable_without_selecting_v2_route(self):
+        from companion_v2.conversation.humanized_expression import GUIDED_PROMPT
         from companion_v2.conversation.reply_settings import GROUP, ReplyConfigurationOwner, target_for
 
         self.app.router._route_selection = Mock(side_effect=AssertionError("expression must not select a V2 model"))
@@ -186,7 +187,7 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
         prepared = (await self.controller.prepare_core_reply(self.event(identifier="core-expression-on"))).unwrap()
         self.assertIn("把新鲜发现兴冲冲地说给熟人听。", prepared["stable_prompt_instruction"])
         self.assertIn("留一点接话的余地，别机械地汇报。", prepared["stable_prompt_instruction"])
-        self.assertIn("沿用当前人格与关系，结合本轮语境自然回应", prepared["stable_prompt_instruction"])
+        self.assertIn(GUIDED_PROMPT, prepared["stable_prompt_instruction"])
         self.assertNotIn("日常聊天先回应对方此刻最想说的一点", prepared["stable_prompt_instruction"])
         self.assertIn("expression_preferences", prepared["context_sections"])
         self.assertNotIn("旧正文清理规则", prepared["stable_prompt_instruction"])
@@ -202,7 +203,7 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
         configure(prompt_style_mode="free")
         prepared = (await self.controller.prepare_core_reply(self.event(identifier="core-style-free"))).unwrap()
         self.assertIn("把新鲜发现兴冲冲地说给熟人听。", prepared["stable_prompt_instruction"])
-        self.assertNotIn("沿用当前人格与关系，结合本轮语境自然回应", prepared["stable_prompt_instruction"])
+        self.assertNotIn(GUIDED_PROMPT, prepared["stable_prompt_instruction"])
         self.assertNotIn("日常聊天先回应对方此刻最想说的一点", prepared["stable_prompt_instruction"])
 
         configure(style_prompt="")

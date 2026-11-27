@@ -22,13 +22,14 @@ from companion_v2.adapters.astrbot.model_wire import tool_alias
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.conversation.delivery import DeliveryReceipt
 from companion_v2.conversation.flow import ConversationPolicy
+from companion_v2.conversation.generation import LocalReplyGenerator
 from companion_v2.conversation.participation import ACTION, SKIPPED
 from companion_v2.conversation.reply_settings import (
     GROUP, ReplyConfigurationOwner, configuration_fields as reply_configuration_fields,
 )
 from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.diagnostics import inbound
-from companion_v2.execution.models import TaskContext, encode
+from companion_v2.execution.models import Outcome, TaskContext, encode
 from companion_v2.model_gateway.models import Amount, BudgetPolicy
 from companion_v2.model_gateway.budget import BudgetLedger
 from companion_v2.storage.runtime import StorageRuntime
@@ -157,8 +158,8 @@ class IntakeReplyLogTests(ReplyLogAssertions, unittest.IsolatedAsyncioTestCase):
             _terminated=False,
             session_topology=NS(reply_enabled=AsyncMock(return_value=True), observe=AsyncMock()),
             persona_mapping_for_event=AsyncMock(return_value=NS(role_id="registered-role")),
-            receive_claimed=AsyncMock(return_value=NS(failure=NS(code="staging_target_mismatch",
-                                                               reason="outside the target"))),
+            prepare_core_reply=AsyncMock(return_value=Outcome.failed("staging_target_mismatch",
+                                                                    "outside the target")),
             terminate=AsyncMock(),
         )
         self.plugin.staging = self.staging
@@ -370,7 +371,8 @@ class HostReplyLogTests(ReplyLogAssertions, HostFixture, unittest.IsolatedAsynci
             raise RuntimeError("synthetic model transport failure")
         self.model_behavior = broken
 
-        with self.captured() as captured:
+        with patch.object(LocalReplyGenerator, "_private_failure_notice", return_value=None), \
+                self.captured() as captured:
             app, batch, row = await self.failed_turn()
 
         self.assertEqual(row["state"], "blocked")
@@ -390,7 +392,9 @@ class HostReplyLogTests(ReplyLogAssertions, HostFixture, unittest.IsolatedAsynci
 
         # Foreground replies are exempt from the optional hard quota. Exercise
         # the reservation refusal contract explicitly for this diagnostic test.
-        with patch.object(BudgetLedger, "_is_main_chain", return_value=False), self.captured() as captured:
+        with patch.object(BudgetLedger, "_is_main_chain", return_value=False), \
+                patch.object(LocalReplyGenerator, "_private_failure_notice", return_value=None), \
+                self.captured() as captured:
             app, batch, row = await self.failed_turn(budget=budget)
 
         self.assertEqual(row["reason"], "conversation_task_failed")

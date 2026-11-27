@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from astrbot.core.agent.message import Message, TextPart
 from astrbot.core.message.components import Image, Plain
-from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.message.message_event_result import MessageChain, MessageEventResult, ResultContentType
 from astrbot.core.provider.entities import LLMResponse
 from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
 from companion_v2.execution.models import TaskError
@@ -57,6 +57,109 @@ class CoreReplyEvent:
 
 
 class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_framework_errors_are_replaced_before_private_or_group_presentation(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = NS()
+        fixtures = (
+            ("FriendMessage", "LLM 响应错误: All chat models failed: APIConnectionError: "
+             "litellm.APIConnectionError: OpenAIException - connection lost"),
+            ("GroupMessage", "Error occurred during AI execution.\n"
+             "Error Type: TimeoutError\nError Message: generation timed out"),
+            ("FriendMessage", "LLM 响应错误: All chat models failed: BadRequestError: Error code: 400 - "
+             "litellm.BadRequestError: OpenAIException - 请求参数有误 (request id: fake-400)\n"
+             "LiteLLM: model group 'example' failed"),
+        )
+        for channel, original in fixtures:
+            with self.subTest(channel=channel, original=original):
+                event = CoreReplyEvent()
+                event.message_obj.type.value = channel
+                event.unified_msg_origin = f"example:{channel}:test"
+                result = MessageEventResult(chain=[Plain(original)], use_t2i_=True)
+                event.get_result = lambda: result
+
+                with (patch.object(ENTRY.logger, "warning") as warn,
+                      patch.object(ENTRY, "observe_native_host_result") as observe_native):
+                    await plugin.observe_companion_native_presentation(event)
+                    await plugin.guard_companion_core_delivery(event)
+                observe_native.assert_not_called()
+                warn.assert_called_once()
+                self.assertEqual(warn.call_args.args[1:], (event.unified_msg_origin, original))
+                self.assertEqual(len(result.chain), 1)
+                self.assertIsInstance(result.chain[0], Plain)
+                self.assertFalse(result.use_t2i_)
+                self.assertIn(result.chain[0].text, (
+                    "我这边网有点卡，等下回你", "刚刚卡了一下，等我缓缓", "我这边卡住了，咱们等会儿再聊",
+                ))
+
+    async def test_normal_reply_quoting_framework_error_is_unchanged(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = NS()
+        event = CoreReplyEvent()
+        text = "LLM 响应错误: All chat models failed: TimeoutError: 这是你问的那行报错"
+        original = [Plain(text)]
+        result = MessageEventResult(chain=original, result_content_type=ResultContentType.LLM_RESULT)
+        event.get_result = lambda: result
+
+        with patch.object(ENTRY.logger, "warning") as warn:
+            await plugin.observe_companion_native_presentation(event)
+            await plugin.guard_companion_core_delivery(event)
+        warn.assert_not_called()
+        self.assertIs(result.chain, original)
+        self.assertEqual(result.chain[0].text, text)
+
+    async def test_managed_stream_sanitizes_only_runner_errors(self):
+        from astrbot_host.core_reply_tool_dispatch import CORE_TOOL_DISPATCH_EXTRA
+
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = NS()
+        event = CoreReplyEvent()
+        result = MessageEventResult(result_content_type=ResultContentType.STREAMING_RESULT)
+        event.get_result = lambda: result
+        sent = []
+
+        async def send_streaming(stream):
+            async for chunk in stream:
+                sent.append(chunk.get_plain_text())
+
+        event.send_streaming = send_streaming
+        ENTRY.prepare_core_reply_event(event, {}, authorize=AsyncMock(return_value=Outcome.success(True)))
+        response = NS(role="assistant")
+        runner = NS(get_final_llm_resp=lambda: response)
+        event.set_extra(CORE_TOOL_DISPATCH_EXTRA, {"runner": runner})
+        original = "LLM 响应错误: All chat models failed: TimeoutError: generation timed out"
+
+        async def responses():
+            yield MessageChain().message(original)
+            response.role = "err"
+            yield MessageChain().message(original)
+
+        with patch.object(ENTRY.logger, "warning") as warn:
+            await event.send_streaming(responses())
+            fallback = event.get_extra(ENTRY.CORE_ERROR_FALLBACK_EXTRA)
+            result.result_content_type = ResultContentType.STREAMING_FINISH
+            result.chain = [Plain(original)]
+            await plugin.observe_companion_native_presentation(event)
+        warn.assert_called_once()
+        self.assertEqual(warn.call_args.args[1:], (event.unified_msg_origin, original))
+        self.assertEqual(sent, [original, fallback])
+        self.assertEqual(result.get_plain_text(), fallback)
+
+    async def test_direct_core_request_error_bypasses_assistant_output_observation(self):
+        event = CoreReplyEvent()
+        on_sent = Mock()
+        ENTRY.prepare_core_reply_event(event, {}, authorize=AsyncMock(return_value=Outcome.success(True)),
+                                       on_sent=on_sent)
+        original = "Error occurred while processing agent request: generation timed out"
+
+        with patch.object(ENTRY.logger, "warning") as warn:
+            await event.send(MessageChain().message(original))
+
+        warn.assert_called_once()
+        self.assertEqual(warn.call_args.args[1:], (event.unified_msg_origin, original))
+        self.assertEqual([message.get_plain_text() for message in event.sent],
+                         [event.get_extra(ENTRY.CORE_ERROR_FALLBACK_EXTRA)])
+        on_sent.assert_not_called()
+
     async def test_phrase_filter_updates_native_output_and_existing_history_part(self):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         plugin.staging = NS()

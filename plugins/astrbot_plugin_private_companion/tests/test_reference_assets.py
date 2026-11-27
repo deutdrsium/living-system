@@ -314,7 +314,7 @@ class ReferenceUsageTests(ReferenceAssetServiceTests):
         prompt = image_reference_instruction(material)
         self.assertIn('"preferred_scene":"home-night"', prompt)
         self.assertIn("用户明确换装要求优先", prompt)
-        self.assertIn("[场景预设:对应名称]", prompt)
+        self.assertIn("[场景预设:名称]", prompt)
 
     def test_replacing_base_identity_invalidates_other_editors_for_that_role(self):
         first = self.register("asset-a")
@@ -590,7 +590,7 @@ class WardrobeConfigurationTests(unittest.TestCase):
 
     def test_out_of_range_and_wrongly_typed_values_are_rejected(self):
         from companion_v2.references import wardrobe as group
-        for name, value in (("prompt_max_items", 0), ("prompt_max_items", 25),
+        for name, value in (("prompt_max_items", 0), ("prompt_max_items", 65),
                             ("image_max_count", 0), ("image_max_count", 9),
                             ("image_max_count", True), ("enabled", 1), ("tendency", 5)):
             with self.assertRaises(ConfigurationError, msg=name):
