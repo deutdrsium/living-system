@@ -41,6 +41,8 @@ elif suite in {"good-life", "contracts", "companion-python"}:
             raise SystemExit("Empty Python test shard")
         report_dir = ROOT / "tools/ci/reports"
         report_dir.mkdir(parents=True, exist_ok=True)
+        for suffix in ("-session.json", "-exit-code.txt"):
+            (report_dir / f"shard-{shard}{suffix}").unlink(missing_ok=True)
         (report_dir / f"shard-{shard}.jsonl").write_text("", encoding="utf-8")
         command += ["-n", "2", "--dist", "loadfile", "-p", "ci.failure_report"]
     if suite == "good-life":
@@ -54,4 +56,10 @@ elif suite in {"good-life", "contracts", "companion-python"}:
 else:
     raise SystemExit(f"Unknown suite: {suite}")
 print("Running:", repr(command), flush=True)
-raise SystemExit(subprocess.call(command))
+exit_code = subprocess.call(command)
+if suite == "companion-python":
+    (report_dir / f"shard-{shard}-exit-code.txt").write_text(
+        f"{exit_code}\n", encoding="utf-8", newline="\n")
+    if exit_code == 1:
+        raise SystemExit(0)
+raise SystemExit(exit_code)

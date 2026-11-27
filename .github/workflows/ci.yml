@@ -138,7 +138,6 @@ jobs:
             plugins/astrbot_plugin_private_companion/tests/test_desktop_voice_bridge.py
       - id: tests
         timeout-minutes: 27
-        continue-on-error: true
         run: python tools/ci/run_tests.py companion-python
       - if: always()
         env:
@@ -157,7 +156,6 @@ jobs:
     if: ${{ !cancelled() && needs.companion-changes.outputs.companion == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -165,10 +163,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: python-shard-*
-          merge-multiple: true
           path: tools/ci/reports
-      - run: python3 tools/ci/summarize.py tools/ci/reports
-      - uses: actions/upload-artifact@v4
+      - run: python3 tools/ci/check_companion_python_report.py tools/ci/reports
+      - if: ${{ !cancelled() && needs.companion-python.result != 'success' }}
+        run: |
+          echo 'Companion Python matrix did not complete successfully.'
+          exit 1
+      - if: ${{ !cancelled() }}
+        run: python3 tools/ci/summarize.py tools/ci/reports
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
         with:
           name: companion-python-report
           path: tools/ci/reports/

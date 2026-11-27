@@ -5,6 +5,7 @@ import json
 from types import MappingProxyType
 import unittest
 
+from astrbot.core.message.components import Plain
 from companion_v2.conversation.foreground import ModelDraft
 from companion_v2.conversation.media.review import DEFAULTS
 from companion_v2.execution.models import ProviderBinding
@@ -120,7 +121,7 @@ class GroupImageReviewExecutionTests(GroupImageDeliveryFixture, unittest.Isolate
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0]["actual_tokens"])
 
-    async def test_image_candidate_probability_does_not_depend_on_image_presence_alone(self):
+    async def test_image_candidate_requires_threshold_weight_and_no_readable_text(self):
         anchor = self.media_event([sdk_image()], identifier="image-wakeup-settings")
         context = (await self.controller.observe_group_early(anchor)).unwrap()
         common = self.controller.settings.common
@@ -128,28 +129,18 @@ class GroupImageReviewExecutionTests(GroupImageDeliveryFixture, unittest.Isolate
         owner = ReplyConfigurationOwner(self.app.runtime)
         target = target_for(context)
 
-        def configure(probability):
-            owner.write(target, fields, changes={
-                "conversation.presentation.group_wakeup_enabled": True,
-                "conversation.presentation.group_wakeup_image_enabled": True,
-                "conversation.presentation.group_wakeup_image_weight": probability},
-                reset=(), expected_revision=owner.read(target, fields).revision, observed_at=self.clock.now())
-
-        configure(0)
-        blocked = (await self.controller.group_reply_candidate(self.media_event(
-            [sdk_image()], identifier="image-probability-zero", text="图片"))).unwrap()
-        self.assertNotEqual(blocked["reason"], "image_interest")
-        configure(1)
-        admitted = (await self.controller.group_reply_candidate(self.media_event(
-            [sdk_image()], identifier="image-probability-one", text="图片"))).unwrap()
-        self.assertEqual(admitted["reason"], "image_interest")
-        configure(0.5)
-        samples = [(await self.controller.group_reply_candidate(self.media_event(
-            [sdk_image()], identifier=f"image-probability-sample-{index}", text="图片"))).unwrap()
-            for index in range(8)]
-        reasons = [sample["reason"] for sample in samples]
-        self.assertIn("image_interest", reasons)
-        self.assertTrue(any(reason != "image_interest" for reason in reasons))
+        cases = ((0, "图片", False), (0.49, "图片", False), (0.5, "图片", True),
+                 (1, "图片", True), (1, "看这个", False))
+        for index, (weight, text, expected) in enumerate(cases):
+            with self.subTest(weight=weight, text=text):
+                owner.write(target, fields, changes={
+                    "conversation.presentation.group_wakeup_enabled": True,
+                    "conversation.presentation.group_wakeup_image_enabled": True,
+                    "conversation.presentation.group_wakeup_image_weight": weight},
+                    reset=(), expected_revision=owner.read(target, fields).revision, observed_at=self.clock.now())
+                candidate = (await self.controller.group_reply_candidate(self.media_event(
+                    [Plain(text=text), sdk_image()], identifier=f"image-candidate-{index}", text=text))).unwrap()
+                self.assertEqual(candidate["reason"] == "image_interest", expected, candidate)
 
 
 if __name__ == "__main__":

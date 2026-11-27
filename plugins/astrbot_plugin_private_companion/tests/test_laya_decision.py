@@ -19,6 +19,19 @@ from companion_v2.decision.store import (DEFAULTS, MODE_MODELS, LayaSettingsStor
                                           LayaSettingsError, role_storage_key)
 
 
+@pytest.fixture
+def cuda_available(monkeypatch):
+    torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True),
+                                  version=types.SimpleNamespace(cuda="12.8"))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+
+class CudaRouter:
+    def load(self, model):
+        assert model == "multilingual"
+        return types.SimpleNamespace(device="cuda:0")
+
+
 def decision_document():
     return {
         "turn_state": "complete",
@@ -315,7 +328,7 @@ def test_laya_questions_use_official_choice_types_without_numeric_controls():
     assert set(DECISION_QUESTIONS) == set(decision_document()) - {"reason_codes"}
 
 
-def test_local_inference_uses_dedicated_executor_and_keeps_runtime_profile(monkeypatch):
+def test_local_inference_uses_dedicated_executor_and_keeps_runtime_profile(monkeypatch, cuda_available):
     import threading
     from astrbot_host import laya_client
 
@@ -470,14 +483,14 @@ def test_legacy_latest_configuration_is_adopted_globally_without_changing_origin
     assert (old.read_bytes(), latest.read_bytes()) == originals
 
 
-def test_local_router_adapter_calls_predict_and_maps_choices(monkeypatch):
+def test_local_router_adapter_calls_predict_and_maps_choices(monkeypatch, cuda_available):
     _LOCAL_ROUTERS.clear()
     monkeypatch.setattr("astrbot_host.laya_client.cached_multilingual_model", lambda: None)
     calls = []
 
-    class Router:
+    class Router(CudaRouter):
         def __init__(self, **kwargs):
-            assert kwargs == {"default": "multilingual", "max_loaded": 1}
+            assert kwargs == {"default": "multilingual", "max_loaded": 1, "device": "cuda"}
 
         def predict(self, state, questions, *, model):
             assert model == "multilingual"
@@ -498,10 +511,10 @@ def test_local_router_adapter_calls_predict_and_maps_choices(monkeypatch):
     _LOCAL_ROUTERS.clear()
 
 
-def test_private_scope_normalizes_an_inapplicable_interjection():
+def test_private_scope_normalizes_an_inapplicable_interjection(cuda_available):
     seen_actions = []
 
-    class Router:
+    class Router(CudaRouter):
         def __init__(self, **_kwargs):
             pass
 
@@ -525,7 +538,7 @@ def test_private_scope_normalizes_an_inapplicable_interjection():
     _LOCAL_ROUTERS.clear()
 
 
-def test_local_router_import_error_is_actionable(monkeypatch):
+def test_local_router_import_error_is_actionable(monkeypatch, cuda_available):
     _LOCAL_ROUTERS.clear()
     monkeypatch.delitem(sys.modules, "laya", raising=False)
     original_import = __import__
@@ -872,7 +885,7 @@ def test_store_detects_complete_multilingual_hub_snapshot(tmp_path, monkeypatch)
     assert store.read()["model_cache_ready"] is True
 
 
-def test_local_adapter_reuses_complete_download_and_pins_multilingual(tmp_path, monkeypatch):
+def test_local_adapter_reuses_complete_download_and_pins_multilingual(tmp_path, monkeypatch, cuda_available):
     from companion_v2.decision import store as laya_store
 
     cache = tmp_path / "hub"
@@ -884,10 +897,11 @@ def test_local_adapter_reuses_complete_download_and_pins_multilingual(tmp_path, 
     monkeypatch.setattr(laya_store, "_model_cache_dir", lambda: cache)
     calls = []
 
-    class Router:
-        def __init__(self, *, models, default, max_loaded):
+    class Router(CudaRouter):
+        def __init__(self, *, models, default, max_loaded, device):
             assert models["multilingual"] == str(model)
             assert default == "multilingual"
+            assert device == "cuda"
 
         def predict(self, state, questions, *, model):
             calls.append(model)
@@ -915,7 +929,7 @@ def test_old_mode_less_laya_settings_migrate_to_multilingual(tmp_path):
     assert store.read()["default_model"] == "multilingual"
 
 
-def test_selected_checkpoint_is_used_instead_of_official_cached_weights(tmp_path, monkeypatch):
+def test_selected_checkpoint_is_used_instead_of_official_cached_weights(tmp_path, monkeypatch, cuda_available):
     from astrbot_host import laya_client
     model = tmp_path / "fine-tuned"
     for relative in ("rl_agent_config.json", "model.safetensors", "tokenizer/tokenizer.json", "encoder/config.json"):
@@ -925,9 +939,10 @@ def test_selected_checkpoint_is_used_instead_of_official_cached_weights(tmp_path
     store = LayaSettingsStore(tmp_path / "settings")
     store.update(store.raw()["revision"], {"enabled": True, "local_model_path": str(model)})
 
-    class Router:
-        def __init__(self, *, models, default, max_loaded):
+    class Router(CudaRouter):
+        def __init__(self, *, models, default, max_loaded, device):
             assert models == {"multilingual": str(model)}
+            assert device == "cuda"
 
         def predict(self, state, questions, *, model):
             return laya_result({"action": "wait"})
@@ -945,7 +960,7 @@ def test_selected_checkpoint_is_used_instead_of_official_cached_weights(tmp_path
         _LOCAL_ROUTERS.clear()
 
 
-def test_missing_selected_checkpoint_has_explicit_error_and_cannot_download_another_model(tmp_path, monkeypatch):
+def test_missing_selected_checkpoint_has_explicit_error_and_cannot_download_another_model(tmp_path, monkeypatch, cuda_available):
     monkeypatch.setitem(sys.modules, "laya", types.SimpleNamespace(Router=lambda **_options: None))
     _LOCAL_ROUTERS.clear()
     try:
@@ -957,7 +972,7 @@ def test_missing_selected_checkpoint_has_explicit_error_and_cannot_download_anot
         _LOCAL_ROUTERS.clear()
 
 
-def test_background_warmup_is_shared_and_does_not_queue_expired_message_inference(tmp_path, monkeypatch):
+def test_background_warmup_is_shared_and_does_not_queue_expired_message_inference(tmp_path, monkeypatch, cuda_available):
     import threading
     from astrbot_host import laya_client
     from companion_v2.storage.runtime import StorageRuntime
@@ -976,7 +991,7 @@ def test_background_warmup_is_shared_and_does_not_queue_expired_message_inferenc
         started.set()
         release_load.wait(3)
         laya_client._LOCAL_ROUTERS[laya_client.DEFAULT_MODEL] = (None, None)
-        return "cpu"
+        return "cuda:0"
 
     def synthetic_inference(state, questions, **_options):
         inference_started.set()
@@ -992,7 +1007,7 @@ def test_background_warmup_is_shared_and_does_not_queue_expired_message_inferenc
         task = laya_client.start_laya_warmup(store)
         try:
             assert laya_client.start_laya_warmup(store) is task
-            await asyncio.to_thread(started.wait, 2)
+            assert await asyncio.to_thread(started.wait, 2)
             result = await service.decide({"message_kind": "text", "user_text": "你好"})
             assert result == {"status": "skipped", "reason": "laya_initializing"}
             assert service.status()["local_runtime_state"] == "warming"
@@ -1000,7 +1015,7 @@ def test_background_warmup_is_shared_and_does_not_queue_expired_message_inferenc
             assert row["status"] == "skipped"
             assert row["reason_code"] == "laya_initializing"
             release_load.set()
-            await asyncio.to_thread(inference_started.wait, 2)
+            assert await asyncio.to_thread(inference_started.wait, 2)
             assert service.status()["local_runtime_state"] == "warming"
         finally:
             release_load.set()

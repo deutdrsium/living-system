@@ -14,7 +14,7 @@ async def receipts():
     await case.asyncSetUp()
     try:
         service = await case.enable("reality")
-        service.authorized_user_ids.add("200")
+        service._relationship_owner_user_ids = lambda: {"200"}
 
         async def action(name, payload):
             return await case.call(PREFIX + "/action", body={"extension_id": "reality",
@@ -45,8 +45,8 @@ async def receipts():
         result["audio_before"] = await case.call()
         result["audio_policy"] = await action("update_audio_policy", {"user_id": "200",
             "proactive_voice_enabled": True, "playback_volume": 47})
-        alarm = {"user_id": "200", "enabled": True, "time": "08:45", "days": [0, 2, 4],
-                 "message": "已保存的话题", "playback_volume": 52, "repeat_count": 3, "delivery_mode": "audio_only"}
+        alarm = {"user_id": "200", "enabled": True, "time": "08:45", "deadline": "09:00",
+                 "mode": "gentle", "message": "已保存的话题"}
         result["audio_alarm"] = await action("save", alarm)
         catalog = {"backend_available": False, "backend": "synthetic", "devices": [
             {"id": "system_default", "name": "合成默认输出", "is_default": True}]}
@@ -54,7 +54,7 @@ async def receipts():
             result["audio_output"] = await action("select_audio", {"device_id": "system_default", "playback_volume": 64})
         service.data = service._load_data()
         result["audio_refreshed"] = await case.call()
-        alarm.update(time="09:20", repeat_count=4)
+        alarm.update(time="09:20", deadline="09:40", mode="persistent")
         await action("save", alarm)
         result["audio_later"] = await case.call()
         alarm["message"] = "未保存的话题"

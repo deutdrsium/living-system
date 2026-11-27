@@ -285,6 +285,8 @@ class AgendaService:
             sequence = 0
             if memo_id is not None:
                 self._authorize(actor, target, "memo.reminder.set", observed_at, self.object_key("memo", memo_id))
+                if expected_memo_revision is None:
+                    raise AgendaError("invalid_tool_arguments", "a linked reminder requires memo_id and expected_memo_revision")
                 memo = self._memo(memo_id, target)
                 expect_revision(memo.revision, expected_memo_revision)
                 if memo.state != "active" or memo.schedule is None or schedule is not None or message != "":

@@ -392,6 +392,49 @@ test('the precise editor keeps provider filtering compact and localizes capabili
   assert.match(node.innerHTML, /还有 2 项能力相符的任务由其他模型提供方承担/);
 });
 
+test('switching model scopes retries a failed private read and restores role defaults', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  const roleStatus = {...status(), scope_kind: 'private', configuration_layer: 'role'};
+  const windowStatus = {...status(), scope_kind: 'private', configuration_layer: 'window',
+    tasks: [task('memory.reflect', 'secondary', ['text'], 'background')]};
+  page.mount(node);
+  assert.equal(requests[0].params.layer, 'role');
+  requests[0].resolve(roleStatus);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  assert.match(node.innerHTML, /data-model-layer="role" aria-pressed="true"/);
+  assert.match(node.innerHTML, /当前私聊微调/);
+  assert.match(node.innerHTML, /data-fncard="conversation.reply"/);
+
+  node.click('[data-model-layer]', {modelLayer: 'window'});
+  await flush();
+  assert.equal(requests[1]?.params.layer, 'window');
+  assert.doesNotMatch(node.innerHTML, /data-fncard=/);
+  requests[1].reject(new Error('read failed'));
+  await flush();
+  assert.match(node.innerHTML, /无法读取任务配置，请点击重新读取/);
+  assert.doesNotMatch(node.innerHTML, /data-fncard=/);
+
+  node.click('[data-model-action]', {modelAction: 'refresh'});
+  assert.equal(requests[2]?.params.layer, 'window');
+  requests[2].resolve(windowStatus);
+  await flush();
+  assert.match(node.innerHTML, /data-model-layer="window" aria-pressed="true"/);
+  assert.match(node.innerHTML, /data-fncard="memory.reflect"/);
+  assert.doesNotMatch(node.innerHTML, /无法读取任务配置/);
+  assert.doesNotMatch(node.innerHTML, /data-fncard="conversation.reply"/);
+
+  node.click('[data-model-layer]', {modelLayer: 'role'});
+  await flush();
+  assert.equal(requests[3]?.params.layer, 'role');
+  assert.doesNotMatch(node.innerHTML, /data-fncard=/);
+  requests[3].resolve(roleStatus);
+  await flush();
+  assert.match(node.innerHTML, /data-model-layer="role" aria-pressed="true"/);
+  assert.match(node.innerHTML, /data-fncard="conversation.reply"/);
+});
+
 test('an unreadable host offers a retry that loads the matrix', async () => {
   const {page, requests, root} = harness();
   const node = root();

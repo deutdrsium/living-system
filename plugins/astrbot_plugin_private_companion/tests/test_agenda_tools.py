@@ -5,7 +5,7 @@ from datetime import timedelta
 import json
 import unittest
 
-from companion_v2.agenda.models import AgendaError
+from companion_v2.agenda.models import AgendaError, Schedule
 from companion_v2.agenda.service import AgendaService
 from companion_v2.conversation.agenda_tools import AgendaRoleSession, TOOL_FIELDS
 from companion_v2.conversation.foreground import (
@@ -236,6 +236,30 @@ class AgendaToolTests(unittest.TestCase):
         self.assertEqual(self.service.repository.reminder(receipt["object_id"]).target.owner, USER)
         self.assertEqual(self.runtime.read_all("SELECT * FROM agenda_memos", ()), ())
 
+    def test_reminder_owner_validates_both_argument_forms(self):
+        memo = self.create(schedule=Schedule(NOW, "Asia/Shanghai")).unwrap()
+        session, _ = self.session()
+        schedule = {"anchor": NOW.isoformat(), "timezone_name": "Asia/Shanghai"}
+        linked = {"memo_id": memo.object_id, "expected_memo_revision": memo.revision}
+        invalid = (
+            ({}, "invalid_agenda_text"),
+            ({"schedule": schedule}, "invalid_agenda_text"),
+            ({"message": "喝水"}, "invalid_schedule"),
+            ({"memo_id": memo.object_id}, "invalid_tool_arguments"),
+            ({**linked, "schedule": schedule, "message": "喝水"}, "invalid_schedule"),
+        )
+        for index, (arguments, code) in enumerate(invalid):
+            with self.subTest(arguments=arguments):
+                result = session.execute(call_id=f"invalid-{index}", action="reminder.create", arguments=arguments).unwrap()
+                self.assertEqual(result.state, "failed")
+                self.assertEqual(json.loads(result.payload_json)["code"], code)
+        self.assertEqual(self.runtime.read_all("SELECT * FROM agenda_reminders", ()), ())
+
+        result = session.execute(call_id="linked", action="reminder.create", arguments=linked).unwrap()
+        self.assertEqual(result.state, "succeeded")
+        receipt = json.loads(result.payload_json)
+        self.assertEqual(self.service.repository.reminder(receipt["object_id"]).memo_id, memo.object_id)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -253,11 +277,13 @@ class AgendaToolSchemaTests(unittest.TestCase):
         self.assertIn("ISO-8601", schedule["properties"]["anchor"]["description"])
         self.assertEqual(schedule["properties"]["timezone_name"]["type"], "string")
         self.assertEqual(schema["properties"]["message"]["type"], "string")
+        self.assertEqual(schema["properties"]["memo_id"]["type"], "string")
+        self.assertEqual(schema["properties"]["expected_memo_revision"]["type"], "integer")
         self.assertFalse(schema["additionalProperties"])
-        # 直接给时间，或关联已有便签；两种合法用法都不能被 required 拦死。
-        self.assertEqual(len(schema["anyOf"]), 2)
-        self.assertEqual(set(schema["anyOf"][0]["required"]), {"schedule", "message"})
-        self.assertEqual(set(schema["anyOf"][1]["required"]), {"memo_id", "expected_memo_revision"})
+        self.assertFalse({"anyOf", "oneOf", "allOf"} & schema.keys())
+        self.assertFalse(schema.get("required"))
+        self.assertIn("schedule + message", schema["description"])
+        self.assertIn("memo_id + expected_memo_revision", schema["description"])
 
     def test_schedule_fold_stays_a_bounded_integer_instead_of_an_enum(self):
         from companion_v2.conversation.tool_loop import specification

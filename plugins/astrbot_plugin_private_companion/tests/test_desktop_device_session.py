@@ -7,18 +7,26 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from astrbot_host import desktop_api
+from astrbot_host.multi_settings import MultiHostSettings
+from tests.multi_host_support import multi_config
 
 
 @pytest.fixture
 def desktop(tmp_path, monkeypatch):
-    target = SimpleNamespace(target_id="target-demo", platform_id="webchat", bot_id="bot-demo",
-                             participant_id="webchat!user-demo!window-demo")
-    link = SimpleNamespace(mode="role", alias_target_ids=(target.target_id,), primary_target_id="primary-demo")
-    settings = SimpleNamespace(enabled=True, target=lambda _: target, window_link_for_target=lambda _: link,
-                               personas=[SimpleNamespace(bot_id="bot-demo", persona_id="persona-demo", role_id="role-demo")],
-                               canonical_role_id=lambda value: value,
-                               policy=SimpleNamespace(turn_timeout_seconds=420))
-    controller = SimpleNamespace(data_root=tmp_path, config={}, settings=settings, session=object(),
+    config = multi_config(
+        targets=[
+            dict(target_id="primary-demo", platform_id="qq-main", account_id="100", bot_id="bot-demo",
+                 participant_id="200"),
+            dict(target_id="target-demo", platform_id="webchat", account_id="webchat", bot_id="bot-demo",
+                 participant_id="webchat!user-demo!window-demo"),
+        ],
+        personas=[dict(bot_id="bot-demo", persona_id="persona-demo", role_id="role-demo")],
+        window_links=[dict(primary_target_id="primary-demo", alias_target_ids=["target-demo"], mode="role")],
+    )
+    config["runtime"]["turn_timeout_seconds"] = 480
+    settings = MultiHostSettings.parse(config)
+    target = settings.target("target-demo")
+    controller = SimpleNamespace(data_root=tmp_path, config=config, settings=settings, session=object(),
                                  context=SimpleNamespace(get_config=lambda **_: {"admins_id": ["user-demo"]}),
                                  _terminated=False)
     api = desktop_api.DesktopAPI(controller)
@@ -114,8 +122,10 @@ def test_route_registers_real_public_session_with_bound_permissions(desktop, mon
 
         monkeypatch.setattr(desktop_api.request, "body", body, raising=False)
         reply = await api.device_session()
+        assert reply["status"] == "ok", reply
         ref = reply["data"]["session"]
         assert reply["data"]["permissions"] == ["avatar"]
+        assert api.device_sessions.turn_timeout_seconds == 510
         scope = SimpleNamespace(installation_id="installation-demo", bot_id="bot-demo")
         context = SimpleNamespace(scope=scope, role_binding=SimpleNamespace(role=SimpleNamespace(subject_id="role-demo")))
         api.controller.authority = SimpleNamespace(context=lambda target_id, role: context)
@@ -128,6 +138,7 @@ def test_route_registers_real_public_session_with_bound_permissions(desktop, mon
         payload.update(operation="exchange", payload={"session": ref, "turns": [],
                                                        "messages": [message("capabilities", ref, caps)]})
         reply = await api.device_session()
+        assert reply["status"] == "ok", reply
         state = reply["data"]["messages"][0]
         assert state["type"] == "role_state"
         assert state["body"]["energy"] == 0.5

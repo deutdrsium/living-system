@@ -703,7 +703,7 @@ window.CompanionModelsPage = (() => {
       if (selectedLayer === s.layer) return;
       const pending = [...s.drafts.entries()].some(([kind, draft]) => draft.pending || taskOf(s, kind) && dirty(taskOf(s, kind), draft));
       if (pending) { s.bad = true; s.notice = "请先保存或放弃当前范围的改动，再切换配置作用域。"; render(); return; }
-      s.layer = selectedLayer; s.drafts.clear(); s.selection = []; s.expanded = null; refresh(); return;
+      s.layer = selectedLayer; s.status = null; s.drafts.clear(); s.selection = []; s.expanded = null; refresh(); return;
     }
     const lane = event.target.closest("[data-model-lane]");
     if (lane) { s.lane = lane.dataset.modelLane; render(); return; }

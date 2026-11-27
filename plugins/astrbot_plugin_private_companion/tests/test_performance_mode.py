@@ -6,6 +6,8 @@ import json
 import unittest
 
 from astrbot.api.web import PluginRequest, bind_request_context
+from astrbot_host.desktop_api import PREFIX as DESKTOP_PREFIX
+from astrbot_host.log_api import PREFIX as LOG_PREFIX
 from astrbot_host.multi_api import MultiHostWebAPI
 from astrbot_host.performance_mode import performance_enabled, performance_status
 from astrbot_host.role_paths import HOST_PREFIX
@@ -45,7 +47,7 @@ class PerformanceModeTests(unittest.TestCase):
         self.assertFalse(performance_status(
             {"performance": {"enabled": True}}, enabled=False)["lite_page"])
 
-    def test_lite_registration_keeps_only_status_and_performance_routes(self):
+    def test_lite_registration_keeps_status_performance_desktop_and_log_routes(self):
         class Context:
             def __init__(self):
                 self.registered_web_apis = []
@@ -56,11 +58,19 @@ class PerformanceModeTests(unittest.TestCase):
         controller = SimpleNamespace(config={"performance": {"enabled": True}}, context=Context())
         api = MultiHostWebAPI(controller)
         api.register()
-        self.assertEqual([row[0] for row in controller.context.registered_web_apis], [
+        expected = [
             HOST_PREFIX + "/status",
             HOST_PREFIX + "/performance",
-        ])
-        self.assertEqual(len(api._registered_routes), 2)
+            DESKTOP_PREFIX + "/setup",
+            DESKTOP_PREFIX + "/prepare",
+            DESKTOP_PREFIX + "/history",
+            DESKTOP_PREFIX + "/speech",
+            DESKTOP_PREFIX + "/playback",
+            DESKTOP_PREFIX + "/screen",
+            LOG_PREFIX + "/logs",
+        ]
+        self.assertEqual([row[0] for row in controller.context.registered_web_apis], expected)
+        self.assertEqual([route for route, _ in api._registered_routes], expected)
 
 
 

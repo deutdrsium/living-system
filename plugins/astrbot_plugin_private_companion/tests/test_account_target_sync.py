@@ -29,7 +29,7 @@ class AccountTargetSyncTests(unittest.IsolatedAsyncioTestCase):
             self.config.update(candidate)
             return {"saved": True, "requires_reload": False, "requires_initialize": False}
 
-        self.controller = NS(config=self.config, apply_bindings=AsyncMock(side_effect=apply))
+        self.controller = NS(config=self.config, settings=None, apply_bindings=AsyncMock(side_effect=apply))
         self.api = AccountSessionWebAPI(self.controller)
         self.api._discovered = AsyncMock(return_value=self.discovered)
 
@@ -228,6 +228,7 @@ class SharedModelProviderBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.config.setdefault("model", {})["provider_id"] = ""
         self.controller = NS(
             config=self.config,
+            settings=None,
             context=NS(get_all_providers=lambda: [self.provider],
                        get_provider_by_id=lambda provider_id: self.provider if provider_id == "provider-a" else None),
             native_types=NativeTypes(),
