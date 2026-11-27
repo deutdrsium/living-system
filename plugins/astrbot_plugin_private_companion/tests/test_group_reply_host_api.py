@@ -17,7 +17,7 @@ from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.configuration.owners import SparseConfigurationOwner
-from companion_v2.conversation.participation import (ACTION, CONFIG_GROUP as PARTICIPATION_GROUP,
+from companion_v2.conversation.participation import (ACTION, CONFIG_DEFAULTS, CONFIG_GROUP as PARTICIPATION_GROUP,
     group_participation_settings)
 from companion_v2.expression.configuration import GROUP_SCOPE_GROUP
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind, ScopeRef
@@ -441,7 +441,11 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_participation_diagnostics_limit_modes_and_exact_target_isolation(self):
         await self.start_host()
         self.assertEqual((await self.save({"group_wakeup_log_limit": 10}))["status"], "ok")
-        replied = [await self.receive_group(drive_capacity_wait=True) for _ in range(11)]
+        history_gap = timedelta(hours=CONFIG_DEFAULTS["group_context_max_age_hours"], seconds=1)
+        replied = []
+        for _ in range(11):
+            replied.append(await self.receive_group(drive_capacity_wait=True))
+            self.clock.advance(history_gap)
 
         async def skip(payload, tools):
             return completion(tools=[command(ACTION, {"mode": "skip", "reason": "private diagnostic reason"})])

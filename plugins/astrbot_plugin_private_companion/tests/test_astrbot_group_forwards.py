@@ -18,6 +18,7 @@ from astrbot_host.group_authority import GroupAuthority
 from companion_v2.adapters.astrbot.forwards import read_private_forwards
 from companion_v2.adapters.astrbot.group_forwards import read_group_forwards
 from companion_v2.conversation.forwards.models import MAX_NODES
+from companion_v2.conversation.participation import CONFIG_DEFAULTS
 from tests.forward_support import node_raw
 from tests.group_media_support import GroupMediaFixture, group_raw
 from tests.audio_support import audio_bytes
@@ -270,10 +271,14 @@ class AstrBotGroupForwardTests(GroupMediaFixture, unittest.IsolatedAsyncioTestCa
         self.assertEqual(self.app.runtime.read_one("SELECT COUNT(*) FROM sources", ())[0], baseline)
 
     async def test_revoked_media_invalidates_saved_cross_member_history_after_restart(self):
+        self.batch_timeout_seconds = 20
         await self.start_host()
         nodes = [node_raw("可撤权附件", audios=(audio_bytes(),), videos=(video_bytes(),))]
+        history_gap = timedelta(hours=CONFIG_DEFAULTS["group_context_max_age_hours"], seconds=1)
         for index, mode in enumerate(("waveform", "video", "frame", "audio_source")):
             with self.subTest(mode=mode):
+                if index:
+                    self.clock.advance(history_gap)
                 a, first = await self.accept_forward(str(1301 + index * 2), nodes=nodes)
                 original_request = self.request(a, first)
                 b, later = await self.receive_parts([Plain("讨论这份记录")], sender="202")

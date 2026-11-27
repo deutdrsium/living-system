@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from companion_v2.execution.models import TaskContext
 from companion_v2.memory.models import owner_key
+from companion_v2.memory.scheduling import MemorySchedule
 
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.native_adapter_support import FakeEvent
@@ -161,22 +162,32 @@ class CoreReplyMaintenanceTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             release.set()
 
     async def test_memory_schedule_cancels_workers_on_host_loop(self):
+        self.enterContext(patch.object(MemorySchedule, "_schedule_configuration_refresh", return_value=None))
         app = await self.start_host()
         prepared = (await self.controller.prepare_core_reply(self.event(identifier="native-memory-binding"))).unwrap()
         await self._drain()
         context = prepared["context"]
         schedule = app.memory_schedule
         key = "memory-daily-" + owner_key(context)
+        worker = asyncio.get_running_loop().create_future()
         cancel_thread = []
-        schedule.workers[key] = NS(cancel=lambda: cancel_thread.append(threading.get_ident()))
+        cancel = worker.cancel
+
+        def record_cancel():
+            cancel_thread.append(threading.get_ident())
+            return cancel()
+
+        schedule.workers[key] = worker
         values, token = schedule.reflection.memory.settings.read(context)
         values = {**values, "memory.reflection_enabled": False}
         try:
-            with patch.object(schedule.reflection.memory.settings, "read", return_value=(values, token)):
+            with (patch.object(worker, "cancel", side_effect=record_cancel),
+                  patch.object(schedule.reflection.memory.settings, "read", return_value=(values, token))):
                 await schedule.sync_configuration_async(context, prepared["instruction"])
+            self.assertTrue(worker.cancelled())
             self.assertEqual(cancel_thread, [threading.get_ident()])
         finally:
-            del schedule.workers[key]
+            schedule.workers.pop(key, None)
 
     async def test_accept_queues_slow_memory_schedule_sync_after_intake(self):
         app = await self.start_host()
