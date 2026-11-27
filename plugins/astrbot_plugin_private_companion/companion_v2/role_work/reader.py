@@ -56,8 +56,9 @@ class BookChoiceJob:
 
 
 class RoleReader:
-    def __init__(self, life):
+    def __init__(self, life, *, banned_phrases=None):
         self.life, self.runtime = life, life.runtime
+        self.banned_phrases = banned_phrases
         self.gateway = self.runner = None
         from companion_v2.model_gateway.life_tasks import LifeModelTasks
         self.port_tasks = LifeModelTasks(self)
@@ -214,6 +215,8 @@ class RoleReader:
                 activity = job.activities[int(choice) - 1]
             else:
                 raise ValueError("unknown book choice")
+            if self.banned_phrases:
+                reason = self.banned_phrases.text(reason, surface="reading_choice", preserve_reply=False)
             with self.runtime.transaction() as connection:
                 run.validate()
                 run.begin_effect()

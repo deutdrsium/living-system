@@ -96,6 +96,25 @@ class LifeLedgerReadProxy:
             cursor = activity.activity_id
         return tuple(activities)
 
+    def recent_activities_for_scope(self, owner, scope, *, kind, limit=50, before=None):
+        self._page(limit)
+        if scope.installation_id != owner.installation_id or scope.bot_id != owner.bot_id:
+            raise ReferenceValidationError("activity scope crosses its role owner")
+        rows = self._read("recent_activities_for_scope", owner_key=self._owner_key(owner),
+                          scope_json=encode(scope), kind=kind, limit=limit, before=before)
+        if not isinstance(rows, (tuple, list)) or len(rows) > limit:
+            raise TaskError("life_provider_data_invalid", "life provider returned an invalid activity page")
+        activities, cursor = [], before
+        for raw in rows:
+            activity = self._activity(raw, owner=owner)
+            key = (stamp(activity.updated_at), activity.activity_id)
+            if (activity.scope != scope or activity.work is None or activity.work.kind != kind
+                    or (cursor is not None and key >= cursor)):
+                raise TaskError("life_provider_data_invalid", "life provider returned an invalid recent activity page")
+            activities.append(activity)
+            cursor = key
+        return tuple(activities)
+
     def context_activities(self, owner, scope, *, observed_at, limit=32):
         self._page(limit)
         if scope.installation_id != owner.installation_id or scope.bot_id != owner.bot_id:

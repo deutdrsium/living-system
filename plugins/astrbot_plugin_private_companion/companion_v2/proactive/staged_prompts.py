@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 
 from companion_v2.conversation.foreground import PromptMaterial, SealedForegroundContext
+from companion_v2.conversation.phrase_overuse import with_material_hint
 from companion_v2.conversation.style_context import EXPRESSION_STYLE_INSTRUCTION
 
 from .configuration import GROUP
@@ -12,7 +13,7 @@ from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER
 from .prompt_templates import effective_template
 from .prompts import (DIAGNOSTIC_PRESENTATION_INSTRUCTION, GREETING_INSTRUCTION, INSOMNIA_GREETING_INSTRUCTION,
                       ORIGIN_INSTRUCTIONS, PURPOSE_INSTRUCTIONS, SKIP_REASONS,
-                      SOURCE_ORIGINS, TOPIC_CONTINUITY_INSTRUCTION)
+                      SOURCE_ORIGINS, STATE_WORDING_INSTRUCTION, TOPIC_CONTINUITY_INSTRUCTION)
 
 
 HISTORY_PURPOSES = frozenset({"recent_private_dialogue", "dedup_candidate",
@@ -77,7 +78,7 @@ def plan_request_for(base, job, records):
     official_alert = any(record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER for record in records)
     instruction = "\n".join(part for part in (
         PLAN_INSTRUCTION, PURPOSE_INSTRUCTIONS[job.intent.purpose],
-        _source_guidance(job, records), TOPIC_CONTINUITY_INSTRUCTION,
+        _source_guidance(job, records), TOPIC_CONTINUITY_INSTRUCTION, STATE_WORDING_INSTRUCTION,
         ALERT_SCOPE_INSTRUCTION if official_alert else "",
         _diagnostic_guidance(job, writing=False),
     ) if part)
@@ -107,7 +108,7 @@ def plan_output(text):
 
 
 def write_request_for(base, job, records, preferences, *, reactions_available, voice_available,
-                      poke_available, extra_instruction):
+                      poke_available, extra_instruction, phrase_overuse_settings=None):
     brief = PromptMaterial(GROUP, "contact_brief", json.dumps(job.plan, ensure_ascii=False))
     materials = (*_compact_materials(base, history_count=2), brief)
     news = job.intent.purpose == "news" or "news_event" in (job.automatic_origin or {})
@@ -119,7 +120,7 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
         "news_length_prompt" if news else "length_prompt").format(chars=length) if length else "")
     instruction = "\n".join(part for part in (
         WRITE_INSTRUCTION, PURPOSE_INSTRUCTIONS[job.intent.purpose], _source_guidance(job, records),
-        effective_template(preferences.values, "expression_prompt"),
+        STATE_WORDING_INSTRUCTION, effective_template(preferences.values, "expression_prompt"),
         length_instruction,
         effective_template(preferences.values, "news_sharing_prompt") if news else "",
         GREETING_INSTRUCTION if greeting else "",
@@ -137,6 +138,8 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
         _diagnostic_guidance(job, writing=True),
         "官方预警正文还须输出 coverage=covered 与从预警原文摘录的 coverage_quote。" if official_alert else "",
     ) if part)
+    # Count the available history before the writing prompt drops older rounds.
+    instruction = with_material_hint(base, instruction=instruction, settings=phrase_overuse_settings)
     return replace(base, context=SealedForegroundContext(materials, (), ()),
                    instruction=instruction, output_format="proactive_contact")
 

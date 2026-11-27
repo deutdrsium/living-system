@@ -889,6 +889,9 @@ class StorageRuntime:
                     # keep the pinned schema/migration chain and all source rows intact.
                     connection.execute("CREATE INDEX IF NOT EXISTS sources_governance_idx ON sources("
                                        "source_id,lineage_id,source_revision,owner,state,issued_at,expires_at)")
+                    connection.execute("""CREATE INDEX IF NOT EXISTS role_activities_recent_idx ON role_activities(
+                        owner_key, json_extract(record_json, '$.scope'), json_extract(record_json, '$.work.kind'),
+                        updated_at DESC, activity_id DESC)""")
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
         except sqlite3.Error as error:

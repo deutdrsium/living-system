@@ -190,6 +190,19 @@ class PersistentRoleLifeLedger:
              after_id, after_id, limit))
         return tuple(activity_from_json(row["record_json"]) for row in rows)
 
+    def recent_activities_for_scope(self, owner, scope, *, kind, limit=50, before=None):
+        """Read one kind in descending (updated_at, activity_id) order."""
+        self._page(limit, None)
+        if scope.installation_id != owner.installation_id or scope.bot_id != owner.bot_id:
+            raise ReferenceValidationError("activity scope crosses its role owner")
+        continuation = "" if before is None else " AND (updated_at, activity_id) < (?, ?)"
+        rows = self.runtime.read_all("""SELECT record_json FROM role_activities
+            WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?)
+            AND json_extract(record_json, '$.work.kind') = ?""" + continuation + """
+            ORDER BY updated_at DESC, activity_id DESC LIMIT ?""",
+            (self._owner_key(owner), encode(scope), kind, *(before or ()), limit))
+        return tuple(activity_from_json(row["record_json"]) for row in rows)
+
     def work_activities(self, owner, *, states=None, kind=None, limit=200, oldest_first=False):
         """Read private work receipts for the role across its private windows."""
         if type(limit) is not int or not 1 <= limit <= 200 or type(oldest_first) is not bool:

@@ -149,6 +149,9 @@ def evidence_materials(records):
                                       OFFICIAL_ALERT_SOURCE_OWNER, BALANCE_SOURCE_OWNER, NEWS_SOURCE_OWNER):
             body = json.loads(payload)
             body.pop("_receipt")
+            if record.reference.owner == SOURCE_OWNER:
+                for field in ("subjective_reflection", "reflection_meaning", "activity_title"):
+                    body.pop(field, None)
             if record.reference.owner == REMINISCENCE_SOURCE_OWNER:
                 body["meaning"] = REMINISCENCE_PROMPT_MEANING
             payload = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -165,6 +168,13 @@ TOPIC_CONTINUITY_INSTRUCTION = (
     "用户表示先放下、不用继续时，可以保留角色口吻接住情绪，让事情在当前语境里停下来，不靠继续较劲维持人设。"
     "收尾针对当前那件事，不是结束角色之后的主动交流；可以聊别的独立内容，不必等用户先开启下一段对话。"
     "熟悉的兴趣也不是禁区；之后有自己的新观察、不同切口、情境变化或用户主动重提时，再结合原话判断是否适合聊。"
+)
+
+
+STATE_WORDING_INSTRUCTION = (
+    "角色状态、生活记录和角色自己发过的话用于理解当时发生了什么、自己的感受和话题进展。"
+    "反复出现的自我形容不能当成人格设定或说话范例。想聊有意义的近况时，用自己的话说具体变化，"
+    "省去已反复用过的自我形容；只为交代节奏、精力或心情而加的自述可以略去。"
 )
 
 
@@ -343,6 +353,7 @@ def prompt_sections():
                       "新闻联系，且强度档位或自定义字数生效", GROUP, "news_length_prompt", ("chars",)),
         PromptSection("style", "主动风格补充", "", "填写后追加到主动业务提示末尾", GROUP, "style_prompt"),
         PromptSection("business", "联系由头、事实与输出规则", INSTRUCTION, "每次主动联系"),
+        PromptSection("state_wording", "状态与历史措辞", STATE_WORDING_INSTRUCTION, "每次主动联系"),
     ]
     sections.extend(PromptSection("purpose." + key, "联系目的 · " + PURPOSES[key], text,
                                  "本轮选中该联系目的") for key, text in PURPOSE_INSTRUCTIONS.items())
@@ -490,7 +501,8 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
             "不要提测试或图片链路；程序会按管理员指定的沟通意图从当前授权图库检索原图并附在正文之后。"
             "图片仍须符合角色和当前语气，检索不到合适素材时系统会如实报告失败，不会改成纯文本通过。")
     return PromptRequest(trigger, job.role_instruction, SealedForegroundContext(tuple(materials), (), ()),
-                          INSTRUCTION + "\n" + TOPIC_CONTINUITY_INSTRUCTION + "\n" + rhythm_instruction + "\n" +
+                          INSTRUCTION + "\n" + TOPIC_CONTINUITY_INSTRUCTION + "\n" +
+                          STATE_WORDING_INSTRUCTION + "\n" + rhythm_instruction + "\n" +
                           effective_template(preferences.values, "expression_prompt") +
                           ("\n" + OFFICIAL_ALERT_INSTRUCTION if official_alert else "") +
                           "\n" + purpose_instruction +

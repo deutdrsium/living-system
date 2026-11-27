@@ -81,6 +81,7 @@ class CoreReplyPrompt:
     perception_guidance: str = ""
     stable_instruction: str = ""
     context_instruction: str = ""
+    proactive_outputs: tuple[str, ...] = ()
 
 
 def _ready(materials):
@@ -236,6 +237,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                             external_memory=None, private_group_context=""):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, sections, expression_signal_ids = [], [], [], []
+    proactive_outputs = []
     measured, started = [], time.monotonic()
     messages = application.messages
     perception_snapshot = {}
@@ -459,7 +461,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             items = owner.read(snapshot, context, at, action="conversation.reply")
             materials = tuple(ContextContribution("core-sent-" + digest(item), "delivery.history",
                 "confirmed_background_message", ContributionState.READY, encode(item)) for item in items)
-            return _material_section("本窗口已发送的主动消息与提醒", SENT_CONTINUATION_INSTRUCTION, materials)
+            block = _material_section("本窗口已发送的主动消息与提醒", SENT_CONTINUATION_INSTRUCTION, materials)
+            proactive_outputs.extend(item["text"] for item in items
+                                     if item.get("owner") == "proactive.contact" and item.get("text"))
+            return block
 
         optional("sent_messages", sent_messages)
 
@@ -581,4 +586,5 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         perception_guidance=perception.get("guidance", "") if isinstance(perception, dict) else "",
         stable_instruction=stable_instruction,
         context_instruction=context_instruction,
+        proactive_outputs=tuple(proactive_outputs),
     )

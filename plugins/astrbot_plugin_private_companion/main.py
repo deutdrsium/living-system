@@ -52,6 +52,7 @@ from .astrbot_host.core_reply_preparation import measure_core_preparation
 from .astrbot_host.core_reply_decision import prepare_core_reply_decision
 from .astrbot_host.native import warm_session_settings
 from .astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
+from .astrbot_host.core_reply_banned_phrases import FILTER_EXTRA, filter_chain, filter_response, sync_final_history
 from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_core_reply_turn
 from .astrbot_host.core_reply_tool_guard import (
     close_core_reply_tool_guard, install_core_reply_tool_guard, mark_managed_turn,
@@ -351,6 +352,14 @@ class PrivateCompanionV2StagingPlugin(Star):
             return False
         key = (str(getattr(target, "target_id", "") or ""), str(message_id))
         return self._private_delivery_dedup().duplicate(key)
+
+    @staticmethod
+    def _private_face_only(event):
+        parts = getattr(event.message_obj, "message", None) or ()
+        kinds = {getattr(kind, "value", kind)
+                 for kind in (getattr(part, "type", None) for part in parts)}
+        # QQ Official may prepend an At for routing to a private message.
+        return bool(kinds & {"Face", "Mface"}) and kinds <= {"At", "Face", "Mface"}
 
     def _private_reply_followups(self):
         manager = getattr(self, "_private_followup", None)
@@ -887,6 +896,11 @@ class PrivateCompanionV2StagingPlugin(Star):
             # is made, because a declined turn is exactly where the model echoes a
             # companion tool name our own history taught it.
             mark_managed_turn(event, channel=channel, event_ref=event_ref)
+            phrases = getattr(self.staging, "banned_phrases", None)
+            if phrases:
+                event.set_extra(FILTER_EXTRA, phrases)
+                # The core selects streaming before the LLM request hooks run.
+                event.set_extra("enable_streaming", False)
         if channel == "private" and self._private_delivery_duplicate(event, target):
             # AstrBot can surface one platform message twice (adapter reconnect,
             # duplicate file acknowledgement).  The first delivery already owns
@@ -1282,7 +1296,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         prepare_core_reply_streaming_boundary(event)
         event.is_wake = True
         event.is_at_or_wake_command = True
-        if channel == "private":
+        if channel == "private" and not self._private_face_only(event):
             entries = (debounced_entries if debounced_entries is not None else
                        ((event, str(prepared.get("text") or event.message_str or ""),
                          getattr(event, "created_at", None)),))
@@ -1725,6 +1739,7 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_agent_done()
     async def observe_companion_core_agent_done(self, event: AstrMessageEvent, run_context, response):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
+        sync_final_history(event, run_context)
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
         await close_core_reply_turn(event, response, release=True)
@@ -1754,7 +1769,19 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_llm_request(priority=-1000000)
     async def repair_companion_core_request_history(self, event: AstrMessageEvent, req):
         from .astrbot_host.core_reply_history_guard import repair_request_history
+        from companion_v2.conversation.phrase_overuse import inject_native_hint
+
         repair_request_history(event, req)
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        prepared = state.get("prepared") if isinstance(state, dict) else None
+        if isinstance(prepared, dict):
+            sender_name = getattr(event, "get_sender_name", None)
+            context = prepared.get("context")
+            role = getattr(getattr(context, "role_binding", None), "role", None)
+            inject_native_hint(req, current_input=prepared.get("text") or "",
+                proactive_outputs=prepared.get("proactive_outputs", ()),
+                names=(sender_name() if callable(sender_name) else "", getattr(role, "subject_id", "")),
+                settings=getattr(self, "config", {}).get("phrase_overuse"))
 
     # 外部视频插件晚于感知注入，当前视频和跨轮视频也在这里补上。优先本轮视频，
     # 避免上一条群视频的缓存占用请求，使本轮视频只剩路径占位符。最后就地改写感知
@@ -1851,6 +1878,9 @@ class PrivateCompanionV2StagingPlugin(Star):
                         continue
             if stripped:
                 logger.info("[CompanionV2] 外发边界清理内部标签 chars=%d", stripped)
+            phrases = event.get_extra(FILTER_EXTRA)
+            if phrases:
+                filter_chain(result, phrases, surface="astrbot_delivery")
         except Exception:
             pass
         self._adopt_core_reply_delivery(event)
@@ -1876,6 +1906,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @filter.on_llm_response()
     async def observe_companion_model_session(self, event: AstrMessageEvent, response):
+        history_original = getattr(response, "completion_text", None)
         from .astrbot_host.core_reply_reaction_delivery import observe_core_reaction_response
         observe_core_reaction_response(event, response)
         from .astrbot_host.core_reply_cleanup import clean_reply_text
@@ -1891,6 +1922,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                         part.text, _ = clean_reply_text(part.text)
         from .astrbot_host.core_reply_voice import observe_core_voice_response
         observe_core_voice_response(event, response)
+        filter_response(event, response, history_original=history_original)
         observe_native_host_response(self.staging, event, response)
         observe_core_llm_response(event, response)
         if response is not None and getattr(response, "role", None) == "assistant":

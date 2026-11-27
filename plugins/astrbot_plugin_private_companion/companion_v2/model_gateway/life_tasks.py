@@ -71,14 +71,22 @@ class LifeModelTasks:
         try:
             # Schema interpretation is the activity's job, but an unbounded or
             # malformed response is never exposed as an accepted JSON asset.
-            json.loads(result.draft.text)
-            if len(result.draft.text) > 65536:
+            text = result.draft.text
+            data = json.loads(text)
+            if len(text) > 65536:
                 raise ValueError("model result exceeds the asset limit")
+            phrases = self.reader.banned_phrases
+            if (phrases and prompt.output_format == "role_book_selection" and isinstance(data, dict)
+                    and isinstance(reason := data.get("reason"), str) and len(reason) <= 1000):
+                cleaned = phrases.text(reason, surface="reading_choice", preserve_reply=False)
+                if cleaned != reason:
+                    data["reason"] = cleaned
+                    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             with self.reader.runtime.transaction() as db:
                 run.validate()
                 run.begin_effect()
                 document = {"task_id": request.task_id, "context_key": context.key,
-                    "params_digest": request.params_digest, "text": result.draft.text,
+                    "params_digest": request.params_digest, "text": text,
                     "created_at": self.reader.tasks.now(),
                     "sources": [json.loads(encode(ref)) for ref in request.source_refs],
                     "inputs_digest": digest(plain(inputs)), "call_id": result.call_id}

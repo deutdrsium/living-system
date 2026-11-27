@@ -10,7 +10,8 @@ LIFE_ACTIVITY_OWNER_KEY = "life.activity.execution_owner.v1"
 READ_METHODS = frozenset({"activity", "activity_revision", "activity_receipt", "activity_revision_evidence",
     "activity_revision_coverage", "timeline_activity_ceiling", "timeline_activity_candidates",
     "scan_activity_receipts", "recent_activity_receipts", "activity_revisions", "activities_for_role",
-    "work_activities", "context_activities", "artifact", "artifacts_for_role", "artifacts_for_scope"})
+    "work_activities", "context_activities", "recent_activities_for_scope", "artifact", "artifacts_for_role",
+    "artifacts_for_scope"})
 WRITE_METHODS = frozenset({"add_activity", "delete_activity", "transition_activity", "add_artifact"})
 
 

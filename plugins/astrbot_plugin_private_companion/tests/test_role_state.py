@@ -431,6 +431,21 @@ class StateMaintenanceTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sent), 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) AS n FROM model_calls", ())["n"], 1)
 
+    async def test_maintenance_filters_descriptions_before_writing_state(self):
+        from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
+
+        _, app, context, _ = await self.ready()
+        app.banned_phrases = BannedPhraseFilter(DEFAULT_PATTERNS)
+        payload = state_data(busy="慢吞吞地翻书", mood="慢悠悠。",
+                             conditions=[dict(kind="other", text="不紧不慢。", expires_at=None)])
+        self.model_behavior = lambda _env: asyncio.sleep(0, result=answered(encode(payload)))
+        result = await app.state_maintenance.run(context, "原角色人格提示", "phrase-filter")
+        self.assertEqual(result["state"], "succeeded", result)
+        values = app.role_state.read(context)["values"]
+        self.assertEqual(values["busy"], "翻书")
+        self.assertIsNone(values["mood"])
+        self.assertEqual(values["conditions"], [])
+
     async def test_new_private_input_fences_a_stale_state_intervention_before_dispatch(self):
         _, app, context, _ = await self.ready()
         self.identity.issue_grant(grant_id="state-intervention-window", subject=context.actor.subject,
@@ -570,6 +585,9 @@ class StateMaintenanceTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         materials = [m for m in self.called[0].original.context.materials if m.purpose == "role_state"]
         self.assertEqual(len(materials), 1)
         self.assertEqual(json.loads(materials[0].payload)["simulation"]["values"]["energy"], 1)
+        self.assertNotIn("手头有事", materials[0].payload)
+        self.assertNotIn("饿了", materials[0].payload)
+        self.assertEqual(app.role_state.read(context)["values"]["busy"], "手头有事")
         self.assertIsNotNone(materials[0].source)
         self.assertEqual(self.called[0].original.role_instruction, "原角色人格提示")
         self.assertEqual(len(self.sent), 2)

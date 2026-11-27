@@ -15,7 +15,7 @@ from companion_v2.conversation.reply_settings import (ReplyConfigurationOwner,
 from tests.group_host_support import group_config
 from tests.group_image_delivery_support import GroupImageDeliveryFixture
 from tests.group_media_support import sdk_image
-from tests.image_delivery_support import attach_originals
+from tests.image_delivery_support import image_reply
 from tests.native_adapter_support import completion
 from tests.staging_bootstrap_support import wait_for_batch
 
@@ -34,7 +34,7 @@ class GroupImageReviewExecutionTests(GroupImageDeliveryFixture, unittest.Isolate
             if "固定 JSON" in json.dumps(payload, ensure_ascii=False):
                 self.review_calls.append("native-model")
                 return completion('{"label":"safe","confidence":0.99}')
-            return await attach_originals(payload, state)
+            return image_reply(payload, text="慢悠悠地把这张原图附在这里。")
 
         self.native.provider.client.state.behavior = respond
 
@@ -74,7 +74,11 @@ class GroupImageReviewExecutionTests(GroupImageDeliveryFixture, unittest.Isolate
         self.assertEqual((verdict["state"], verdict["label"]), ("reviewed", "safe"))
         self.assertEqual(self.review_calls, ["native-model"])
         self.assertEqual(verdict["provider_ids"], ["native-model"])
-        self.assertTrue(self.sends())
+        sent = [part["data"]["text"] for message in self.sends() for part in message["message"]
+                if part["type"] == "text"]
+        self.assertIn("把这张原图附在这里。", sent)
+        stored = self.app.runtime.read_one("SELECT text FROM conversation_parts WHERE text LIKE '%这张原图%'", ())
+        self.assertEqual(stored["text"], "把这张原图附在这里。")
 
     async def test_two_selected_models_get_distinct_recorded_rounds(self):
         self.add_reviewer("review-first")

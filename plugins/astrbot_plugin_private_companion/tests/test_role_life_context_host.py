@@ -41,14 +41,23 @@ class LifeContextHostTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         (await self.command("read", book)).unwrap()
         await self.settle()
         (await self.command("diary")).unwrap()
-        (await self.command("sleep", minutes=1)).unwrap()
+        sleep_id = (await self.command("sleep", minutes=1)).unwrap()["activity_id"]
         first = await self.chat("during-sleep")
         by_kind = {p["kind"]: p for p in payloads(first)}
-        self.assertEqual(by_kind["sleep"]["state"], "active")
-        self.assertEqual(by_kind["reading"]["reading"]["reflection"], "这篇资料让我想到一个还未想明白的问题。")
+        self.assertEqual(by_kind["sleep"]["state"], "paused")
+        self.assertEqual(by_kind["reading"]["reading"]["basis"], "completed_reading_receipt")
+        self.assertEqual(by_kind["reading"]["title"], "一篇阅读资料")
+        self.assertNotIn("reflection", by_kind["reading"]["reading"])
         self.assertEqual(by_kind["diary"]["content_form"], "derived")
         self.assertEqual(first.role_instruction, "原角色人格提示")
-        self.advance(self.app, 61)
+        routine = self.manager.life
+        receipt = routine.activity(book["activity_id"]).reading
+        self.assertEqual(receipt.reflection, "这篇资料让我想到一个还未想明白的问题。")
+        wake_until = routine.activity(sleep_id).sleep.wake_until
+        self.advance(self.app, (wake_until - self.clock.now()).total_seconds())
+        await self.until(lambda: routine.activity(sleep_id).state.value == "active")
+        due_at = routine.activity(sleep_id).work.due_at
+        self.advance(self.app, (due_at - self.clock.now()).total_seconds())
         await self.until(lambda: any(j["kind"] == "dream" for j in self.status()["journals"]))
         await self.settle()
         second = await self.chat("after-wake")

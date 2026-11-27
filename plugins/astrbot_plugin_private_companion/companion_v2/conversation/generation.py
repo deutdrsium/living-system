@@ -11,8 +11,10 @@ from companion_v2.execution.models import TaskError, TaskResult, digest
 from companion_v2.model_gateway.models import ModelCompletion
 from companion_v2.model_gateway.service import LocalModelGateway
 from companion_v2.expression import learning as style_learning
+from companion_v2.role_work.life.prompt_facts import laya_state_facts
 from .style_context import EXPRESSION_STYLE_INSTRUCTION
 
+from .banned_phrases import NO_BANNED_PHRASES
 from .foreground import GroundedDraftReviewer, ModelDraft, PromptMaterial
 from .messages import ConversationMessages, DELIVERY_KIND
 from .media.reply import reply_manifest
@@ -167,7 +169,8 @@ def voice_input_text(request):
 
 class LocalReplyGenerator:
     def __init__(self, messages: ConversationMessages, gateway: LocalModelGateway, *, split=single_part,
-                 segmentation=SegmentationPolicy(), voice_policy=None, send_stream_part=None):
+                 segmentation=SegmentationPolicy(), voice_policy=None, send_stream_part=None,
+                 banned_phrases=NO_BANNED_PHRASES):
         if messages.tasks is not gateway.tasks or not callable(split):
             raise ValueError("reply generation requires the original gateway and a trusted segmentation policy")
         self.messages = messages
@@ -180,6 +183,7 @@ class LocalReplyGenerator:
             raise ValueError("reply voice needs a validated policy")
         self.voice_policy = voice_policy
         self.send_stream_part = send_stream_part
+        self.banned_phrases = banned_phrases
         self.reviewer = GroundedDraftReviewer()
 
     @staticmethod
@@ -225,18 +229,7 @@ class LocalReplyGenerator:
         for material in getattr(getattr(request, "context", None), "materials", ()):
             if getattr(material, "purpose", None) == "role_state":
                 try:
-                    values = json.loads(material.payload).get("simulation", {}).get("values", {})
-                    summary = {}
-                    if isinstance(values.get("energy"), int):
-                        summary["energy"] = values["energy"]
-                    for key in ("sleep", "busy"):
-                        if isinstance(values.get(key), str) and values[key].strip():
-                            summary[key] = values[key].strip()[:80]
-                    mood_val = values.get("mood")
-                    if isinstance(mood_val, str) and mood_val.strip():
-                        summary["mood"] = mood_val.strip()[:80]
-                    elif isinstance(mood_val, dict) and isinstance(mood_val.get("description"), str):
-                        summary["mood"] = mood_val["description"].strip()[:80]
+                    summary = laya_state_facts(json.loads(material.payload).get("simulation", {}))
                     if summary:
                         facts["role_state_summary"] = summary
                 except Exception:
@@ -564,7 +557,8 @@ class LocalReplyGenerator:
                 # 这一轮没有进入模型循环，所以循环里的 current 从未赋值。
                 # 兜底文案仍要按本轮封存的请求判断可用的 expression action。
                 current = turn_request
-            if (not local_failure_notice and segmentation.enabled and segmentation.streaming_mode == "incremental"
+            if (not local_failure_notice and not self.banned_phrases
+                    and segmentation.enabled and segmentation.streaming_mode == "incremental"
                     and self.send_stream_part is not None and captured is not None and streaming is not False
                     and not (voice is not None and eligible(voice, input_text=input_text,
                         kind=run.task.spec.context.scope.kind.value, batch_id=run.task.spec.request_ref))):
@@ -742,7 +736,8 @@ class LocalReplyGenerator:
                 image_only = False
                 try:
                     prepared = prepare_reply(draft_text, segmentation, presentation, voice,
-                        statements=observed_statements(completion.draft), split=self.split)
+                        statements=observed_statements(completion.draft), split=self.split,
+                        banned_phrases=self.banned_phrases)
                 except ValueError as error:
                     raise TaskError("message_parts_invalid", "reply contains no bounded visible text") from error
                 parts = prepared.parts

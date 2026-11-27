@@ -2,12 +2,12 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from functools import cache
 import json
 from zoneinfo import ZoneInfo
 
-from companion_v2.execution.models import TaskError, digest, encode, require
+from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
@@ -73,6 +73,37 @@ class RoleLifeManagement:
             if len(page) < 100:
                 return
             cursor = page[-1].activity_id
+
+    def _activity_page(self, cursor):
+        kinds = ("reading", "sleep", "social")
+        page_size = 10
+        if cursor is None:
+            positions = dict.fromkeys(kinds)
+        else:
+            if not isinstance(cursor, str) or len(cursor) > 20_000:
+                raise ValueError("invalid activity cursor")
+            positions = json.loads(cursor)
+            if not isinstance(positions, dict) or not positions or positions.keys() - set(kinds):
+                raise ValueError("invalid activity cursor")
+            for position in positions.values():
+                if (not isinstance(position, list) or len(position) != 2
+                        or not all(isinstance(value, str) for value in position)
+                        or len(position[0]) != 32 or not position[0].endswith("+00:00")
+                        or datetime.fromisoformat(position[0]).isoformat(timespec="microseconds") != position[0]
+                        or not 0 < len(position[1]) <= 512):
+                    raise ValueError("invalid activity cursor")
+
+        activities, continuation = [], {}
+        # Each kind resumes independently. A missing kind has reached its last page.
+        for kind, before in positions.items():
+            page = self.app.role_life.recent_activities_for_scope(self.owner, self.context.scope,
+                kind=kind, before=tuple(before) if before else None, limit=page_size + 1)
+            activities.extend(page[:page_size])
+            if len(page) > page_size:
+                last = page[page_size - 1]
+                continuation[kind] = (stamp(last.updated_at), last.activity_id)
+        activities.sort(key=lambda activity: (activity.updated_at, activity.activity_id), reverse=True)
+        return activities, encode(continuation) if continuation else None
 
     def _project_activity(self, a, operator, access, settings, source_check=None):
         unavailable = None
@@ -234,10 +265,9 @@ class RoleLifeManagement:
         # Cursor pages include unavailable/deleted records; a damaged source never hides the rest of the archive.
         if before is not None:
             date.fromisoformat(before)
-        if after_activity is not None and (not isinstance(after_activity, str) or len(after_activity) > 512):
-            raise ValueError("invalid activity cursor")
         if archive_kind not in (None, "diary", "reading_note", "social_note"):
             raise ValueError("invalid archive kind")
+        activities, next_activity = self._activity_page(after_activity)
         rows = []
         if archive_visible and archive_kind in (None, "diary"):
             rows = self.runtime.read_all("""SELECT context_json FROM role_journals WHERE owner_key = ?
@@ -298,14 +328,6 @@ class RoleLifeManagement:
             social_notes, key=lambda item: item["completed_at"], reverse=True)
         journals = sorted((item for item in journals if item["local_date"] in included),
                           key=lambda item: item["local_date"], reverse=True)
-        activities, cursor = [], after_activity
-        while len(activities) < 30:
-            page = self.app.role_life.activities_for_role(self.owner, limit=30, after_id=cursor)
-            activities.extend(a for a in page if a.scope == self.context.scope and a.work)
-            if len(page) < 30:
-                cursor = None
-                break
-            cursor = page[-1].activity_id
         receipts = []
         for key, result in tuple(self.life.results.items()):
             if result is None:
@@ -354,7 +376,7 @@ class RoleLifeManagement:
             "body_sleep": self.app.role_state.body_clock.read(self.context),
             "reading_plan": reading_plan,
             "activities": [self._project_activity(a, operator, access, settings, source_check) for a in activities],
-            "next_activity": cursor, "journals": journals,
+            "next_activity": next_activity, "journals": journals,
             "next_date": days[-1] if len(days) == date_limit and not (page_size and archive_kind in ("reading_note", "social_note")) else None,
             **({"next_note_cursor": next_note} if page_size else {}),
             "refresh_active": (any(a.state is State.ACTIVE for a in all_activities)

@@ -13,7 +13,7 @@ from .codec import KernelError, digest, freeze, integer, moment, name, owned, re
 from .clock import MonotonicClock
 from .gating import GateResult, GateSnapshot, PreparedActivity, check_gate
 from .lifecycle import terminal_status, validate_instance, validate_outcome, validate_transition
-from .repository import KernelRepository
+from .repository import KernelRepository, READABLE_SCHEMA_VERSIONS, VERSION_KEY
 from .resources import ResourcePreparation
 
 
@@ -93,8 +93,9 @@ class ActivityKernel:
     def _scope(self, scope, action, *, settlement_only=False):
         if settlement_only and not self.config.enabled:
             require(not self.closed and self.access is not None, "explicit recovery adapter required", ReasonCode.MISSING_DEPENDENCY)
-            version = self.repo.reader.one("SELECT value FROM life_metadata WHERE key='kernel_schema_version'", ())
-            require(version is not None and version[0] in ("1", "2"), "no supported persisted kernel to recover", ReasonCode.MISSING_DEPENDENCY)
+            version = self.repo.reader.one("SELECT value FROM life_metadata WHERE key=?", (VERSION_KEY,))
+            require(version is not None and version[0] in READABLE_SCHEMA_VERSIONS,
+                    "no supported persisted kernel to recover", ReasonCode.MISSING_DEPENDENCY)
         else:
             self._enabled()
         require(isinstance(scope, ExecutionScope), "host-resolved execution scope required", ReasonCode.UNAUTHORIZED)
@@ -187,7 +188,7 @@ class ActivityKernel:
             # A step with no fact change has no durable receipt to append. The
             # next tick can reuse its revision-based ID when work is due.
             if serialized.get("changed", True):
-                self.repo.save_command(db, scope, command_id, request_hash, response)
+                self.repo.save_command(db, scope, command_id, request_hash, serialized)
             return serialized
 
     def _anchor(self, instance):

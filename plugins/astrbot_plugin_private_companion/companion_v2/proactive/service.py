@@ -37,6 +37,7 @@ from companion_v2.foundation.refs import OperationRef, VersionRef, normalize_utc
 from companion_v2.model_gateway.models import (BACKGROUND_MODEL_WAIT_SECONDS, BACKGROUND_TASK_TIMEOUT_SECONDS, ModelCompletion,
                                                ModelTaskProfile, is_released)
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
+from companion_v2.role_work.life.prompt_facts import activity_facts, state_facts
 from companion_v2.role_work.state import humanized
 from companion_v2.sources.repositories import SourceRepository
 from companion_v2.storage.models import OperationState
@@ -90,10 +91,15 @@ def role_state_for_prompt(summary, purpose):
         return summary
     result = dict(summary)
     purpose = str(purpose)
+    private_kinds = set()
     if purpose not in ("meal", "environment"):
-        result.pop("hunger", None)
+        private_kinds.add("hunger")
     if purpose not in ("meal", "care", "environment"):
-        result.pop("health", None)
+        private_kinds.add("health")
+    if "conditions" in result:
+        result["conditions"] = [item for item in result["conditions"] if item["kind"] not in private_kinds]
+        if not result["conditions"]:
+            result.pop("conditions")
     return result or None
 
 
@@ -139,8 +145,9 @@ def _segmentation_policy(settings):
 
 
 class ProactiveContacts:
-    def __init__(self, configuration, memory_push=None):
+    def __init__(self, configuration, memory_push=None, *, banned_phrases=None):
         self.configuration, self.runtime = configuration, configuration.runtime
+        self.banned_phrases = banned_phrases
         # 推送端口是旁路：它记录角色说过的话，但不参与「说不说、说什么」的决定。
         self.memory_push = DEFAULT_MEMORY_PUSH if memory_push is None else memory_push
         self.sources, self.operations = SourceRepository(self.runtime), OperationRepository(self.runtime)
@@ -153,6 +160,7 @@ class ProactiveContacts:
         # message the user may be waiting for.
         self.memory_context = None
         self.role_state = self.life_context = None
+        self.phrase_overuse_settings = None
         self.expression_context = self.expression_review = None
         self.persona_judge = PersonaJudge(self.runtime)
         self._pending, self._plan_results, self._invocations = {}, {}, set()
@@ -256,30 +264,9 @@ class ProactiveContacts:
             return None
         if not isinstance(state, dict) or state.get("state") in ("disabled", "unknown"):
             return None
-        values = state.get("values") or {}
-        if not isinstance(values, dict):
-            return None
-        summary = {}
-        if isinstance(values.get("energy"), int):
-            summary["energy"] = values["energy"]
-        for key in ("sleep", "busy", "hunger", "health", "location"):
-            if isinstance(values.get(key), str) and values[key].strip():
-                summary[key] = values[key].strip()[:120]
-        mood_val = values.get("mood")
-        if isinstance(mood_val, str) and mood_val.strip():
-            summary["mood"] = mood_val.strip()[:120]
-        elif isinstance(mood_val, dict):
-            desc = mood_val.get("description")
-            if isinstance(desc, str) and desc.strip():
-                summary["mood"] = desc.strip()[:120]
-            axes = mood_val.get("axes")
-            if isinstance(axes, dict) and axes:
-                summary["mood_axes"] = {k: round(float(v), 2) for k, v in axes.items()
-                                        if isinstance(v, (int, float))}
-        conditions = [item.get("text", "").strip()[:120] for item in (values.get("conditions") or ())
-                      if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text").strip()]
-        if conditions:
-            summary["conditions"] = conditions[:4]
+        summary = state_facts(state)["values"]
+        if "conditions" in summary:
+            summary["conditions"] = summary["conditions"][:4]
         sleep = state.get("sleep_execution")
         if isinstance(sleep, dict):
             summary["sleep_execution"] = {key: sleep[key] for key in (
@@ -301,15 +288,15 @@ class ProactiveContacts:
                 data = json.loads(variants[0].payload)
             except Exception:
                 continue
-            entry = {"kind": data.get("kind"), "basis": data.get("basis")}
-            for key in ("state", "description", "local_date", "summary", "afterglow"):
-                if isinstance(data.get(key), str) and data[key].strip():
-                    entry[key] = data[key].strip()[:160]
-            reading = data.get("reading")
-            if isinstance(reading, dict) and isinstance(reading.get("reflection"), str) and reading["reflection"].strip():
-                entry["reflection"] = reading["reflection"].strip()[:160]
-            if len(entry) > 2:
-                items.append(entry)
+            if variants[0].purpose == "role_life_activity":
+                items.append(activity_facts(data))
+            else:
+                entry = {"kind": data.get("kind"), "basis": data.get("basis")}
+                for key in ("local_date", "summary", "afterglow"):
+                    if isinstance(data.get(key), str) and data[key].strip():
+                        entry[key] = data[key].strip()[:160]
+                if len(entry) > 2:
+                    items.append(entry)
             if len(items) >= 2:
                 break
         return items or None
@@ -1111,7 +1098,8 @@ class ProactiveContacts:
             if job.plan is not None and job.plan["decision"] == "send":
                 request = write_request_for(request, job, records, preferences,
                     reactions_available=reactions_available, voice_available=voice_available,
-                    poke_available=poke_available, extra_instruction=extra_instruction)
+                    poke_available=poke_available, extra_instruction=extra_instruction,
+                    phrase_overuse_settings=self.phrase_overuse_settings)
             fits, detail = self._contact_request_fits(run, request) if (
                 job.plan is None or job.plan["decision"] == "send") else (True, None)
             if not fits:
@@ -1131,7 +1119,8 @@ class ProactiveContacts:
                 if job.plan is not None:
                     compact = write_request_for(compact, job, records, preferences,
                         reactions_available=reactions_available, voice_available=voice_available,
-                        poke_available=poke_available, extra_instruction=extra_instruction)
+                        poke_available=poke_available, extra_instruction=extra_instruction,
+                        phrase_overuse_settings=self.phrase_overuse_settings)
                 fits, detail = self._contact_request_fits(run, compact)
                 if not fits:
                     self._contact_profile_failure(run, detail)
@@ -1225,6 +1214,8 @@ class ProactiveContacts:
                 segments = segmentation.parts(body)
                 segments = tuple(trim_blank_edges(part)
                                  for part in presentation.clean_parts(segments, statements=statements))
+                if self.banned_phrases:
+                    segments = self.banned_phrases.segments(segments, surface="proactive")
                 segments = tuple(part for part in segments if part.strip())
                 if not segments:
                     body, reaction_intent = None, None

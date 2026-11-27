@@ -931,7 +931,9 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
                                if m.purpose == "contact_intent")
         payload = json.loads(intent_material.payload)
         self.assertEqual(payload["role_state"]["energy"], 25)
-        self.assertEqual(payload["role_state"]["sleep"], "昨晚熬夜有点困")
+        self.assertEqual(payload["role_state"]["sleep_execution"], {"state": "awake", "awake_minutes": 10})
+        self.assertNotIn("昨晚熬夜有点困", intent_material.payload)
+        self.assertNotIn("微倦但平静", intent_material.payload)
         row = app.runtime.read_one("SELECT record_json FROM proactive_contacts WHERE task_id = ?", (task.task_id,))
         seg = json.loads(row["record_json"])["segmentation_settings"]
         self.assertEqual(seg.get("role_energy"), 25)
@@ -948,4 +950,8 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         row = app.runtime.read_one("SELECT record_json FROM proactive_contacts WHERE task_id = ?", (task.task_id,))
         self.assertFalse(json.loads(row["record_json"])["segmentation_settings"].get("role_sleepy", False))
         intent = next(item for item in self.called[-1].original.context.materials if item.purpose == "contact_intent")
-        self.assertEqual(json.loads(intent.payload)["role_state"]["sleep"], "睡得很好，不困了")
+        state = json.loads(intent.payload)["role_state"]
+        self.assertEqual(state["sleep_execution"], {"state": "awake", "awake_minutes": 120})
+        self.assertEqual(state["conditions"], [{"kind": "other", "expires_at": None}])
+        self.assertNotIn("睡得很好", intent.payload)
+        self.assertNotIn("打算睡前再看一章", intent.payload)

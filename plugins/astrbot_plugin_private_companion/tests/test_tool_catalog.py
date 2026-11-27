@@ -5,6 +5,8 @@ import json
 from types import SimpleNamespace
 import unittest
 
+from jsonschema import Draft202012Validator
+
 from companion_v2.conversation.agenda_tools import TOOL_FIELDS
 from companion_v2.conversation.tool_loop import LocalRoleTools, specification
 from companion_v2.execution.models import TaskError
@@ -71,9 +73,17 @@ class ToolCatalogTests(MessageFixture):
         schedule = schema["properties"]["schedule"]
         self.assertEqual(schedule["type"], "object")
         self.assertEqual(schedule["required"], ["anchor", "timezone_name"])
-        self.assertEqual(schedule["properties"]["anchor"]["format"], "date-time")
-        self.assertIn({"required": ["schedule", "message"]}, schema["anyOf"])
-        self.assertEqual(schema["properties"]["message"]["minLength"], 1)
+        validator = Draft202012Validator(schema)
+        direct = {"schedule": {"anchor": "2026-11-03T07:55:00+08:00", "timezone_name": "Asia/Shanghai"},
+                  "message": "起床"}
+        linked = {"memo_id": "memo-1", "expected_memo_revision": 1}
+        self.assertTrue(validator.is_valid(direct))
+        self.assertTrue(validator.is_valid(linked))
+        for incomplete in ({}, {"schedule": direct["schedule"]}, {"memo_id": "memo-1"},
+                           {"schedule": {"anchor": direct["schedule"]["anchor"]}, "message": "起床"},
+                           {**linked, "expected_memo_revision": 0}, {**direct, "unknown": True}):
+            with self.subTest(arguments=incomplete):
+                self.assertFalse(validator.is_valid(incomplete))
 
     def test_agenda_catalog_rechecks_current_feature_authority(self):
         registry, _ = self.tool_registry()

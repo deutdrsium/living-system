@@ -491,7 +491,7 @@ class KernelResourceTests(unittest.TestCase):
         self.assertEqual(self.reservation(funded).review_at, NOW + timedelta(seconds=300))
         self.assertEqual(self.advance(funded, 300).status, m.ActivityStatus.COMPLETED)
         self.assertEqual(self.quote(), (68, 0, 68))
-        self.assertEqual(self.kernel.repo.reader.one("SELECT value FROM life_metadata WHERE key='kernel_schema_version'", ())[0], "2")
+        self.assertEqual(self.kernel.repo.reader.one("SELECT value FROM life_metadata WHERE key='kernel_schema_version'", ())[0], "3")
 
 
 class GenericResourceTests(KernelCase):

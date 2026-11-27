@@ -24,19 +24,33 @@ except ImportError:  # pragma: no cover - the real host installs it
     genai_types = None
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
-from astrbot_host.core_reply_tools import (CoreReplyToolSession, close_core_reply_tools, group_tool_manifest,
-                                           inject_core_reply_tools, native_tool_name)
+from astrbot_host.core_reply_tools import (CoreReplyFunctionTool, CoreReplyToolSession, EVIDENCE_SPEC,
+                                           close_core_reply_tools, group_tool_manifest, inject_core_reply_tools,
+                                           native_tool_name)
+from astrbot_host.native_extensions.builtins import create_bundled_extensions
+from astrbot_host.native_extensions.reality.host_events import RealityReminderTool
+from astrbot_host.native_extensions.reality.host_tools import RealityAudioCommandTool, RealityPrivateManagerTool
 from astrbot_host.core_reply_telemetry import observe_core_agent_begin, prepare_core_reply_telemetry
 from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
 from companion_v2.agenda.service import AgendaService
+from companion_v2.conversation.behavior.service import CATALOG as GROUP_BEHAVIOR_TOOLS
+from companion_v2.conversation.content.authoring_workflow import CREATE_TOOL, CONTINUE_BY_ID_TOOL, CONTINUE_BY_TITLE_TOOL
+from companion_v2.conversation.diagnostic_tools import diagnostic_control_specs
+from companion_v2.conversation.interaction_tools import POKE_SPEC
+from companion_v2.conversation.relay_tools import tool_descriptors as relay_tools
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG
+from companion_v2.proactive.news_context import LOOKUP_SPEC
+from companion_v2.qzone.capability import tool_descriptors as qzone_tools
+from companion_v2.role_work import social
 from tests.test_astrbot_core_reply import FakeEvent
 from tests.test_external_tools import ExternalFixture
+from tests.test_host_application import HostFixture
 from tests.test_management_access import SCOPE
 from tests.test_semantic_integration import picture
+from tests.test_tool_schema_portability import assert_gemini_compatible
 
 
 # 私聊目录才有 agenda 工具，也只有它们的历史 schema 会让 Gemini 请求构造期失败。
@@ -429,20 +443,6 @@ class PrivateCatalogProviderSchemaTests(ExternalFixture, unittest.IsolatedAsynci
     def declarations(self):
         return self.request.func_tool.google_schema()["function_declarations"]
 
-    def assert_portable(self, node, where):
-        if isinstance(node, dict):
-            values = node.get("enum")
-            if values is not None:
-                self.assertIsInstance(values, list, where)
-                self.assertTrue(values, where)
-                self.assertTrue(all(isinstance(value, str) for value in values),
-                                f"{where}: every provider client needs a list[str] enum, got {values!r}")
-            for child in node.values():
-                self.assert_portable(child, where)
-        elif isinstance(node, list):
-            for child in node:
-                self.assert_portable(child, where)
-
     @unittest.skipUnless(genai_types is not None, "google-genai 由宿主提供，未安装时跳过 provider 构造契约")
     def test_private_catalog_declarations_construct_in_the_google_genai_client(self):
         declarations = self.declarations()
@@ -453,13 +453,45 @@ class PrivateCatalogProviderSchemaTests(ExternalFixture, unittest.IsolatedAsynci
         # provider client cannot construct fails the turn before any request.
         genai_types.Tool(function_declarations=declarations)
 
-    def test_private_catalog_declarations_only_carry_string_enums(self):
-        for declaration in self.declarations():
-            self.assert_portable(declaration.get("parameters") or {}, declaration["name"])
+    def test_private_catalog_declarations_are_gemini_compatible(self):
+        relay_declarations = [tool["function"] for tool in self.request.func_tool.openai_schema()]
+        for wire, declarations in (("relay", relay_declarations), ("native Gemini", self.declarations())):
+            self.assertIn(native_tool_name("reminder.create"), {tool["name"] for tool in declarations})
+            for declaration in declarations:
+                with self.subTest(wire=wire, tool=declaration["name"]):
+                    assert_gemini_compatible(self, declaration.get("parameters") or {}, declaration["name"])
 
-    def test_every_stored_tool_schema_is_portable(self):
-        for spec in self.tools.catalog:
-            self.assert_portable(json.loads(spec.parameters_json), spec.action)
+
+class InstalledCatalogProviderSchemaTests(HostFixture, unittest.IsolatedAsyncioTestCase):
+    def test_registered_tool_schemas_are_gemini_compatible(self):
+        app = self.host().application
+        tools = app.tools
+        semantic = app.attach_semantics(None)
+        context = NS(get_all_stars=lambda: ())
+        leases, issues = create_bundled_extensions(self.root, context=context, controller=NS(context=context),
+                                                   now=self.clock.now)
+        for lease in leases:
+            self.addAsyncCleanup(lease.aclose)
+        self.assertEqual(issues, ())
+        specs = (
+            *tools.catalog, *tools.web.catalog, *tools.group_memory.catalog, *tools.acquaintance.catalog,
+            *tools.group_participation.catalog, *GROUP_BEHAVIOR_TOOLS, *semantic.catalog, LOOKUP_SPEC,
+            *diagnostic_control_specs("proposal-1"), CREATE_TOOL, CONTINUE_BY_ID_TOOL, CONTINUE_BY_TITLE_TOOL,
+            EVIDENCE_SPEC, POKE_SPEC, *(item.tool for item in (*relay_tools(), *qzone_tools())),
+            *(item.descriptor.tool for lease in leases for item in lease.declarations()),
+            *social.catalog(dict.fromkeys((*social.OPERATIONS, "zhihu_search"), True)),
+        )
+        session = NS(application=app)
+        for spec in specs:
+            with self.subTest(action=spec.action):
+                assert_gemini_compatible(self, json.loads(spec.parameters_json), spec.action)
+                tool = CoreReplyFunctionTool(session, NS(spec=spec))
+                assert_gemini_compatible(self, tool.parameters, tool.name)
+
+        for tool in (RealityReminderTool(None, None), RealityAudioCommandTool(None, None, "状态"),
+                     RealityPrivateManagerTool(None, None)):
+            with self.subTest(tool=tool.name):
+                assert_gemini_compatible(self, tool.parameters, tool.name)
 
 
 if __name__ == "__main__":

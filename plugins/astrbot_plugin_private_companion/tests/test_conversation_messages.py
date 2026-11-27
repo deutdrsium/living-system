@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.configuration.service import ConfigurationService
+from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
 from companion_v2.conversation.delivery import DeliveryReceipt, LocalConversationDelivery, LocalSender
 from companion_v2.conversation.foreground import ClaimKind, ContextContribution, ContributionState, DraftClaim, ModelDraft
 from companion_v2.conversation.generation import LocalReplyGenerator
@@ -121,6 +122,18 @@ class MessageFixture(ModelFixture):
 
 
 class ConversationMessageTests(MessageFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_banned_phrases_are_removed_before_delivery_and_history(self):
+        self.generator.banned_phrases = BannedPhraseFilter(DEFAULT_PATTERNS)
+        self.responses["primary"] = ProviderResponse("generated",
+            ModelDraft("慢吞吞的。\n慢悠悠地往下看。\n今天慢慢来。", ()), Amount(15, 40), "model-receipt")
+        batch = await self.generate()
+        expected = ["往下看。", "今天慢慢来。"]
+        self.assertEqual([part["text"] for part in self.parts(batch)], expected)
+        for _ in expected:
+            await self.deliver_next(batch)
+        self.assertEqual([envelope.text for envelope in self.sent], expected)
+        self.assertEqual([item["text"] for item in self.history()], expected)
+
     async def test_reply_usage_cannot_discount_the_plugin_budget(self):
         self.ledger = BudgetLedger(self.runtime, BudgetPolicy(*(Amount(30, 1000) for _ in range(5))))
         self.gateway.ledger = self.ledger

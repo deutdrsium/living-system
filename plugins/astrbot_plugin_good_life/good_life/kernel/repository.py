@@ -7,9 +7,12 @@ from uuid import uuid4
 from ..contracts.models import ActivityInstance, ActivityResult, ActivityTemplate, AudienceBound, Candidate, CandidateStatus, EventEnvelope, ReasonCode, Revision
 from ..storage import StorageReader
 from .codec import decode, digest, encode, name, require, wire
+from .history import compact_legacy_history, effect_receipt, encode_response, read_response, revision_delta
 
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
+MIGRATING_SCHEMA_VERSION = "3-compacting"
+READABLE_SCHEMA_VERSIONS = ("1", "2", SCHEMA_VERSION)
 VERSION_KEY = "kernel_schema_version"
 DDL = (
     """CREATE TABLE life_kernel_candidates (
@@ -55,13 +58,26 @@ def _normalized(sql):
 class KernelRepository:
     def __init__(self, storage):
         self.storage, self.reader = storage, StorageReader(storage)
+        self._compact_writes = False
 
     def install(self):
-        """No migration on open/import. Explicit enable adds only new objects/key.
+        """Install or migrate kernel-owned data when explicitly enabled."""
+        with self.storage._lock:
+            if self._install_schema() != SCHEMA_VERSION:
+                compact_legacy_history(self.storage)
+                with self.storage.transaction() as db:
+                    db.execute("UPDATE life_metadata SET value=? WHERE key=?", (SCHEMA_VERSION, VERSION_KEY))
+            self._compact_writes = True
 
-        Domain/kernel schema versions do not change good-life.storage.v1. An
-        unclaimed table, unknown version or incomplete schema is a hard error.
-        """
+    def _use_compact_history(self, db):
+        if self._compact_writes:
+            return True
+        # Disabled safety settlement can write to an existing schema without
+        # installing or migrating it. Match that database's current format.
+        row = db.execute("SELECT value FROM life_metadata WHERE key=?", (VERSION_KEY,)).fetchone()
+        return row is not None and row[0] == SCHEMA_VERSION
+
+    def _install_schema(self):
         with self.storage.transaction() as db:
             row = db.execute("SELECT value FROM life_metadata WHERE key=?", (VERSION_KEY,)).fetchone()
             objects = {row["name"]: row["sql"] for row in db.execute(
@@ -71,17 +87,22 @@ class KernelRepository:
                 for statement in DDL:
                     db.execute(statement)
                 db.execute("INSERT INTO life_metadata VALUES (?,?)", (VERSION_KEY, SCHEMA_VERSION))
-            else:
-                require(row[0] in ("1", SCHEMA_VERSION), "unsupported kernel schema")
-                for statement in DDL[:-1] if row[0] == "1" else DDL:
-                    parts = statement.split()
-                    object_name = parts[3] if parts[1] == "UNIQUE" else parts[2]
-                    require(object_name in objects and _normalized(objects[object_name]) == _normalized(statement),
-                            "kernel schema is incomplete or changed")
-                if row[0] == "1":
-                    require("life_kernel_snapshots" not in objects, "unclaimed kernel snapshot schema")
-                    db.execute(DDL[-1])
-                    db.execute("UPDATE life_metadata SET value=? WHERE key=?", (SCHEMA_VERSION, VERSION_KEY))
+                return SCHEMA_VERSION
+            version = row[0]
+            require(version in (*READABLE_SCHEMA_VERSIONS, MIGRATING_SCHEMA_VERSION), "unsupported kernel schema")
+            for statement in DDL[:-1] if version == "1" else DDL:
+                parts = statement.split()
+                object_name = parts[3] if parts[1] == "UNIQUE" else parts[2]
+                require(object_name in objects and _normalized(objects[object_name]) == _normalized(statement),
+                        "kernel schema is incomplete or changed")
+            if version == "1":
+                require("life_kernel_snapshots" not in objects, "unclaimed kernel snapshot schema")
+                db.execute(DDL[-1])
+            if version in ("1", "2"):
+                # Older releases must refuse this database from the first
+                # rewrite, including when a migration is interrupted.
+                db.execute("UPDATE life_metadata SET value=? WHERE key=?", (MIGRATING_SCHEMA_VERSION, VERSION_KEY))
+            return version
 
     def coordinate_snapshot(self, db, snapshot):
         """Allocate an owner-local revision for the complete composed gate view.
@@ -118,12 +139,13 @@ class KernelRepository:
                          (scope.owner_key, command_id)).fetchone()
         if row is not None:
             require(row[0] == request_hash, "command ID conflicts with original business parameters")
-            return request_hash, json.loads(row[1])
+            return request_hash, read_response(db, scope.owner_key, row[1])
         return request_hash, None
 
     def save_command(self, db, scope, command_id, request_hash, response):
         db.execute("INSERT INTO life_kernel_commands VALUES (?,?,?,?)",
-                   (scope.owner_key, command_id, request_hash, encode(response)))
+                   (scope.owner_key, command_id, request_hash,
+                    encode_response(response, compact=self._use_compact_history(db))))
 
     def candidate(self, owner_key, candidate_id):
         row = self.reader.one("SELECT context_key,record_json FROM life_kernel_candidates WHERE owner_key=? AND candidate_id=?",
@@ -168,19 +190,21 @@ class KernelRepository:
         db.execute("INSERT INTO life_kernel_instances VALUES (?,?,?,?,?,?,?,?)",
                    (instance.owner_key, instance.instance_id, instance.status.value, instance.revision,
                     encode(instance), encode(template), encode(prepared), encode(audience)))
-        self._history(db, instance)
+        self._history(db, instance, encode(instance))
 
-    def _history(self, db, instance):
+    def _history(self, db, instance, record):
         db.execute("INSERT INTO life_kernel_revisions VALUES (?,?,?,?)",
-                   (instance.owner_key, instance.instance_id, instance.revision, encode(instance)))
+                   (instance.owner_key, instance.instance_id, instance.revision, record))
 
     def save(self, db, old, instance):
         require(instance.revision == old.revision + 1, "revision must advance once")
+        record = encode(instance)
         changed = db.execute("""UPDATE life_kernel_instances SET status=?,revision=?,record_json=?
             WHERE owner_key=? AND instance_id=? AND revision=?""",
-            (instance.status.value, instance.revision, encode(instance), instance.owner_key, instance.instance_id, old.revision))
+            (instance.status.value, instance.revision, record, instance.owner_key, instance.instance_id, old.revision))
         require(changed.rowcount == 1, "instance changed", ReasonCode.STALE_VERSION)
-        self._history(db, instance)
+        history = revision_delta(wire(old), wire(instance)) if self._use_compact_history(db) else record
+        self._history(db, instance, history)
 
     def foreground_busy(self, owner_key, excluding=None):
         return self.reader.one("""SELECT 1 FROM life_kernel_instances WHERE owner_key=?
@@ -244,8 +268,9 @@ class KernelRepository:
         # transaction. An exception rolls back instance, effects and outbox.
         from ..prepared_commands import _synchronous
         require(_synchronous(module.apply_effect(db, instance, effect)) is True, "domain rejected effect")
+        receipt = effect_receipt(effect) if self._use_compact_history(db) else encode(effect)
         db.execute("INSERT INTO life_kernel_effects VALUES (?,?,?,?)",
-                   (instance.owner_key, effect.effect_id, effect_hash, encode(effect)))
+                   (instance.owner_key, effect.effect_id, effect_hash, receipt))
 
     def emit(self, db, instance, proposal, occurred_at, recorded_at):
         event = EventEnvelope("kernel-event-" + uuid4().hex, proposal.type, proposal.schema_version,

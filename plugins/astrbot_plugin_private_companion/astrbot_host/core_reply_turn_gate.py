@@ -42,6 +42,8 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+from .core_reply_banned_phrases import filter_response
+
 CORE_TURN_GATE_EXTRA = "_companion_v2_core_turn_gate"
 RESPONSE_STREAM = "_iter_llm_responses_with_fallback"
 STEP = "step"
@@ -236,6 +238,9 @@ async def _turn_round(gate, source):
                 yield response
             return
         try:
+            if _tool_round(final):
+                # Tool rounds can enter history without an agent-done hook.
+                filter_response(gate["event"], final)
             pending = _round_plan(gate, fragments, final) if not gate.get("failed") else None
         except Exception as error:
             # Fail open with everything this round produced -- duplicating is

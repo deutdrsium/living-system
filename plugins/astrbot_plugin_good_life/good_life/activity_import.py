@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite3
 
 from .calendar_import import _fingerprint
-from .storage import LifeStorage
+from .storage import LifeStorage, STAGED_ACTIVITY_RECENT_INDEX
 
 
 TABLES = {
@@ -30,6 +30,7 @@ DDL = (
         owner_key TEXT NOT NULL, activity_id TEXT NOT NULL, owner_json TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision > 0), state TEXT NOT NULL,
         updated_at TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(owner_key, activity_id))""",
+    STAGED_ACTIVITY_RECENT_INDEX,
     """CREATE TABLE staged_role_activity_revisions (
         scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_key TEXT NOT NULL, activity_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0),

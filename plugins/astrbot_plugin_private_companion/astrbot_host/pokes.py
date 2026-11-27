@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from companion_v2.adapters.astrbot.native import NativeConversationInput, account_number
+from companion_v2.conversation.banned_phrases import NO_BANNED_PHRASES
 from companion_v2.conversation.quotes.models import message_number
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
@@ -147,12 +148,14 @@ async def _poke_context_stream(controller, route, context, instruction, event_ke
         if not generated or not generated.strip():
             logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP]），保持安静")
             return
+        reply = getattr(controller, "banned_phrases", NO_BANNED_PHRASES).text(
+            generated.strip(), surface="poke_context")
         api = _transport(controller, route)
         try:
             await api.call_action("send_group_msg", self_id=route.login,
                 **{"group_id": int(route.peer)},
-                message=[{"type": "text", "data": {"text": generated.strip()}}])
-            logger.info("[CompanionV2][poke-context] 已发送接话回复: %s", generated.strip()[:60])
+                message=[{"type": "text", "data": {"text": reply}}])
+            logger.info("[CompanionV2][poke-context] 已发送接话回复")
         except Exception as send_error:
             logger.warning("[CompanionV2][poke-context] 发送失败: %s", send_error)
             return
@@ -219,6 +222,7 @@ async def receive_poke(controller, event):
                 except (TaskError, ValueError, TypeError, AttributeError, KeyError) as error:
                     logger.warning("[CompanionV2] 戳一戳模型回复未完成，使用预设短句 error_type=%s code=%s",
                                    type(error).__name__, getattr(error, "code", ""))
+            reply = getattr(controller, "banned_phrases", NO_BANNED_PHRASES).text(reply, surface="poke")
             api = await _dispatch_guard(controller, event, captured)
             action = "send_group_msg" if route.kind is ScopeKind.GROUP else "send_private_msg"
             target = {"group_id" if route.kind is ScopeKind.GROUP else "user_id": int(route.peer)}

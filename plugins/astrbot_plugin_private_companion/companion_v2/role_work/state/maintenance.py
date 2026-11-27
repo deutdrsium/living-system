@@ -47,6 +47,7 @@ sleep_execution 记录实际睡眠，sleep_profile.has_sleep_history=false 或 s
 energy 是 0 到 100 的主观精力。结合 previous_simulation 及 updated_at、当前时段、实际睡眠回执、睡眠压力/欠睡、质量、中断与活动连续调整，沿用不等于照抄。低值且无持续负荷或睡眠不足依据时，可随时间小幅回升至角色惯常水平，不必等睡眠回执才允许感受温和好转；好转不宣称已休息。接近日常水平后稳定或自然起伏，不突然满格或持续单向上升，不让过时疲惫永久锁低。
 持续负荷或明确欠睡时可偏低并在下轮重评；低质量睡眠、刚睡被叫醒或反复中断限制恢复，补足后渐进回升。午休只缓解部分困倦，睡眠压力不换算为固定精力扣分。深夜持续互动可以慢慢加深疲惫，短聊不要求改变作息；状态维护不代替睡眠执行器。
 busy 描述注意力，不决定是否拒答。共享状态只写角色自己的概括感受与活动，不写对象、他人位置或私人日程。当前窗口没新消息不表示不忙、情绪归零或状态结束；没有变化依据时保留有效状态或 null。
+busy 和 mood.description 用简短的日常措辞记录当时的活动、注意力和感受。延续状态时保留含义，避免沿用自己在旧状态或对话里反复使用的自我形容，也不要把一时的感受写成性格或口头禅。
 临时影响使用含时区的合理 expires_at，表示下次复核时点，不是固定康复时刻；到期后重新评估当前感受，既不自动痊愈也不无依据续期。共享字段只写角色自己的概括感受，不记录聊天对象、私人互动原文或他人情况。presence 是公开 QQ 短状态，最多 8 个字符。只写有依据且适合公开的当前活动，用泛化短语，不透露人物、地点、健康或私聊细节。只有计划、推测或旧记录时填 null。
 online_mode 是会实际改变 QQ 账号的在线状态，away 会触发 QQ 原生离开自动回复，busy 也会改变账号对外表现；本插件不会自动设置 away 或 busy。不能用这些模式表达普通困倦、待休息、看书、注意力变化或窗口暂时没有消息。这些生活感受写在 sleep/busy/presence 中。正常接话、近期仍在连续互动时保持 online；previous_simulation 中过时的 away/busy 不因沿用旧状态而续期，旧值也应通过在线状态恢复。隐身仍只在明确配置时使用。online_mode 通常只输出 online/invisible/null；null 只表示本轮不改变平台状态。
 仅输出 JSON：energy 为 0 到 100 的整数或 null；hunger、health、sleep、busy、mood、location、cycle、presence、online_mode 通常为简短文字或 null，mood/cycle 按本轮各自结构协议；conditions 是 kind/text/expires_at 对象数组，kind 选 hunger/health/sleep/busy/mood/cycle/other，无临时变化填空数组。
@@ -153,6 +154,30 @@ def _feature_instruction(settings):
     return ("\n已关闭的状态模拟字段：" + "、".join(disabled)
             + "。这些字段使用 null，conditions 不添加对应项目，不用旧记录或其他状态替代。"
               "这些开关只控制状态模拟，不改变真实睡眠回执、日程、授权或是否回复。")
+
+
+def _filter_descriptions(data, phrases):
+    def clean(fields, key):
+        text = fields.get(key)
+        if isinstance(text, str):
+            filtered = phrases.text(text, surface="role_state", preserve_reply=False)
+            if filtered != text:
+                fields[key] = filtered or None
+
+    for key in ("hunger", "health", "sleep", "busy", "mood", "location", "presence"):
+        clean(data, key)
+    for key in ("mood", "cycle"):
+        if isinstance(data.get(key), dict):
+            clean(data[key], "description")
+    if isinstance(data.get("conditions"), list):
+        conditions = []
+        for item in data["conditions"]:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                clean(item, "text")
+                if item["text"] is None:
+                    continue
+            conditions.append(item)
+        data["conditions"] = conditions
 
 
 class StateMaintenance:
@@ -741,6 +766,8 @@ class StateMaintenance:
                      run.task.task_id, result.draft.text if result.draft is not None else None)
         try:
             data = json.loads(result.draft.text)
+            if self.app.banned_phrases and isinstance(data, dict):
+                _filter_descriptions(data, self.app.banned_phrases)
             logger.debug("[CompanionV2][开发者追踪] 状态维护正文解析 task=%s data=%r",
                          run.task.task_id, data)
             mood_error = None

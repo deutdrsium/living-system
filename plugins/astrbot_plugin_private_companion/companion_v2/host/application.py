@@ -35,6 +35,7 @@ from companion_v2.conversation.open_items_context import OpenItemsReader
 from companion_v2.configuration.models import ConfigurationError
 from companion_v2.configuration.service import ConfigurationService
 from companion_v2.conversation.delivery import LocalConversationDelivery
+from companion_v2.conversation.banned_phrases import NO_BANNED_PHRASES
 from companion_v2.conversation.pokes import PokeReplyModel
 from companion_v2.conversation.flow import ConversationFlow, ConversationPolicy
 from companion_v2.conversation.generation import LocalReplyGenerator, single_part
@@ -227,7 +228,7 @@ class CompanionApplication:
                  solar_term_port=None, budget_soft=None, capability_owners=(),
                  qzone_transport=None, default_provider_resolver=None,
                  knowledge=None, memory_owner=DEFAULT_MEMORY_OWNER, memory_push=DEFAULT_MEMORY_PUSH, wake_port=None,
-                 search_port_factory=None, configuration_store=None):
+                 search_port_factory=None, configuration_store=None, banned_phrases=None):
         if type(owns_runtime) is not bool or not any(p.kind == REPLY_KIND and p.lane is Lane.FOREGROUND for p in profiles):
             raise ValueError("assembly requires a foreground reply profile and explicit runtime ownership")
         if external is not None and (external.runtime is not runtime or external.messages is not None):
@@ -236,6 +237,7 @@ class CompanionApplication:
         if external is not None and limits.foreground_slots < 2:
             raise ValueError("external tools need capacity for both parent and child")
         self.runtime, self.owns_runtime = runtime, owns_runtime
+        self.banned_phrases = banned_phrases or NO_BANNED_PHRASES
         self.configuration_store = configuration_store if configuration_store is not runtime else None
         if self.configuration_store is not None:
             runtime.attach_configuration_store(self.configuration_store)
@@ -322,14 +324,15 @@ class CompanionApplication:
         # no session and no partially usable Zone path.
         self.qzone = (QzoneService(runtime, self.qzone_settings, qzone_transport, now=self.now)
                       if qzone_transport is not None else None)
-        self.proactive = ProactiveContacts(self.configuration, memory_push=memory_push)
+        self.proactive = ProactiveContacts(self.configuration, memory_push=memory_push,
+                                           banned_phrases=self.banned_phrases)
         self.role_life = LifeLedgerRouter(PersistentRoleLifeLedger(runtime, now=self.now))
         self.role_growth = PersistentRoleGrowthLedger(runtime, now=self.now)
         self.relationship_memories = RelationshipMemoryService(runtime, now=self.now)
         self.role_journal = RoleJournalService(runtime, now=self.now, life_ledger=self.role_life)
         self.journal_writer = RoleJournalWriter(self.role_journal, memory_push=memory_push)
         self.memory_reflection = MemoryReflection(runtime)
-        self.role_reader = RoleReader(self.role_life)
+        self.role_reader = RoleReader(self.role_life, banned_phrases=self.banned_phrases)
         self.role_reader.interest_materials = lambda context, at: interest_materials(self, context, at)
         self.role_social = RoleSocial(self)
         self.role_interests = InterestTasks(self)
@@ -557,7 +560,7 @@ class CompanionApplication:
         self.messages.cross_window = self.cross_window
         self.messages.cross_window_context = ConversationAwarenessContext(self.cross_window)
         self.generator = LocalReplyGenerator(self.messages, self.gateway, split=split, segmentation=segmentation,
-                                             voice_policy=voice_policy)
+                                             voice_policy=voice_policy, banned_phrases=self.banned_phrases)
         self.flow = ConversationFlow(self.messages, self.delivery, policy=policy)
         self.runner = ExactTaskRunner(self.tasks, frozenset({REPLY_KIND, DELIVERY_KIND}), self._execute)
         from companion_v2.conversation.streaming_reply import send_stream_part

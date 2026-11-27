@@ -23,7 +23,8 @@ from companion_v2.decision.store import LayaSettingsStore, LayaSettingsError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.model_gateway.core_observations import observations_for_role
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
-from astrbot_host.core_reply_decision import _private_silence, _recent_private_messages, core_decision_facts
+from astrbot_host.core_reply_decision import (_private_silence, _recent_private_messages,
+                                             _role_state_summary, core_decision_facts)
 from companion_v2.configuration.models import encode
 from tests.group_host_support import GroupFixture, group_config
 from tests.test_laya_decision import laya_result
@@ -32,6 +33,17 @@ from tests.test_core_reply_pipeline import PipelineEvent, CoreAgentFixture
 
 
 class CoreDecisionPromptTests(unittest.TestCase):
+    def test_role_state_summary_supplies_only_structured_facts(self):
+        state = {"values": {"energy": 60, "busy": "慢悠悠地看书", "sleep": "睡得很浅",
+                            "mood": {"joy": 40, "description": "不紧不慢"}},
+                 "sleep_execution": {"state": "interrupted"}}
+        application = NS(role_state=NS(read=lambda context: state))
+        summary = _role_state_summary(application, object())
+        facts = {"scope_kind": "group", "role_state_summary": summary}
+        model = json.loads(render_model_state(build_state(facts)))["facts"]
+        self.assertEqual(model["role_state_summary"], {"energy": 60, "mood": {"joy": 40},
+                                                       "sleep": "interrupted"})
+
     def test_followup_decision_respects_closed_interjection_and_encourages_natural_closure(self):
         questions = decision_questions({"scope_kind": "group", "candidate_reason": "reply_follow_up",
             "group_participation_policy": {"question_enabled": False, "interjection_enabled": False},

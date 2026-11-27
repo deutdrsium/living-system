@@ -137,7 +137,8 @@ class GeminiNativeVideoProvider:
         if (envelope.original.native_video_input and not envelope.original.videos
                 or envelope.original.audios):
             raise TaskError("model_capability_mismatch", "Gemini route received unsupported or incomplete media")
-        estimated = build_wire(envelope, model_name=envelope.model_override or self.model).input_estimate()
+        estimated = build_wire(envelope, model_name=envelope.model_override or self.model,
+                          phrase_overuse_settings=getattr(self.bridge, "phrase_overuse_settings", None)).input_estimate()
         if estimated > self.maximum_input_estimate or envelope.max_output_tokens > self.maximum_output_tokens:
             raise TaskError("host_model_limit", "native video request exceeds its declared input or output profile")
         return self.tariff.amount(estimated, 0, envelope.max_output_tokens)
@@ -247,7 +248,8 @@ class GeminiNativeVideoProvider:
         if (request.native_video_input and not request.videos or len(request.videos) > 2
                 or request.audios or envelope.tool_history and not envelope.tools):
             raise TaskError("model_capability_mismatch", "Gemini route received unsupported or incomplete media history")
-        wire = build_wire(envelope, model_name=envelope.model_override or self.model)
+        wire = build_wire(envelope, model_name=envelope.model_override or self.model,
+                          phrase_overuse_settings=getattr(self.bridge, "phrase_overuse_settings", None))
         self.reserve(envelope)
         # Background tasks may replace the model-facing role with the self page.
         # The native guard must still compare the host persona captured behind

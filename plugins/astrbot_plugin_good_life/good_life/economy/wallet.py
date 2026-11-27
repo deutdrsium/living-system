@@ -14,6 +14,7 @@ import json
 
 from ..contracts.models import ActivityInstance, ActivityResult, ActivityStatus, Money, OutcomeStatus, Provenance, ReasonCode
 from ..kernel.codec import decode, digest, encode, freeze, integer, moment, name, require, restore
+from ..kernel.history import read_response
 from ..kernel.registry import ModuleSpec
 from ..storage import StorageReader
 
@@ -495,7 +496,7 @@ class Wallet:
             expected_hash = digest({"namespace": "life.kernel.command/v1", "owner_key": owner_key,
                                     "context_key": final.context_key, "request": request})
             require(command is not None and command[0] == expected_hash
-                    and decode(ActivityInstance, command[1]) == final,
+                    and restore(ActivityInstance, read_response(db, owner_key, command[1])) == final,
                     "no matching durable abandon command", ReasonCode.UNAUTHORIZED)
             require(all(not db.execute("SELECT 1 FROM life_kernel_effects WHERE owner_key=? AND effect_id=?",
                                        (owner_key, effect.effect_id)).fetchone() for effect in proposal.effects),

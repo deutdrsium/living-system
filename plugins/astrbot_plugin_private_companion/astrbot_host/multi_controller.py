@@ -18,6 +18,7 @@ from companion_v2.adapters.astrbot.group import group_event_route
 from companion_v2.adapters.astrbot.provider import provider_fingerprint
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
 from companion_v2.execution.models import TaskContext, TaskError, digest, require
+from companion_v2.conversation.banned_phrases import BannedPhraseFilter, DEFAULT_PATTERNS
 from companion_v2.conversation.pokes import PokePolicy
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, SubjectKind, SubjectRef
@@ -56,6 +57,7 @@ class AstrBotMultiController:
     def __init__(self, context, config, data_root, *, native_types=None, now=None):
         self.lifecycle_token = uuid4().hex
         self.config = config
+        self.banned_phrases = BannedPhraseFilter(config.get("banned_phrases", DEFAULT_PATTERNS))
         # Hosts may hand us the plugin code tree or a V1 data root when
         # get_data_dir() is incomplete. Normalize again here so every caller
         # (not only main.py) lands in an isolated V2 data root.
@@ -804,11 +806,15 @@ class AstrBotMultiController:
                 deepseek_provider_resolver=search_provider_resolver,
                 search_priority_resolver=search_settings.source_priority),
             search_port_factory=search_port_factory,
+            banned_phrases=self.banned_phrases,
             balance_port=configured_balance_port(self.config),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
             solar_term_port=configured_solar_term_port(
                 self.config.get("solar_terms") if isinstance(self.config, dict) else None))
+        phrase_overuse_settings = self.config.get("phrase_overuse")
+        self.session.bridge.phrase_overuse_settings = phrase_overuse_settings
+        self.session.application.proactive.phrase_overuse_settings = phrase_overuse_settings
         self.session.attach_desktop_presence(self.desktop_presence)
         from .life_ledger_binding import refresh_session_binding
         refresh_session_binding(self)

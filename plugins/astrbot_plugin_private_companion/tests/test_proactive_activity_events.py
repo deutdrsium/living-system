@@ -89,7 +89,8 @@ class ActivityContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestC
         self.assertIn("真正读过的这一段", evidence[0])
         self.assertNotIn("未读开头", evidence[0])
         self.assertNotIn("未读结尾", evidence[0])
-        self.assertIn("subjective_reflection", evidence[0])
+        self.assertNotIn("subjective_reflection", evidence[0])
+        self.assertNotIn("这让我想到海边", evidence[0])
         self.assertEqual(json.loads(self.contacts(self.app)[0]["record_json"])["purpose"], "creation")
 
     async def test_sleep_receipt_provides_only_confirmed_sleep_fact(self):

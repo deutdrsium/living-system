@@ -465,7 +465,7 @@ class MultiHostSession:
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
                  persona_window_snapshot_lookup=None, persona_window_snapshot_update=None,
-                 search_port_factory=None):
+                 search_port_factory=None, banned_phrases=None):
         self.runtime, self.settings, self.authority, self.types, self.now = runtime, settings, authority, native_types, now
         self.native_tool_port = native_tool_port
         self.search_port_factory = search_port_factory
@@ -587,6 +587,7 @@ class MultiHostSession:
             qzone_transport=qzone_transport,
             voice_policy=common.voice_reply_policy if common.voice_reply_enabled else None,
             configuration_store=configuration_store,
+            banned_phrases=banned_phrases,
             wake_port=self._wake_snapshot,
             presence_port=MultiPresence(self))
         self.application = self.host.application
@@ -1243,7 +1244,7 @@ class MultiHostSession:
                 context_sections, expression_signal_ids = (), ()
                 perception_options = None
                 perception_context, perception_instructions, perception_guidance = "", (), ""
-                context_materials, preparation_steps = (), ()
+                context_materials, preparation_steps, proactive_outputs = (), (), ()
                 try:
                     from .core_reply_context import build_core_reply_prompt
                     if not group_admission or group_admission.get("reason") != "repeat":
@@ -1277,6 +1278,7 @@ class MultiHostSession:
                         context_sections = prompt.sections
                         expression_signal_ids = getattr(prompt, "expression_signal_ids", ())
                         context_materials = getattr(prompt, "materials", ())
+                        proactive_outputs = getattr(prompt, "proactive_outputs", ())
                         perception_options = getattr(prompt, "perception_options", None)
                         perception_context = getattr(prompt, "perception_context", "")
                         perception_instructions = getattr(prompt, "perception_instructions", ())
@@ -1361,6 +1363,7 @@ class MultiHostSession:
                     "perception_instructions": perception_instructions,
                     "perception_guidance": perception_guidance,
                     "context_materials": context_materials,
+                    "proactive_outputs": proactive_outputs,
                     "preparation_steps": preparation_steps,
                     "expression_signal_ids": expression_signal_ids,
                     "turn_id": turn_id,

@@ -19,6 +19,7 @@ from companion_v2.conversation.voice_reply import (
     voice_wrapper_pairing,
 )
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
+from .core_reply_banned_phrases import FILTER_EXTRA
 from companion_v2.conversation.voice_markup import slice_speech, visible_speech
 
 
@@ -274,6 +275,12 @@ async def prepare_core_reply_voice_message(
             note["state"] = "no_authored_speech"
             logger.info("[CompanionV2][media] stage=delivery event_ref=%s media=voice state=%s segment=%s/%s",
                         prepared.get("event_ref", "unknown"), note["state"], segment_index + 1, segment_count)
+            return cleaned_message
+    phrases = event.get_extra(FILTER_EXTRA)
+    if phrases:
+        speech = phrases.text(speech, surface="astrbot_voice", preserve_reply=not bool(visible.strip()))
+        if not speech:
+            note["state"] = "no_authored_speech"
             return cleaned_message
     chunks = speech_chunks(speech, policy.max_speech_chars)
     note["chars"], note["chunks"] = len(speech), len(chunks)
